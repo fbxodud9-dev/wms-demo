@@ -7,8 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
-  html, body { margin: 0; padding: 0; background: #F3F2ED; }
-  #root { max-width: 1180px; margin: 0 auto; padding: 20px; }
+  html, body { margin: 0; padding: 0; background: #F3F2ED; height: 100%; }
+  #root { width: 100%; min-height: 100vh; }
   * { box-sizing: border-box; }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -448,11 +448,9 @@ function WMSApp() {
         fontFamily: "'IBM Plex Sans KR', sans-serif",
         background: T.bg,
         color: T.ink,
-        borderRadius: 12,
-        overflow: "hidden",
-        border: `1px solid ${T.border}`,
         display: "flex",
-        minHeight: 640,
+        width: "100%",
+        minHeight: "100vh",
       }}
     >
       <style>{`
