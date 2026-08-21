@@ -444,6 +444,7 @@ function WMSApp() {
 
   return (
     <div
+      className="wms-shell"
       style={{
         fontFamily: "'IBM Plex Sans KR', sans-serif",
         background: T.bg,
@@ -463,14 +464,30 @@ function WMSApp() {
         .spin { animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         input:focus, select:focus, textarea:focus { border-color: ${T.steel} !important; box-shadow: 0 0 0 2px rgba(43,50,57,0.12); }
-        table { border-collapse: collapse; width: 100%; }
-        th { text-align: left; font-size: 12px; color: ${T.inkSoft}; font-weight: 600; padding: 10px 12px; border-bottom: 1px solid ${T.border}; }
+        table { border-collapse: collapse; width: 100%; min-width: 620px; }
+        th { text-align: left; font-size: 12px; color: ${T.inkSoft}; font-weight: 600; padding: 10px 12px; border-bottom: 1px solid ${T.border}; white-space: nowrap; }
         td { padding: 12px; font-size: 13.5px; border-bottom: 1px solid #EEECE3; vertical-align: middle; }
+        .table-wrap { overflow-x: auto !important; overflow-y: hidden; -webkit-overflow-scrolling: touch; max-width: 100%; }
+        input, select, textarea { max-width: 100%; }
+        @media (max-width: 720px) {
+          .wms-shell { flex-direction: column !important; }
+          .wms-sidebar { width: 100% !important; flex-direction: row !important; align-items: center !important; gap: 4px !important; padding: 8px !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+          .wms-brand { display: none !important; }
+          .wms-footer { display: none !important; }
+          .navbtn { flex: 0 0 auto !important; white-space: nowrap !important; padding: 8px 12px !important; font-size: 12.5px !important; }
+          .wms-main { padding: 14px !important; }
+          .field-row { flex-direction: column !important; gap: 12px !important; }
+          .wms-3d-mount { height: 300px !important; }
+          h1 { font-size: 18px !important; }
+        }
+        @media (max-width: 420px) {
+          .navbtn span.navlabel { display: none; }
+        }
       `}</style>
 
       {/* sidebar */}
-      <div style={{ width: 196, background: T.steel, color: "#fff", padding: "20px 12px", display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px 20px" }}>
+      <div className="wms-sidebar" style={{ width: 196, background: T.steel, color: "#fff", padding: "20px 12px", display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+        <div className="wms-brand" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px 20px" }}>
           <div style={{ width: 30, height: 30, borderRadius: 6, background: T.amber, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Package size={17} color={T.steel} strokeWidth={2.5} />
           </div>
@@ -504,7 +521,7 @@ function WMSApp() {
               }}
             >
               <Icon size={16} strokeWidth={2.2} />
-              {n.label}
+              <span className="navlabel">{n.label}</span>
               {n.key === "dashboard" && lowStock.length > 0 && (
                 <span style={{ marginLeft: "auto", fontSize: 10.5, background: active ? T.steel : T.danger, color: "#fff", borderRadius: 999, padding: "1px 6px", fontFamily: "'JetBrains Mono', monospace" }}>
                   {lowStock.length}
@@ -513,13 +530,13 @@ function WMSApp() {
             </button>
           );
         })}
-        <div style={{ marginTop: "auto", padding: "10px", fontSize: 11, color: "#8B9198", borderTop: "1px solid #3E4750" }}>
+        <div className="wms-footer" style={{ marginTop: "auto", padding: "10px", fontSize: 11, color: "#8B9198", borderTop: "1px solid #3E4750" }}>
           {saveErr ? "⚠ 저장 실패 — 재시도 중" : "자동 저장됨"}
         </div>
       </div>
 
       {/* content */}
-      <div style={{ flex: 1, padding: "24px 28px", overflow: "auto" }}>
+      <div className="wms-main" style={{ flex: 1, padding: "24px 28px", overflow: "auto", minWidth: 0 }}>
         {tab === "dashboard" && <Dashboard items={items} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} />}
         {tab === "inventory" && <Inventory items={items} />}
         {tab === "3d" && <ThreeDView items={items} />}
@@ -674,7 +691,7 @@ function Inventory({ items }) {
         </select>
       </div>
 
-      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
             <tr>
@@ -1037,9 +1054,10 @@ function ThreeDView({ items }) {
     <div>
       <PageHeader title="3D 로케이션 뷰" sub="드래그로 회전 · 스크롤로 확대 · 박스 클릭으로 상세 정보 확인" />
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div style={{ flex: "2 1 460px", minWidth: 320 }}>
+        <div style={{ flex: "2 1 460px", minWidth: 280 }}>
           <div
             ref={mountRef}
+            className="wms-3d-mount"
             style={{ height: 440, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, position: "relative", cursor: "grab" }}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
@@ -1194,7 +1212,7 @@ function Inbound({ items, onSubmit }) {
           </Field>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 12 }}>
+            <div className="field-row" style={{ display: "flex", gap: 12 }}>
               <Field label="SKU">
                 <input style={inputStyle} value={newItem.sku} onChange={(e) => setNewItem({ ...newItem, sku: e.target.value })} placeholder="예: ELEC-1003" />
               </Field>
@@ -1209,7 +1227,7 @@ function Inbound({ items, onSubmit }) {
             <Field label="품목명">
               <input style={inputStyle} value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} placeholder="품목명을 입력하세요" />
             </Field>
-            <div style={{ display: "flex", gap: 12 }}>
+            <div className="field-row" style={{ display: "flex", gap: 12 }}>
               <Field label="단위">
                 <input style={inputStyle} value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="개 / 박스 / 세트" />
               </Field>
@@ -1223,7 +1241,7 @@ function Inbound({ items, onSubmit }) {
           </>
         )}
 
-        <div style={{ display: "flex", gap: 12 }}>
+        <div className="field-row" style={{ display: "flex", gap: 12 }}>
           <Field label="입고 수량">
             <input style={inputStyle} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
           </Field>
@@ -1301,7 +1319,7 @@ function Outbound({ items, onSubmit }) {
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 12 }}>
+        <div className="field-row" style={{ display: "flex", gap: 12 }}>
           <Field label="출고 수량">
             <input style={inputStyle} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
           </Field>
@@ -1389,7 +1407,7 @@ function HistoryView({ tx }) {
         </select>
       </div>
 
-      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
             <tr>
