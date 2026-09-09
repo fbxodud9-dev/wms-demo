@@ -304,6 +304,39 @@ function Pencil(props) {
     </IconBase>
   );
 }
+function ClipboardList(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="4" y="4" width="16" height="18" rx="2" />
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+      <line x1="8" y1="11" x2="16" y2="11" />
+      <line x1="8" y1="15" x2="16" y2="15" />
+      <line x1="8" y1="19" x2="13" y2="19" />
+    </IconBase>
+  );
+}
+
+function Trash2(props) {
+  return (
+    <IconBase {...props}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
+    </IconBase>
+  );
+}
+
+function PlayCircle(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="10 8 16 12 10 16" />
+    </IconBase>
+  );
+}
+
 
 
 /* ---------- design tokens ---------- */
