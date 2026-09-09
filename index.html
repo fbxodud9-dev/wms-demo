@@ -193,6 +193,118 @@ function RotateCcw(props) {
 
 const Box3dIcon = Package;
 
+function CheckSquare(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <polyline points="8 12 11 15 16 9" />
+    </IconBase>
+  );
+}
+function ListChecks(props) {
+  return (
+    <IconBase {...props}>
+      <polyline points="3 6 4.5 7.5 7 5" />
+      <line x1="10" y1="6" x2="21" y2="6" />
+      <polyline points="3 13 4.5 14.5 7 12" />
+      <line x1="10" y1="13" x2="21" y2="13" />
+      <polyline points="3 20 4.5 21.5 7 19" />
+      <line x1="10" y1="20" x2="21" y2="20" />
+    </IconBase>
+  );
+}
+function Thermometer(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12 3a2 2 0 0 0-2 2v9.5a4 4 0 1 0 4 0V5a2 2 0 0 0-2-2Z" />
+      <line x1="12" y1="9" x2="12" y2="15" />
+    </IconBase>
+  );
+}
+function ListOrdered(props) {
+  return (
+    <IconBase {...props}>
+      <line x1="10" y1="6" x2="21" y2="6" />
+      <line x1="10" y1="12" x2="21" y2="12" />
+      <line x1="10" y1="18" x2="21" y2="18" />
+      <text x="3" y="8" fontSize="7" fill="currentColor" stroke="none">1</text>
+      <text x="3" y="14" fontSize="7" fill="currentColor" stroke="none">2</text>
+      <text x="3" y="20" fontSize="7" fill="currentColor" stroke="none">3</text>
+    </IconBase>
+  );
+}
+function Printer(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M6 9V3h12v6" />
+      <rect x="3" y="9" width="18" height="8" rx="1.5" />
+      <path d="M6 17v4h12v-4" />
+    </IconBase>
+  );
+}
+function Truck(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="1" y="7" width="13" height="10" rx="1" />
+      <path d="M14 10h4l3 3v4h-7z" />
+      <circle cx="6" cy="19" r="1.6" />
+      <circle cx="17.5" cy="19" r="1.6" />
+    </IconBase>
+  );
+}
+function ShieldCheck(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12 2 L20 5 V11 C20 16 16.5 20 12 22 C7.5 20 4 16 4 11 V5 Z" />
+      <polyline points="8.5 12 11 14.5 15.5 9.5" />
+    </IconBase>
+  );
+}
+function MapPinned(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12 2 C7.6 2 4 5.6 4 10 C4 16 12 22 12 22 C12 22 20 16 20 10 C20 5.6 16.4 2 12 2 Z" />
+      <circle cx="12" cy="10" r="2.6" />
+    </IconBase>
+  );
+}
+function Tag(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M20 12 L12.5 19.5 a2 2 0 0 1-2.8 0 L3 12.7 V4 h8.7 L20 12 Z" />
+      <circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+function Grid3x3(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="3" y="3" width="18" height="18" rx="1" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="9" y1="3" x2="9" y2="21" />
+      <line x1="15" y1="3" x2="15" y2="21" />
+    </IconBase>
+  );
+}
+function Route(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="6" cy="19" r="2.2" />
+      <circle cx="18" cy="5" r="2.2" />
+      <path d="M8 19h7a3 3 0 0 0 3-3v-1a3 3 0 0 0-3-3H9a3 3 0 0 1-3-3v-1a3 3 0 0 1 3-3h7.8" />
+    </IconBase>
+  );
+}
+function Pencil(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </IconBase>
+  );
+}
+
 
 /* ---------- design tokens ---------- */
 const T = {
@@ -218,18 +330,20 @@ const FONT_IMPORT =
   "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');";
 
 const CATEGORIES = ["가전", "생활용품", "문구용품", "식품", "포장자재"];
+const TEMP_ZONES = ["상온", "냉장", "냉동"];
+const WORK_TYPES = ["피킹", "세트", "낱개출고"];
 
 const seedItems = () => [
-  { id: "i1", sku: "ELEC-1001", name: "무선 이어폰", category: "가전", location: "A-01-01", unit: "개", qty: 120, safety: 50 },
-  { id: "i2", sku: "ELEC-1002", name: "블루투스 스피커", category: "가전", location: "A-01-02", unit: "개", qty: 35, safety: 40 },
-  { id: "i3", sku: "HOME-2001", name: "스테인리스 텀블러", category: "생활용품", location: "B-02-01", unit: "개", qty: 200, safety: 80 },
-  { id: "i4", sku: "HOME-2002", name: "극세사 수건세트", category: "생활용품", location: "B-02-02", unit: "세트", qty: 15, safety: 30 },
-  { id: "i5", sku: "STAT-3001", name: "A4 복사용지", category: "문구용품", location: "C-01-01", unit: "박스", qty: 500, safety: 100 },
-  { id: "i6", sku: "STAT-3002", name: "볼펜 12자루세트", category: "문구용품", location: "C-01-02", unit: "세트", qty: 60, safety: 50 },
-  { id: "i7", sku: "FOOD-4001", name: "즉석밥 24개입", category: "식품", location: "D-01-01", unit: "박스", qty: 90, safety: 60 },
-  { id: "i8", sku: "FOOD-4002", name: "생수 2L 6팩", category: "식품", location: "D-01-02", unit: "팩", qty: 25, safety: 40 },
-  { id: "i9", sku: "PACK-5001", name: "골판지 박스(중)", category: "포장자재", location: "E-01-01", unit: "개", qty: 300, safety: 100 },
-  { id: "i10", sku: "PACK-5002", name: "에어캡 롤", category: "포장자재", location: "E-01-02", unit: "롤", qty: 45, safety: 30 },
+  { id: "i1", sku: "ELEC-1001", name: "무선 이어폰", category: "가전", location: "A-01-01", unit: "개", qty: 120, safety: 50, tempZone: "상온", workType: "피킹", unitQty: 1, boxQty: 20, cbm: 0.02, replenished: false },
+  { id: "i2", sku: "ELEC-1002", name: "블루투스 스피커", category: "가전", location: "A-01-02", unit: "개", qty: 35, safety: 40, tempZone: "상온", workType: "피킹", unitQty: 1, boxQty: 10, cbm: 0.05, replenished: false },
+  { id: "i3", sku: "HOME-2001", name: "스테인리스 텀블러", category: "생활용품", location: "B-02-01", unit: "개", qty: 200, safety: 80, tempZone: "상온", workType: "피킹", unitQty: 1, boxQty: 30, cbm: 0.01, replenished: false },
+  { id: "i4", sku: "HOME-2002", name: "극세사 수건세트", category: "생활용품", location: "B-02-02", unit: "세트", qty: 15, safety: 30, tempZone: "상온", workType: "세트", unitQty: 1, boxQty: 12, cbm: 0.03, replenished: false },
+  { id: "i5", sku: "STAT-3001", name: "A4 복사용지", category: "문구용품", location: "C-01-01", unit: "박스", qty: 500, safety: 100, tempZone: "상온", workType: "피킹", unitQty: 1, boxQty: 1, cbm: 0.06, replenished: false },
+  { id: "i6", sku: "STAT-3002", name: "볼펜 12자루세트", category: "문구용품", location: "C-01-02", unit: "세트", qty: 60, safety: 50, tempZone: "상온", workType: "세트", unitQty: 12, boxQty: 24, cbm: 0.008, replenished: false },
+  { id: "i7", sku: "FOOD-4001", name: "즉석밥 24개입", category: "식품", location: "D-01-01", unit: "박스", qty: 90, safety: 60, tempZone: "상온", workType: "피킹", unitQty: 24, boxQty: 1, cbm: 0.04, replenished: false },
+  { id: "i8", sku: "FOOD-4002", name: "생수 2L 6팩", category: "식품", location: "D-01-02", unit: "팩", qty: 25, safety: 40, tempZone: "냉장", workType: "피킹", unitQty: 1, boxQty: 6, cbm: 0.07, replenished: false },
+  { id: "i9", sku: "PACK-5001", name: "골판지 박스(중)", category: "포장자재", location: "E-01-01", unit: "개", qty: 300, safety: 100, tempZone: "상온", workType: "낱개출고", unitQty: 1, boxQty: 1, cbm: 0.09, replenished: false },
+  { id: "i10", sku: "PACK-5002", name: "에어캡 롤", category: "포장자재", location: "E-01-02", unit: "롤", qty: 45, safety: 30, tempZone: "냉동", workType: "피킹", unitQty: 1, boxQty: 4, cbm: 0.1, replenished: false },
 ];
 
 const seedTx = (items) => {
@@ -254,6 +368,74 @@ function todayStr() {
 function fmtDate(d) {
   const [y, m, day] = d.split("-");
   return `${y}.${m}.${day}`;
+}
+function genOrderNo() {
+  return `ORD-${Date.now().toString(36).toUpperCase().slice(-6)}`;
+}
+function genDocNo() {
+  return `PICK-${Date.now().toString(36).toUpperCase().slice(-7)}`;
+}
+
+const STORE_NAMES = ["강남관할센터", "분당관할센터", "일산관할센터", "수원관할센터", "인천관할센터"];
+const ORDER_TYPES = ["정기발주", "긴급발주"];
+const COURSE_NAMES = ["A", "B", "S"];
+
+function seedStores() {
+  return STORE_NAMES.map((name, i) => ({ id: `st${i + 1}`, name, vehicleId: i < 2 ? `v${i + 1}` : null }));
+}
+function seedVehicles() {
+  return [
+    { id: "v1", name: "1호차 (냉장탑차)" },
+    { id: "v2", name: "2호차 (윙바디)" },
+    { id: "v3", name: "3호차 (냉동탑차)" },
+  ];
+}
+function seedCourses() {
+  return [
+    { id: "c1", name: "A", vehicleId: "v1", round: 1 },
+    { id: "c2", name: "B", vehicleId: "v2", round: 1 },
+  ];
+}
+function seedCells() {
+  return [
+    { id: "cl1", area: "AA", startFloor: 1, endFloor: 4, cellCount: 10, pickZoneDefault: true },
+    { id: "cl2", area: "BB", startFloor: 1, endFloor: 3, cellCount: 8, pickZoneDefault: true },
+  ];
+}
+function seedPickingDocs() {
+  return [];
+}
+
+function seedOrders() {
+  return [
+    {
+      id: "o1",
+      orderNo: "ORD-A10293",
+      customer: "강남관할센터",
+      channel: "정기발주",
+      createdAt: todayStr(),
+      status: "NEW",
+      pickDocNo: null,
+      pmsStatus: null,
+      invoiceIssued: false,
+      lines: [
+        { sku: "ELEC-1001", name: "무선 이어폰", qty: 2, changedQty: 2, allocatedQty: 0, allocStatus: "미할당", location: "A-01-01", unit: "개", picked: false },
+        { sku: "PACK-5001", name: "골판지 박스(중)", qty: 1, changedQty: 1, allocatedQty: 0, allocStatus: "미할당", location: "E-01-01", unit: "개", picked: false },
+      ],
+    },
+    {
+      id: "o2",
+      orderNo: "ORD-A10294",
+      customer: "분당관할센터",
+      channel: "긴급발주",
+      createdAt: todayStr(),
+      status: "NEW",
+      pickDocNo: null,
+      pmsStatus: null,
+      invoiceIssued: false,
+      lines: [{ sku: "FOOD-4002", name: "생수 2L 6팩", qty: 3, changedQty: 3, allocatedQty: 0, allocStatus: "미할당", location: "D-01-02", unit: "팩", picked: false }],
+    },
+  ];
 }
 
 function stockStatus(item) {
@@ -355,6 +537,12 @@ function WMSApp() {
   const [tab, setTab] = useState("dashboard");
   const [items, setItems] = useState([]);
   const [tx, setTx] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [cells, setCells] = useState([]);
+  const [pickingDocs, setPickingDocs] = useState([]);
   const [ready, setReady] = useState(false);
   const [saveErr, setSaveErr] = useState(false);
 
@@ -365,13 +553,31 @@ function WMSApp() {
         const parsed = JSON.parse(raw);
         setItems(parsed.items || seedItems());
         setTx(parsed.transactions || seedTx());
+        setOrders(parsed.orders || seedOrders());
+        setStores(parsed.stores || seedStores());
+        setVehicles(parsed.vehicles || seedVehicles());
+        setCourses(parsed.courses || seedCourses());
+        setCells(parsed.cells || seedCells());
+        setPickingDocs(parsed.pickingDocs || seedPickingDocs());
       } else {
         setItems(seedItems());
         setTx(seedTx());
+        setOrders(seedOrders());
+        setStores(seedStores());
+        setVehicles(seedVehicles());
+        setCourses(seedCourses());
+        setCells(seedCells());
+        setPickingDocs(seedPickingDocs());
       }
     } catch (e) {
       setItems(seedItems());
       setTx(seedTx());
+      setOrders(seedOrders());
+      setStores(seedStores());
+      setVehicles(seedVehicles());
+      setCourses(seedCourses());
+      setCells(seedCells());
+      setPickingDocs(seedPickingDocs());
     }
     setReady(true);
   }, []);
@@ -379,16 +585,19 @@ function WMSApp() {
   useEffect(() => {
     if (!ready) return;
     try {
-      localStorage.setItem("wms-data", JSON.stringify({ items, transactions: tx }));
+      localStorage.setItem("wms-data", JSON.stringify({ items, transactions: tx, orders, stores, vehicles, courses, cells, pickingDocs }));
       setSaveErr(false);
     } catch (e) {
       setSaveErr(true);
     }
-  }, [items, tx, ready]);
+  }, [items, tx, orders, stores, vehicles, courses, cells, pickingDocs, ready]);
 
   const lowStock = useMemo(() => items.filter((i) => i.qty < i.safety), [items]);
   const totalQty = useMemo(() => items.reduce((a, b) => a + b.qty, 0), [items]);
   const todayTx = useMemo(() => tx.filter((t) => t.date === todayStr()), [tx]);
+  const newOrderCount = useMemo(() => orders.filter((o) => o.status === "NEW").length, [orders]);
+  const allocatedCount = useMemo(() => orders.filter((o) => o.status === "ALLOCATED").length, [orders]);
+  const readyToShipCount = useMemo(() => orders.filter((o) => o.status === "PICK_CONFIRMED").length, [orders]);
 
   const applyInbound = useCallback((payload) => {
     setItems((prev) => {
@@ -407,6 +616,12 @@ function WMSApp() {
           unit: payload.unit,
           qty: payload.qty,
           safety: payload.safety || 10,
+          tempZone: payload.tempZone || "상온",
+          workType: payload.workType || "피킹",
+          unitQty: 1,
+          boxQty: 1,
+          cbm: 0.01,
+          replenished: false,
         },
       ];
     });
@@ -424,16 +639,234 @@ function WMSApp() {
     ]);
   }, []);
 
-  const navItems = [
-    { key: "dashboard", label: "대시보드", icon: LayoutDashboard },
-    { key: "inventory", label: "재고현황", icon: Boxes },
-    { key: "3d", label: "3D 로케이션", icon: Box3dIcon },
-    { key: "inbound", label: "입고등록", icon: ArrowDownToLine },
-    { key: "outbound", label: "출고등록", icon: ArrowUpFromLine },
-    { key: "history", label: "입출고이력", icon: History },
+  const addOrder = useCallback((order) => {
+    setOrders((prev) => [order, ...prev]);
+  }, []);
+
+  const updateChangedQty = useCallback((orderId, sku, value) => {
+    setOrders((prev) =>
+      prev.map((o) => (o.id === orderId ? { ...o, lines: o.lines.map((l) => (l.sku === sku ? { ...l, changedQty: value } : l)) } : o))
+    );
+  }, []);
+
+  // II. 상품할당
+  const allocateOrder = useCallback(
+    (orderId) => {
+      setOrders((prev) =>
+        prev.map((o) => {
+          if (o.id !== orderId) return o;
+          const lines = o.lines.map((l) => {
+            const stockItem = items.find((i) => i.sku === l.sku);
+            const stock = stockItem ? stockItem.qty : 0;
+            const allocatedQty = Math.max(0, Math.min(l.changedQty ?? l.qty, stock));
+            const allocStatus = allocatedQty === 0 ? "미할당" : allocatedQty < (l.changedQty ?? l.qty) ? "부분할당" : "할당";
+            return { ...l, allocatedQty, allocStatus };
+          });
+          return { ...o, status: "ALLOCATED", lines };
+        })
+      );
+    },
+    [items]
+  );
+
+  // III. 할당리스트 - 할당취소
+  const cancelAllocationLine = useCallback((orderId, sku) => {
+    setOrders((prev) =>
+      prev.map((o) => {
+        if (o.id !== orderId) return o;
+        const lines = o.lines.map((l) => (l.sku === sku ? { ...l, allocatedQty: 0, allocStatus: "미할당" } : l));
+        const anyAllocated = lines.some((l) => l.allocatedQty > 0);
+        return { ...o, lines, status: anyAllocated ? o.status : "NEW" };
+      })
+    );
+  }, []);
+
+  // IV. 보충지시
+  const toggleReplenish = useCallback((sku) => {
+    setItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, replenished: !i.replenished } : i)));
+  }, []);
+
+  // V. 피킹리스트
+  const togglePicked = useCallback((orderId, sku) => {
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId ? { ...o, lines: o.lines.map((l) => (l.sku === sku ? { ...l, picked: !l.picked } : l)) } : o
+      )
+    );
+  }, []);
+
+  const confirmPicking = useCallback(
+    (orderId) => {
+      const order = orders.find((o) => o.id === orderId);
+      if (!order) return;
+      const docNo = genDocNo();
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "PICK_CONFIRMED", pickDocNo: docNo } : o)));
+      setPickingDocs((pd) => [
+        { docNo, date: todayStr(), orderNo: order.orderNo, customer: order.customer, status: "확정", reprints: 0 },
+        ...pd,
+      ]);
+    },
+    [orders]
+  );
+
+  const cancelPickingConfirm = useCallback(
+    (orderId) => {
+      const order = orders.find((o) => o.id === orderId);
+      if (!order) return;
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "ALLOCATED", pickDocNo: null } : o)));
+      setPickingDocs((pd) => pd.map((d) => (d.docNo === order.pickDocNo ? { ...d, status: "취소" } : d)));
+    },
+    [orders]
+  );
+
+  // VI. 피킹재발행
+  const reissueDoc = useCallback((docNo) => {
+    setPickingDocs((prev) => prev.map((d) => (d.docNo === docNo ? { ...d, reprints: d.reprints + 1 } : d)));
+  }, []);
+
+  // VII. 출고처리
+  const shipOrder = useCallback(
+    (orderId) => {
+      const order = orders.find((o) => o.id === orderId);
+      if (!order) return;
+      const date = todayStr();
+      setItems((prev) =>
+        prev.map((i) => {
+          const line = order.lines.find((l) => l.sku === i.sku);
+          return line ? { ...i, qty: i.qty - line.allocatedQty } : i;
+        })
+      );
+      setTx((prev) => [
+        ...order.lines
+          .filter((l) => l.allocatedQty > 0)
+          .map((l) => ({
+            id: uid(),
+            type: "OUT",
+            sku: l.sku,
+            name: l.name,
+            qty: l.allocatedQty,
+            location: l.location,
+            date,
+            memo: `발주 ${order.orderNo} 출고 (거래명세서 발행)`,
+          })),
+        ...prev,
+      ]);
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "SHIPPED", invoiceIssued: true, pmsStatus: "대기" } : o)));
+    },
+    [orders]
+  );
+
+  const cancelShip = useCallback(
+    (orderId) => {
+      const order = orders.find((o) => o.id === orderId);
+      if (!order || order.pmsStatus === "전송완료") return;
+      const date = todayStr();
+      setItems((prev) =>
+        prev.map((i) => {
+          const line = order.lines.find((l) => l.sku === i.sku);
+          return line ? { ...i, qty: i.qty + line.allocatedQty } : i;
+        })
+      );
+      setTx((prev) => [
+        ...order.lines
+          .filter((l) => l.allocatedQty > 0)
+          .map((l) => ({
+            id: uid(),
+            type: "IN",
+            sku: l.sku,
+            name: l.name,
+            qty: l.allocatedQty,
+            location: l.location,
+            date,
+            memo: `발주 ${order.orderNo} 출고취소 재입고`,
+          })),
+        ...prev,
+      ]);
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "PICK_CONFIRMED", invoiceIssued: false, pmsStatus: null } : o)));
+    },
+    [orders]
+  );
+
+  const confirmPms = useCallback((orderId) => {
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "DONE", pmsStatus: "전송완료" } : o)));
+  }, []);
+
+  // IX. 차량/매장 매핑
+  const addVehicle = useCallback((name) => {
+    setVehicles((prev) => [...prev, { id: uid(), name }]);
+  }, []);
+  const mapStoreVehicle = useCallback((storeId, vehicleId) => {
+    setStores((prev) => prev.map((s) => (s.id === storeId ? { ...s, vehicleId: vehicleId || null } : s)));
+  }, []);
+
+  // X. 상품마스터
+  const updateItemMaster = useCallback((sku, fields) => {
+    setItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, ...fields } : i)));
+  }, []);
+
+  // XI. 창고CELL
+  const addCell = useCallback((cell) => {
+    setCells((prev) => [...prev, { id: uid(), ...cell }]);
+  }, []);
+  const deleteCell = useCallback((id) => {
+    setCells((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  // XII. 배송코스차수
+  const addCourse = useCallback((course) => {
+    setCourses((prev) => [...prev, { id: uid(), ...course }]);
+  }, []);
+  const deleteCourse = useCallback((id) => {
+    setCourses((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  const navGroups = [
+    { label: "개요", items: [{ key: "dashboard", label: "대시보드", icon: LayoutDashboard }] },
+    {
+      label: "재고",
+      items: [
+        { key: "inventory", label: "재고현황", icon: Boxes },
+        { key: "3d", label: "3D 로케이션", icon: Box3dIcon },
+        { key: "inbound", label: "입고등록", icon: ArrowDownToLine },
+        { key: "outbound", label: "출고등록", icon: ArrowUpFromLine },
+        { key: "history", label: "입출고이력", icon: History },
+      ],
+    },
+    {
+      label: "I~III  주문 · 할당",
+      items: [
+        { key: "orderinfo", label: "I. 주문정보", icon: ClipboardList },
+        { key: "allocation", label: "II. 상품할당", icon: CheckSquare, badgeKey: "new" },
+        { key: "alloclist", label: "III. 할당리스트", icon: ListChecks },
+      ],
+    },
+    {
+      label: "IV~VI  보충 · 피킹",
+      items: [
+        { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
+        { key: "pickinglist", label: "V. 피킹리스트", icon: ListOrdered, badgeKey: "alloc" },
+        { key: "pickingreissue", label: "VI. 피킹재발행", icon: Printer },
+      ],
+    },
+    {
+      label: "VII  출고",
+      items: [{ key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" }],
+    },
+    {
+      label: "VIII~XII  기준정보",
+      items: [
+        { key: "masdatacheck", label: "VIII. 기준정보체크", icon: ShieldCheck },
+        { key: "vehiclemap", label: "IX. 차량/매장 매핑", icon: MapPinned },
+        { key: "productmaster", label: "X. 상품마스터", icon: Tag },
+        { key: "cell", label: "XI. 창고CELL", icon: Grid3x3 },
+        { key: "course", label: "XII. 배송코스차수", icon: Route },
+      ],
+    },
   ];
+  const badgeCount = { new: newOrderCount, alloc: allocatedCount, ship: readyToShipCount };
 
   if (!ready) {
+
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400, color: T.inkSoft, gap: 8 }}>
         <Loader2 size={18} className="spin" />
@@ -469,11 +902,14 @@ function WMSApp() {
         td { padding: 12px; font-size: 13.5px; border-bottom: 1px solid #EEECE3; vertical-align: middle; }
         .table-wrap { overflow-x: auto !important; overflow-y: hidden; -webkit-overflow-scrolling: touch; max-width: 100%; }
         input, select, textarea { max-width: 100%; }
+        .navgroup-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #7C838B; padding: 14px 12px 6px; }
         @media (max-width: 720px) {
           .wms-shell { flex-direction: column !important; }
           .wms-sidebar { width: 100% !important; flex-direction: row !important; align-items: center !important; gap: 4px !important; padding: 8px !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
           .wms-brand { display: none !important; }
           .wms-footer { display: none !important; }
+          .navgroup { display: flex !important; flex-direction: row !important; }
+          .navgroup-label { display: none !important; }
           .navbtn { flex: 0 0 auto !important; white-space: nowrap !important; padding: 8px 12px !important; font-size: 12.5px !important; }
           .wms-main { padding: 14px !important; }
           .field-row { flex-direction: column !important; gap: 12px !important; }
@@ -486,50 +922,69 @@ function WMSApp() {
       `}</style>
 
       {/* sidebar */}
-      <div className="wms-sidebar" style={{ width: 196, background: T.steel, color: "#fff", padding: "20px 12px", display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
-        <div className="wms-brand" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px 20px" }}>
+      <div className="wms-sidebar" style={{ width: 236, background: T.steel, color: "#fff", padding: "20px 10px", display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, overflowY: "auto" }}>
+        <div className="wms-brand" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px 16px" }}>
           <div style={{ width: 30, height: 30, borderRadius: 6, background: T.amber, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Package size={17} color={T.steel} strokeWidth={2.5} />
           </div>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.2 }}>재고관리센터</div>
-            <div style={{ fontSize: 10.5, color: "#A9AFB6" }}>WMS · INVENTORY</div>
+            <div style={{ fontSize: 10.5, color: "#A9AFB6" }}>WMS · HUB CENTER</div>
           </div>
         </div>
-        {navItems.map((n) => {
-          const Icon = n.icon;
-          const active = tab === n.key;
-          return (
-            <button
-              key={n.key}
-              className="navbtn"
-              onClick={() => setTab(n.key)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 12px",
-                borderRadius: 6,
-                border: "none",
-                cursor: "pointer",
-                background: active ? T.amber : "transparent",
-                color: active ? T.steel : "#D7DBDE",
-                fontWeight: active ? 700 : 500,
-                fontSize: 13.5,
-                textAlign: "left",
-                fontFamily: "inherit",
-              }}
-            >
-              <Icon size={16} strokeWidth={2.2} />
-              <span className="navlabel">{n.label}</span>
-              {n.key === "dashboard" && lowStock.length > 0 && (
-                <span style={{ marginLeft: "auto", fontSize: 10.5, background: active ? T.steel : T.danger, color: "#fff", borderRadius: 999, padding: "1px 6px", fontFamily: "'JetBrains Mono', monospace" }}>
-                  {lowStock.length}
-                </span>
-              )}
-            </button>
-          );
-        })}
+
+        {navGroups.map((g) => (
+          <div className="navgroup" key={g.label}>
+            <div className="navgroup-label">{g.label}</div>
+            {g.items.map((n) => {
+              const Icon = n.icon;
+              const active = tab === n.key;
+              const count = n.badgeKey ? badgeCount[n.badgeKey] : n.key === "dashboard" ? lowStock.length : 0;
+              return (
+                <button
+                  key={n.key}
+                  className="navbtn"
+                  onClick={() => setTab(n.key)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    padding: "9px 12px",
+                    borderRadius: 6,
+                    border: "none",
+                    cursor: "pointer",
+                    background: active ? T.amber : "transparent",
+                    color: active ? T.steel : "#D7DBDE",
+                    fontWeight: active ? 700 : 500,
+                    fontSize: 12.8,
+                    textAlign: "left",
+                    fontFamily: "inherit",
+                    width: "100%",
+                  }}
+                >
+                  <Icon size={15} strokeWidth={2.2} />
+                  <span className="navlabel">{n.label}</span>
+                  {count > 0 && (
+                    <span
+                      style={{
+                        marginLeft: "auto",
+                        fontSize: 10.5,
+                        background: active ? T.steel : n.key === "dashboard" ? T.danger : T.amber,
+                        color: active ? "#fff" : n.key === "dashboard" ? "#fff" : T.steel,
+                        borderRadius: 999,
+                        padding: "1px 6px",
+                        fontFamily: "'JetBrains Mono', monospace",
+                      }}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+
         <div className="wms-footer" style={{ marginTop: "auto", padding: "10px", fontSize: 11, color: "#8B9198", borderTop: "1px solid #3E4750" }}>
           {saveErr ? "⚠ 저장 실패 — 재시도 중" : "자동 저장됨"}
         </div>
@@ -543,6 +998,28 @@ function WMSApp() {
         {tab === "inbound" && <Inbound items={items} onSubmit={applyInbound} />}
         {tab === "outbound" && <Outbound items={items} onSubmit={applyOutbound} />}
         {tab === "history" && <HistoryView tx={tx} />}
+
+        {tab === "orderinfo" && <OrderInfo items={items} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} />}
+        {tab === "allocation" && <Allocation items={items} orders={orders} onAllocate={allocateOrder} />}
+        {tab === "alloclist" && <AllocationList orders={orders} onCancel={cancelAllocationLine} />}
+
+        {tab === "replenish" && <Replenishment items={items} onToggle={toggleReplenish} />}
+        {tab === "pickinglist" && (
+          <PickingList orders={orders} items={items} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} />
+        )}
+        {tab === "pickingreissue" && <PickingReissue docs={pickingDocs} onReissue={reissueDoc} />}
+
+        {tab === "shipping" && (
+          <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
+        )}
+
+        {tab === "masdatacheck" && <MasterDataCheck items={items} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
+        {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
+        {tab === "productmaster" && <ProductMaster items={items} onSave={updateItemMaster} />}
+        {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
+        {tab === "course" && (
+          <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
+        )}
       </div>
     </div>
   );
@@ -691,7 +1168,7 @@ function Inventory({ items }) {
         </select>
       </div>
 
-      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
             <tr>
@@ -1054,10 +1531,9 @@ function ThreeDView({ items }) {
     <div>
       <PageHeader title="3D 로케이션 뷰" sub="드래그로 회전 · 스크롤로 확대 · 박스 클릭으로 상세 정보 확인" />
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div style={{ flex: "2 1 460px", minWidth: 280 }}>
+        <div style={{ flex: "2 1 460px", minWidth: 320 }}>
           <div
             ref={mountRef}
-            className="wms-3d-mount"
             style={{ height: 440, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, position: "relative", cursor: "grab" }}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
@@ -1156,6 +1632,1249 @@ function ThreeDView({ items }) {
   );
 }
 
+/* ---------- shared: order status ---------- */
+const ORDER_STATUS = {
+  NEW: { label: "신규", color: "#8A5A0B", bg: "#FCF1DD" },
+  ALLOCATED: { label: "할당됨", color: "#2B3239", bg: "#E9ECEF" },
+  PICK_CONFIRMED: { label: "피킹확정", color: "#0E4F3F", bg: "#E7F4EF" },
+  SHIPPED: { label: "출고완료", color: "#7A331A", bg: "#F7E9E2" },
+  DONE: { label: "PMS전송완료", color: "#0E4F3F", bg: "#E7F4EF" },
+};
+function OrderStatusPill({ status }) {
+  const s = ORDER_STATUS[status] || ORDER_STATUS.NEW;
+  return (
+    <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 9px", borderRadius: 999, color: s.color, background: s.bg, whiteSpace: "nowrap" }}>
+      {s.label}
+    </span>
+  );
+}
+const cardStyle = { background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20 };
+const smallBtnStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  border: `1px solid ${T.border}`,
+  background: "#fff",
+  borderRadius: 6,
+  padding: "8px 13px",
+  fontSize: 12.5,
+  fontWeight: 600,
+  cursor: "pointer",
+  color: T.ink,
+  fontFamily: "inherit",
+};
+const primaryBtnStyle = {
+  background: T.steel,
+  color: "#fff",
+  border: "none",
+  borderRadius: 6,
+  padding: "9px 16px",
+  fontWeight: 700,
+  fontSize: 13,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  fontFamily: "inherit",
+};
+
+/* ================= I. 주문정보 ================= */
+function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
+  const [showForm, setShowForm] = useState(false);
+  const [customer, setCustomer] = useState(STORE_NAMES[0]);
+  const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
+  const [draftLines, setDraftLines] = useState([{ sku: items[0]?.sku || "", qty: "" }]);
+  const [formErr, setFormErr] = useState("");
+  const [selectedId, setSelectedId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("전체");
+
+  const selected = orders.find((o) => o.id === selectedId) || null;
+  const filtered = orders.filter((o) => statusFilter === "전체" || o.status === statusFilter);
+
+  function randomOrder() {
+    const inStock = items.filter((i) => i.qty > 0);
+    if (inStock.length === 0) return;
+    const lineCount = Math.min(inStock.length, 1 + Math.floor(Math.random() * 3));
+    const shuffled = [...inStock].sort(() => Math.random() - 0.5).slice(0, lineCount);
+    const lines = shuffled.map((i) => {
+      const qty = Math.min(i.qty, 1 + Math.floor(Math.random() * 3));
+      return { sku: i.sku, name: i.name, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: i.location, unit: i.unit, picked: false };
+    });
+    onAdd({
+      id: uid(),
+      orderNo: genOrderNo(),
+      customer: STORE_NAMES[Math.floor(Math.random() * STORE_NAMES.length)],
+      channel: ORDER_TYPES[Math.floor(Math.random() * ORDER_TYPES.length)],
+      createdAt: todayStr(),
+      status: "NEW",
+      pickDocNo: null,
+      pmsStatus: null,
+      invoiceIssued: false,
+      lines,
+    });
+  }
+
+  function addLine() {
+    setDraftLines((prev) => [...prev, { sku: items[0]?.sku || "", qty: "" }]);
+  }
+  function removeLine(idx) {
+    setDraftLines((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function updateLine(idx, field, val) {
+    setDraftLines((prev) => prev.map((l, i) => (i === idx ? { ...l, [field]: val } : l)));
+  }
+  function submitManual() {
+    setFormErr("");
+    const lines = draftLines
+      .filter((l) => Number(l.qty) > 0)
+      .map((l) => {
+        const it = items.find((i) => i.sku === l.sku);
+        const qty = Number(l.qty);
+        return { sku: l.sku, name: it ? it.name : l.sku, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: it ? it.location : "-", unit: it ? it.unit : "", picked: false };
+      });
+    if (lines.length === 0) return setFormErr("수량이 1 이상인 품목을 하나 이상 추가해주세요.");
+    onAdd({ id: uid(), orderNo: genOrderNo(), customer, channel: orderType, createdAt: todayStr(), status: "NEW", pickDocNo: null, pmsStatus: null, invoiceIssued: false, lines });
+    setDraftLines([{ sku: items[0]?.sku || "", qty: "" }]);
+    setShowForm(false);
+  }
+
+  if (selected) {
+    return (
+      <div>
+        <button onClick={() => setSelectedId(null)} className="ghost-btn" style={{ ...smallBtnStyle, marginBottom: 14 }}>
+          <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> 목록으로
+        </button>
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 16 }}>{selected.orderNo}</span>
+                <OrderStatusPill status={selected.status} />
+              </div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 4 }}>
+                {selected.customer} · {selected.channel} · 발주일 {fmtDate(selected.createdAt)}
+              </div>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>품목명</th>
+                  <th>주문수량</th>
+                  <th>변경단위수량</th>
+                  <th>할당수량</th>
+                  <th>할당상태</th>
+                  <th>로케이션</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selected.lines.map((l) => (
+                  <tr key={l.sku}>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{l.sku}</td>
+                    <td style={{ fontWeight: 600 }}>{l.name}</td>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{l.qty}</td>
+                    <td>
+                      <input
+                        type="number"
+                        value={l.changedQty}
+                        onChange={(e) => onUpdateChangedQty(selected.id, l.sku, Number(e.target.value))}
+                        disabled={selected.status !== "NEW"}
+                        style={{ ...inputStyle, width: 80, padding: "6px 8px" }}
+                      />
+                    </td>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{l.allocatedQty}</td>
+                    <td>{l.allocStatus}</td>
+                    <td>
+                      <LocationTag loc={l.location} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 12 }}>
+            * 변경단위수량은 거래명세서 발행 시 명시되는 수량입니다. 신규 상태에서만 수정할 수 있습니다.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <PageHeader title="I. 주문정보" sub="관할센터에서 접수된 발주 데이터를 조회·관리합니다" />
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 13, color: T.inkSoft }}>관할센터 발주가 들어오면 여기서 접수돼요. 데모에서는 아래 버튼으로 시뮬레이션합니다.</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={randomOrder} className="ghost-btn" style={smallBtnStyle}>
+              <ClipboardList size={14} /> 샘플 발주 가져오기
+            </button>
+            <button onClick={() => setShowForm((s) => !s)} className="ghost-btn" style={smallBtnStyle}>
+              <Plus size={14} /> 직접 입력
+            </button>
+          </div>
+        </div>
+        {showForm && (
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="field-row" style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Field label="발주처 (관할센터)">
+                  <select style={inputStyle} value={customer} onChange={(e) => setCustomer(e.target.value)}>
+                    {STORE_NAMES.map((c) => (
+                      <option key={c}>{c}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field label="발주 유형">
+                  <select style={inputStyle} value={orderType} onChange={(e) => setOrderType(e.target.value)}>
+                    {ORDER_TYPES.map((t) => (
+                      <option key={t}>{t}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+            </div>
+            {draftLines.map((l, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                <div style={{ flex: 1 }}>
+                  <Field label="품목">
+                    <select style={inputStyle} value={l.sku} onChange={(e) => updateLine(idx, "sku", e.target.value)}>
+                      {items.map((i) => (
+                        <option key={i.id} value={i.sku}>
+                          {i.sku} · {i.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <Field label="수량">
+                  <input style={{ ...inputStyle, width: 90 }} type="number" value={l.qty} onChange={(e) => updateLine(idx, "qty", e.target.value)} placeholder="0" />
+                </Field>
+                {draftLines.length > 1 && (
+                  <button onClick={() => removeLine(idx)} style={{ border: "none", background: "transparent", cursor: "pointer", color: T.danger, padding: "9px" }}>
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button onClick={addLine} style={{ alignSelf: "flex-start", ...smallBtnStyle }}>
+              <Plus size={13} /> 품목 줄 추가
+            </button>
+            {formErr && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{formErr}</div>}
+            <button onClick={submitManual} className="primary-btn" style={{ ...primaryBtnStyle, alignSelf: "flex-start" }}>
+              발주 등록
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        {["전체", "NEW", "ALLOCATED", "PICK_CONFIRMED", "SHIPPED", "DONE"].map((f) => (
+          <button
+            key={f}
+            onClick={() => setStatusFilter(f)}
+            style={{
+              border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              background: statusFilter === f ? T.steel : "#EAE7DC", color: statusFilter === f ? "#fff" : T.inkSoft,
+            }}
+          >
+            {f === "전체" ? "전체" : ORDER_STATUS[f].label}
+          </button>
+        ))}
+      </div>
+
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>발주번호</th>
+              <th>발주처</th>
+              <th>유형</th>
+              <th>상태</th>
+              <th>품목수</th>
+              <th>총수량</th>
+              <th>발주일</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyRow text="해당 발주가 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              filtered.map((o) => (
+                <tr key={o.id} className="rowhover" style={{ cursor: "pointer" }} onClick={() => setSelectedId(o.id)}>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{o.orderNo}</td>
+                  <td>{o.customer}</td>
+                  <td>{o.channel}</td>
+                  <td>
+                    <OrderStatusPill status={o.status} />
+                  </td>
+                  <td>{o.lines.length}종</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{o.lines.reduce((a, l) => a + l.qty, 0)}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5 }}>{fmtDate(o.createdAt)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= II. 상품할당 ================= */
+function Allocation({ items, orders, onAllocate }) {
+  const newOrders = orders.filter((o) => o.status === "NEW");
+  const stockOf = (sku) => items.find((i) => i.sku === sku)?.qty ?? 0;
+
+  return (
+    <div>
+      <PageHeader title="II. 상품할당" sub="신규 발주에 대해 재고를 확인하고 할당수량을 계산합니다" />
+      {newOrders.length > 1 && (
+        <div style={{ marginBottom: 14 }}>
+          <button onClick={() => newOrders.forEach((o) => onAllocate(o.id))} className="ghost-btn" style={smallBtnStyle}>
+            <CheckSquare size={14} /> 신규 발주 전체 일괄할당 ({newOrders.length}건)
+          </button>
+        </div>
+      )}
+      {newOrders.length === 0 ? (
+        <div style={cardStyle}>
+          <EmptyRow text="할당 대기 중인 신규 발주가 없습니다." />
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {newOrders.map((o) => {
+            const totalReq = o.lines.reduce((a, l) => a + (l.changedQty ?? l.qty), 0);
+            const totalAvail = o.lines.reduce((a, l) => a + Math.min(l.changedQty ?? l.qty, stockOf(l.sku)), 0);
+            return (
+              <div key={o.id} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14.5 }}>{o.orderNo}</span>
+                      <OrderStatusPill status={o.status} />
+                    </div>
+                    <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4 }}>{o.customer} · {o.channel}</div>
+                  </div>
+                  <button onClick={() => onAllocate(o.id)} className="primary-btn" style={primaryBtnStyle}>
+                    <CheckSquare size={15} /> 할당
+                  </button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>품목명</th>
+                        <th>SKU</th>
+                        <th>요청수량</th>
+                        <th>현재재고</th>
+                        <th>예상 할당수량</th>
+                        <th>예상 미할당량</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {o.lines.map((l) => {
+                        const req = l.changedQty ?? l.qty;
+                        const stock = stockOf(l.sku);
+                        const alloc = Math.min(req, stock);
+                        const unalloc = req - alloc;
+                        return (
+                          <tr key={l.sku}>
+                            <td style={{ fontWeight: 600 }}>{l.name}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{l.sku}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{req}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{stock}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: T.tealDeep }}>{alloc}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: unalloc > 0 ? T.danger : T.inkSoft }}>{unalloc}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10 }}>
+                  합계: 요청 {totalReq} / 할당 가능 {totalAvail} {totalAvail < totalReq && <span style={{ color: T.danger, fontWeight: 700 }}> · 재고 부족으로 부분할당 예상</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= III. 할당리스트 ================= */
+function AllocationList({ orders, onCancel }) {
+  const [selected, setSelected] = useState({});
+  const rows = [];
+  orders.forEach((o) => {
+    o.lines.forEach((l) => {
+      if (l.allocatedQty > 0) rows.push({ orderId: o.id, orderNo: o.orderNo, customer: o.customer, status: o.status, ...l });
+    });
+  });
+  const key = (r) => `${r.orderId}__${r.sku}`;
+  const anySelected = Object.values(selected).some(Boolean);
+
+  function cancelSelected() {
+    rows.forEach((r) => {
+      if (selected[key(r)]) onCancel(r.orderId, r.sku);
+    });
+    setSelected({});
+  }
+
+  return (
+    <div>
+      <PageHeader title="III. 할당리스트" sub="할당된 품목을 확인하고 필요하면 할당을 취소합니다" />
+      {anySelected && (
+        <div style={{ marginBottom: 12 }}>
+          <button onClick={cancelSelected} className="ghost-btn" style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}>
+            <X size={14} /> 선택 항목 할당취소
+          </button>
+        </div>
+      )}
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>발주번호</th>
+              <th>발주처</th>
+              <th>SKU</th>
+              <th>품목명</th>
+              <th>할당수량</th>
+              <th>할당상태</th>
+              <th>로케이션</th>
+              <th>발주상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={9}>
+                  <EmptyRow text="할당된 품목이 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={key(r)}>
+                  <td>
+                    <input type="checkbox" checked={!!selected[key(r)]} onChange={(e) => setSelected((prev) => ({ ...prev, [key(r)]: e.target.checked }))} />
+                  </td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.orderNo}</td>
+                  <td>{r.customer}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{r.sku}</td>
+                  <td style={{ fontWeight: 600 }}>{r.name}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.allocatedQty}</td>
+                  <td>{r.allocStatus}</td>
+                  <td>
+                    <LocationTag loc={r.location} />
+                  </td>
+                  <td>
+                    <OrderStatusPill status={r.status} />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= IV. 보충지시 ================= */
+function Replenishment({ items, onToggle }) {
+  const [zone, setZone] = useState("전체");
+  const targets = items.filter((i) => (zone === "전체" || i.tempZone === zone) && i.qty < i.safety);
+
+  return (
+    <div>
+      <PageHeader title="IV. 보충지시" sub="온도구역별로 안전재고 미만 품목의 보충 지시를 관리합니다" />
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {["전체", ...TEMP_ZONES].map((z) => (
+          <button
+            key={z}
+            onClick={() => setZone(z)}
+            style={{
+              border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              background: zone === z ? T.steel : "#EAE7DC", color: zone === z ? "#fff" : T.inkSoft,
+            }}
+          >
+            {z}
+          </button>
+        ))}
+      </div>
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>품목명</th>
+              <th>SKU</th>
+              <th>온도구역</th>
+              <th>현재고 / 안전재고</th>
+              <th>로케이션</th>
+              <th>보충상태</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {targets.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyRow text="해당 조건에 보충 대상 품목이 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              targets.map((i) => (
+                <tr key={i.id}>
+                  <td style={{ fontWeight: 600 }}>{i.name}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
+                  <td>{i.tempZone}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.danger, fontWeight: 700 }}>
+                    {i.qty} / {i.safety} {i.unit}
+                  </td>
+                  <td>
+                    <LocationTag loc={i.location} />
+                  </td>
+                  <td>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 9px", borderRadius: 999, color: i.replenished ? T.tealDeep : T.amberDeep, background: i.replenished ? "#E7F4EF" : "#FCF1DD" }}>
+                      {i.replenished ? "보충완료" : "보충대기"}
+                    </span>
+                  </td>
+                  <td>
+                    <button onClick={() => onToggle(i.sku)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 11px" }}>
+                      {i.replenished ? "보충취소" : "보충"}
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= V. 피킹리스트 ================= */
+function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const relevant = orders.filter((o) => o.status === "ALLOCATED" || o.status === "PICK_CONFIRMED");
+  const selected = relevant.find((o) => o.id === selectedId) || null;
+
+  if (selected) {
+    const sortedLines = [...selected.lines]
+      .filter((l) => l.allocatedQty > 0)
+      .sort((a, b) => {
+        const pa = parseLocation(a.location), pb = parseLocation(b.location);
+        if (pa.zone !== pb.zone) return pa.zone.localeCompare(pb.zone);
+        if (pa.aisle !== pb.aisle) return pa.aisle - pb.aisle;
+        return pa.level - pb.level;
+      });
+    const allPicked = sortedLines.every((l) => l.picked);
+    const canConfirm = selected.status === "ALLOCATED" && allPicked && sortedLines.length > 0;
+
+    return (
+      <div>
+        <button onClick={() => setSelectedId(null)} className="ghost-btn" style={{ ...smallBtnStyle, marginBottom: 14 }}>
+          <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> 목록으로
+        </button>
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 16 }}>{selected.orderNo}</span>
+                <OrderStatusPill status={selected.status} />
+              </div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 4 }}>
+                {selected.customer} {selected.pickDocNo && <> · 지시서 {selected.pickDocNo}</>}
+              </div>
+            </div>
+            {selected.status === "ALLOCATED" ? (
+              <button onClick={() => canConfirm && onConfirm(selected.id)} disabled={!canConfirm} style={{ ...primaryBtnStyle, background: canConfirm ? T.teal : "#C7C2B4", cursor: canConfirm ? "pointer" : "not-allowed" }}>
+                <Check size={15} /> 확정
+              </button>
+            ) : (
+              <button onClick={() => onCancelConfirm(selected.id)} style={{ ...primaryBtnStyle, background: T.clay }}>
+                <RotateCcw size={15} /> 확정취소
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "16px 0 8px" }}>피킹 경로 순서 (구역 → 열 → 단 기준, 할당수량 기준)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {sortedLines.map((l) => (
+              <div key={l.sku} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                <input
+                  type="checkbox"
+                  checked={!!l.picked}
+                  disabled={selected.status !== "ALLOCATED"}
+                  onChange={() => onToggle(selected.id, l.sku)}
+                  style={{ width: 18, height: 18, cursor: selected.status === "ALLOCATED" ? "pointer" : "not-allowed" }}
+                />
+                <LocationTag loc={l.location} />
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, textDecoration: l.picked ? "line-through" : "none", color: l.picked ? T.inkSoft : T.ink }}>{l.name}</div>
+                  <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{l.sku}</div>
+                </div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14 }}>
+                  {l.allocatedQty} {l.unit}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <PageHeader title="V. 피킹리스트" sub="할당 완료된 발주에 대해 피킹지시를 확정합니다" />
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>발주번호</th>
+              <th>발주처</th>
+              <th>상태</th>
+              <th>지시서번호</th>
+              <th>품목수</th>
+            </tr>
+          </thead>
+          <tbody>
+            {relevant.length === 0 ? (
+              <tr>
+                <td colSpan={5}>
+                  <EmptyRow text="피킹 대상 발주가 없습니다. 먼저 상품할당을 진행하세요." />
+                </td>
+              </tr>
+            ) : (
+              relevant.map((o) => (
+                <tr key={o.id} className="rowhover" style={{ cursor: "pointer" }} onClick={() => setSelectedId(o.id)}>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{o.orderNo}</td>
+                  <td>{o.customer}</td>
+                  <td>
+                    <OrderStatusPill status={o.status} />
+                  </td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5 }}>{o.pickDocNo || "-"}</td>
+                  <td>{o.lines.filter((l) => l.allocatedQty > 0).length}종</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= VI. 피킹재발행 ================= */
+function PickingReissue({ docs, onReissue }) {
+  const [query, setQuery] = useState("");
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const confirmedDocs = docs.filter((d) => d.status === "확정");
+  const filtered = confirmedDocs.filter((d) => !query || d.docNo.toLowerCase().includes(query.toLowerCase()) || d.orderNo.toLowerCase().includes(query.toLowerCase()));
+  const selected = confirmedDocs.find((d) => d.docNo === selectedDoc) || null;
+
+  return (
+    <div>
+      <PageHeader title="VI. 피킹재발행" sub="확정된 피킹지시서 문서번호로 조회 후 재발행합니다" />
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 320px" }}>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
+            <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="지시서 문서번호 또는 발주번호 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+            {filtered.length === 0 ? (
+              <EmptyRow text="확정된 피킹지시서가 없습니다." />
+            ) : (
+              filtered.map((d) => (
+                <button
+                  key={d.docNo}
+                  onClick={() => setSelectedDoc(d.docNo)}
+                  className="rowhover"
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "12px 14px", border: "none", background: selectedDoc === d.docNo ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{d.docNo}</div>
+                  <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 2 }}>
+                    {d.orderNo} · {d.customer} · {fmtDate(d.date)}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+        <div style={{ flex: "1 1 300px" }}>
+          <div style={cardStyle}>
+            {!selected ? (
+              <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽 목록에서 지시서를 선택하세요.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 16 }}>{selected.docNo}</div>
+                <div style={{ fontSize: 13, color: T.inkSoft }}>발주번호: {selected.orderNo}</div>
+                <div style={{ fontSize: 13, color: T.inkSoft }}>발주처: {selected.customer}</div>
+                <div style={{ fontSize: 13, color: T.inkSoft }}>발행일: {fmtDate(selected.date)}</div>
+                <div style={{ fontSize: 13, color: T.inkSoft }}>재발행 횟수: {selected.reprints}회</div>
+                <button onClick={() => onReissue(selected.docNo)} className="primary-btn" style={{ ...primaryBtnStyle, marginTop: 6, alignSelf: "flex-start" }}>
+                  <Printer size={15} /> 재발행
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= VII. 출고처리 ================= */
+function Shipping({ orders, stores, onShip, onCancelShip, onConfirmPms }) {
+  const [storeFilter, setStoreFilter] = useState("전체");
+  const [checked, setChecked] = useState({});
+  const [expanded, setExpanded] = useState(null);
+  const relevant = orders.filter((o) => ["PICK_CONFIRMED", "SHIPPED", "DONE"].includes(o.status) && (storeFilter === "전체" || o.customer === storeFilter));
+  const anyChecked = Object.values(checked).some(Boolean);
+
+  function shipSelected() {
+    orders.forEach((o) => {
+      if (checked[o.id] && o.status === "PICK_CONFIRMED") onShip(o.id);
+    });
+    setChecked({});
+  }
+
+  return (
+    <div>
+      <PageHeader title="VII. 출고처리" sub="피킹 확정된 발주를 매장(관할센터)별로 출고 처리합니다" />
+      <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <select style={{ ...inputStyle, width: 200 }} value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)}>
+          <option>전체</option>
+          {stores.map((s) => (
+            <option key={s.id}>{s.name}</option>
+          ))}
+        </select>
+        {anyChecked && (
+          <button onClick={shipSelected} className="primary-btn" style={primaryBtnStyle}>
+            <Truck size={15} /> 선택 항목 출고처리
+          </button>
+        )}
+      </div>
+
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>발주번호</th>
+              <th>발주처</th>
+              <th>상태</th>
+              <th>PMS 전송</th>
+              <th>거래명세서</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {relevant.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyRow text="출고 대상 발주가 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              relevant.map((o) => (
+                <React.Fragment key={o.id}>
+                  <tr>
+                    <td>
+                      {o.status === "PICK_CONFIRMED" && (
+                        <input type="checkbox" checked={!!checked[o.id]} onChange={(e) => setChecked((prev) => ({ ...prev, [o.id]: e.target.checked }))} />
+                      )}
+                    </td>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{o.orderNo}</td>
+                    <td>{o.customer}</td>
+                    <td>
+                      <OrderStatusPill status={o.status} />
+                    </td>
+                    <td>{o.pmsStatus || "-"}</td>
+                    <td>{o.invoiceIssued ? "발행됨" : "-"}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {o.invoiceIssued && (
+                          <button onClick={() => setExpanded(expanded === o.id ? null : o.id)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
+                            거래명세서
+                          </button>
+                        )}
+                        {o.status === "SHIPPED" && (
+                          <>
+                            <button onClick={() => onConfirmPms(o.id)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px", color: T.tealDeep }}>
+                              출고확정(PMS전송)
+                            </button>
+                            <button onClick={() => onCancelShip(o.id)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px", color: T.danger }}>
+                              출고취소
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded === o.id && (
+                    <tr>
+                      <td colSpan={7} style={{ background: T.bg }}>
+                        <div style={{ padding: "10px 6px" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>거래명세서 - {o.orderNo}</div>
+                          {o.lines
+                            .filter((l) => l.allocatedQty > 0)
+                            .map((l) => (
+                              <div key={l.sku} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", color: T.inkSoft }}>
+                                <span>{l.name} ({l.sku})</span>
+                                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{l.allocatedQty} {l.unit}</span>
+                              </div>
+                            ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= VIII. 기준정보체크 ================= */
+function MasterDataCheck({ items, stores, vehicles, courses, cells }) {
+  const unmappedStores = stores.filter((s) => !s.vehicleId);
+  const itemIssues = items.filter((i) => !i.tempZone || !i.workType || !i.location);
+  const usedVehicleIds = new Set([...stores.map((s) => s.vehicleId), ...courses.map((c) => c.vehicleId)].filter(Boolean));
+  const unmappedVehicles = vehicles.filter((v) => !usedVehicleIds.has(v.id));
+  const locRegex = /^[A-Za-z]{1,2}-\d{2}-\d{2}$/;
+  const locationIssues = items.filter((i) => !locRegex.test(i.location || ""));
+
+  const Section = ({ title, rows, renderRow, empty }) => (
+    <div style={{ ...cardStyle, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <ShieldCheck size={16} color={rows.length ? T.danger : T.tealDeep} />
+        <div style={{ fontWeight: 700, fontSize: 14.5 }}>{title}</div>
+        <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, color: rows.length ? T.danger : T.tealDeep, background: rows.length ? "#FBEAEA" : "#E7F4EF" }}>
+          {rows.length ? `${rows.length}건` : "이상없음"}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: T.inkSoft }}>{empty}</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{rows.map(renderRow)}</div>
+      )}
+    </div>
+  );
+
+  return (
+    <div>
+      <PageHeader title="VIII. 기준정보 체크" sub="발주·피킹 전에 확인해야 할 마스터데이터 누락/오류를 점검합니다" />
+      <Section
+        title="권역정보 - 차량 미매핑 매장"
+        rows={unmappedStores}
+        empty="모든 매장이 차량에 매핑되어 있습니다."
+        renderRow={(s) => (
+          <div key={s.id} style={{ fontSize: 12.5, padding: "6px 10px", background: T.bg, borderRadius: 6 }}>
+            {s.name} — 매핑된 차량 없음
+          </div>
+        )}
+      />
+      <Section
+        title="품목정보 - 필수정보 누락 품목"
+        rows={itemIssues}
+        empty="모든 품목의 온도구역·작업유형·로케이션이 채워져 있습니다."
+        renderRow={(i) => (
+          <div key={i.id} style={{ fontSize: 12.5, padding: "6px 10px", background: T.bg, borderRadius: 6 }}>
+            {i.name} ({i.sku}) — {!i.tempZone && "온도구역 없음 "}{!i.workType && "작업유형 없음 "}{!i.location && "로케이션 없음"}
+          </div>
+        )}
+      />
+      <Section
+        title="차량정보 - 매장/코스 미매핑 차량"
+        rows={unmappedVehicles}
+        empty="모든 차량이 매장 또는 배송코스에 매핑되어 있습니다."
+        renderRow={(v) => (
+          <div key={v.id} style={{ fontSize: 12.5, padding: "6px 10px", background: T.bg, borderRadius: 6 }}>
+            {v.name} — 매장/배송코스 매핑 없음
+          </div>
+        )}
+      />
+      <Section
+        title="로케이션정보 - 형식 오류 품목"
+        rows={locationIssues}
+        empty="모든 품목의 피킹 로케이션 형식이 정상입니다."
+        renderRow={(i) => (
+          <div key={i.id} style={{ fontSize: 12.5, padding: "6px 10px", background: T.bg, borderRadius: 6 }}>
+            {i.name} ({i.sku}) — 로케이션 "{i.location}" 형식 확인 필요
+          </div>
+        )}
+      />
+    </div>
+  );
+}
+
+/* ================= IX. 차량/매장 매핑 ================= */
+function VehicleStoreMap({ stores, vehicles, onAddVehicle, onMap }) {
+  const [newVehicle, setNewVehicle] = useState("");
+
+  return (
+    <div>
+      <PageHeader title="IX. 차량/매장 매핑" sub="배송 차량을 등록하고 매장(관할센터)에 매핑합니다" />
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ flex: "1 1 260px" }}>
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>차량 등록</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{ ...inputStyle, flex: 1 }} placeholder="예: 4호차 (냉장탑차)" value={newVehicle} onChange={(e) => setNewVehicle(e.target.value)} />
+              <button
+                onClick={() => {
+                  if (newVehicle.trim()) {
+                    onAddVehicle(newVehicle.trim());
+                    setNewVehicle("");
+                  }
+                }}
+                style={{ ...primaryBtnStyle, padding: "9px 14px" }}
+              >
+                <Plus size={14} /> 추가
+              </button>
+            </div>
+            <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+              {vehicles.map((v) => {
+                const count = stores.filter((s) => s.vehicleId === v.id).length;
+                return (
+                  <div key={v.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "8px 10px", background: T.bg, borderRadius: 6 }}>
+                    <span>{v.name}</span>
+                    <span style={{ color: T.inkSoft }}>매핑 매장 {count}개</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div style={{ flex: "2 1 400px" }}>
+          <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>매장(관할센터)</th>
+                  <th>매핑 차량</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stores.map((s) => (
+                  <tr key={s.id}>
+                    <td style={{ fontWeight: 600 }}>{s.name}</td>
+                    <td>
+                      <select style={{ ...inputStyle, width: 220 }} value={s.vehicleId || ""} onChange={(e) => onMap(s.id, e.target.value)}>
+                        <option value="">미매핑</option>
+                        {vehicles.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= X. 상품마스터 ================= */
+function ProductMaster({ items, onSave }) {
+  const [selectedSku, setSelectedSku] = useState(items[0]?.sku || null);
+  const [query, setQuery] = useState("");
+  const [form, setForm] = useState(null);
+
+  const selected = items.find((i) => i.sku === selectedSku) || null;
+  const filtered = items.filter((i) => !query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase()));
+
+  function openEdit(item) {
+    setSelectedSku(item.sku);
+    setForm({ tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm });
+  }
+  function save() {
+    if (!selected || !form) return;
+    onSave(selected.sku, form);
+  }
+
+  return (
+    <div>
+      <PageHeader title="X. 상품마스터" sub="품목별 온도구역·작업유형·로케이션·단위정보를 관리합니다" />
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ flex: "2 1 420px" }}>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
+            <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명 또는 SKU 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>품목명</th>
+                  <th>온도구역</th>
+                  <th>작업유형</th>
+                  <th>로케이션</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((i) => (
+                  <tr key={i.id} className="rowhover">
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
+                    <td style={{ fontWeight: 600 }}>{i.name}</td>
+                    <td>{i.tempZone}</td>
+                    <td>{i.workType}</td>
+                    <td>
+                      <LocationTag loc={i.location} />
+                    </td>
+                    <td>
+                      <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
+                        <Pencil size={13} /> 수정
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style={{ flex: "1 1 280px" }}>
+          <div style={cardStyle}>
+            {!selected || !form ? (
+              <div style={{ fontSize: 13, color: T.inkSoft }}>목록에서 "수정"을 눌러 품목 정보를 편집하세요.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{selected.name}</div>
+                <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku}</div>
+                <Field label="온도구역">
+                  <select style={inputStyle} value={form.tempZone} onChange={(e) => setForm({ ...form, tempZone: e.target.value })}>
+                    {TEMP_ZONES.map((z) => (
+                      <option key={z}>{z}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="작업유형">
+                  <select style={inputStyle} value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })}>
+                    {WORK_TYPES.map((w) => (
+                      <option key={w}>{w}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="피킹 로케이션">
+                  <input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+                </Field>
+                <div className="field-row" style={{ display: "flex", gap: 10 }}>
+                  <Field label="낱개단위">
+                    <input style={inputStyle} type="number" value={form.unitQty} onChange={(e) => setForm({ ...form, unitQty: Number(e.target.value) })} />
+                  </Field>
+                  <Field label="박스단위">
+                    <input style={inputStyle} type="number" value={form.boxQty} onChange={(e) => setForm({ ...form, boxQty: Number(e.target.value) })} />
+                  </Field>
+                </div>
+                <Field label="CBM">
+                  <input style={inputStyle} type="number" step="0.001" value={form.cbm} onChange={(e) => setForm({ ...form, cbm: Number(e.target.value) })} />
+                </Field>
+                <button onClick={save} className="primary-btn" style={{ ...primaryBtnStyle, alignSelf: "flex-start" }}>
+                  <Check size={14} /> 저장
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= XI. 창고CELL ================= */
+function WarehouseCell({ cells, onAdd, onDelete }) {
+  const [area, setArea] = useState("");
+  const [startFloor, setStartFloor] = useState(1);
+  const [endFloor, setEndFloor] = useState(4);
+  const [cellCount, setCellCount] = useState(10);
+  const [pickZoneDefault, setPickZoneDefault] = useState(true);
+  const [err, setErr] = useState("");
+
+  function submit() {
+    setErr("");
+    if (!area.trim()) return setErr("AREA 코드를 입력해주세요.");
+    if (endFloor < startFloor) return setErr("끝 계층은 시작 계층보다 크거나 같아야 합니다.");
+    onAdd({ area: area.trim().toUpperCase(), startFloor: Number(startFloor), endFloor: Number(endFloor), cellCount: Number(cellCount), pickZoneDefault });
+    setArea("");
+  }
+
+  return (
+    <div>
+      <PageHeader title="XI. 창고CELL" sub="AREA·계층·셀 구조로 랙 로케이션 범위를 설정합니다 (예: AA-01-01 ~ AA-10-04)" />
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div className="field-row" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="AREA">
+            <input style={{ ...inputStyle, width: 100 }} value={area} onChange={(e) => setArea(e.target.value)} placeholder="AA" />
+          </Field>
+          <Field label="시작 계층">
+            <input style={{ ...inputStyle, width: 90 }} type="number" value={startFloor} onChange={(e) => setStartFloor(e.target.value)} />
+          </Field>
+          <Field label="끝 계층">
+            <input style={{ ...inputStyle, width: 90 }} type="number" value={endFloor} onChange={(e) => setEndFloor(e.target.value)} />
+          </Field>
+          <Field label="셀 (개수)">
+            <input style={{ ...inputStyle, width: 90 }} type="number" value={cellCount} onChange={(e) => setCellCount(e.target.value)} />
+          </Field>
+          <Field label="피킹존 기본값">
+            <label style={{ display: "flex", alignItems: "center", gap: 6, height: 38, fontSize: 13 }}>
+              <input type="checkbox" checked={pickZoneDefault} onChange={(e) => setPickZoneDefault(e.target.checked)} /> 01번 셀 피킹존
+            </label>
+          </Field>
+        </div>
+        {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginTop: 10 }}>{err}</div>}
+        <button onClick={submit} className="primary-btn" style={{ ...primaryBtnStyle, marginTop: 12 }}>
+          <Plus size={14} /> CELL 생성
+        </button>
+      </div>
+
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>AREA</th>
+              <th>계층 범위</th>
+              <th>셀 개수</th>
+              <th>예상 로케이션 수</th>
+              <th>피킹존 기본</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {cells.length === 0 ? (
+              <tr>
+                <td colSpan={6}>
+                  <EmptyRow text="등록된 CELL 구조가 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              cells.map((c) => (
+                <tr key={c.id}>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{c.area}</td>
+                  <td>
+                    {c.area}-01-{String(c.startFloor).padStart(2, "0")} ~ {c.area}-{String(c.cellCount).padStart(2, "0")}-{String(c.endFloor).padStart(2, "0")}
+                  </td>
+                  <td>{c.cellCount}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{(c.endFloor - c.startFloor + 1) * c.cellCount}</td>
+                  <td>{c.pickZoneDefault ? "01번 셀" : "-"}</td>
+                  <td>
+                    <button onClick={() => onDelete(c.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: T.danger }}>
+                      <Trash2 size={15} />
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================= XII. 배송코스차수 ================= */
+function DeliveryCourse({ courses, vehicles, onAdd, onDelete }) {
+  const [name, setName] = useState(COURSE_NAMES[0]);
+  const [vehicleId, setVehicleId] = useState(vehicles[0]?.id || "");
+  const [round, setRound] = useState(1);
+
+  function submit() {
+    if (!vehicleId) return;
+    onAdd({ name, vehicleId, round: Number(round) });
+  }
+  const vehicleName = (id) => vehicles.find((v) => v.id === id)?.name || "-";
+
+  return (
+    <div>
+      <PageHeader title="XII. 배송코스차수" sub="배송코스(A/B/S)에 차량과 차수를 매핑합니다" />
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div className="field-row" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <Field label="코스">
+            <select style={{ ...inputStyle, width: 100 }} value={name} onChange={(e) => setName(e.target.value)}>
+              {COURSE_NAMES.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="차량">
+            <select style={{ ...inputStyle, width: 220 }} value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}>
+              {vehicles.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="차수">
+            <input style={{ ...inputStyle, width: 90 }} type="number" value={round} onChange={(e) => setRound(e.target.value)} />
+          </Field>
+        </div>
+        <button onClick={submit} className="primary-btn" style={{ ...primaryBtnStyle, marginTop: 12 }}>
+          <Plus size={14} /> 차량차수 맵핑 추가
+        </button>
+      </div>
+
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>코스</th>
+              <th>차량</th>
+              <th>차수</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {courses.length === 0 ? (
+              <tr>
+                <td colSpan={4}>
+                  <EmptyRow text="등록된 배송코스가 없습니다." />
+                </td>
+              </tr>
+            ) : (
+              courses.map((c) => (
+                <tr key={c.id}>
+                  <td style={{ fontWeight: 700 }}>{c.name}</td>
+                  <td>{vehicleName(c.vehicleId)}</td>
+                  <td>{c.round}차</td>
+                  <td>
+                    <button onClick={() => onDelete(c.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: T.danger }}>
+                      <Trash2 size={15} />
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- inbound ---------- */
 function Inbound({ items, onSubmit }) {
   const [mode, setMode] = useState("existing");
@@ -1212,7 +2931,7 @@ function Inbound({ items, onSubmit }) {
           </Field>
         ) : (
           <>
-            <div className="field-row" style={{ display: "flex", gap: 12 }}>
+            <div style={{ display: "flex", gap: 12 }}>
               <Field label="SKU">
                 <input style={inputStyle} value={newItem.sku} onChange={(e) => setNewItem({ ...newItem, sku: e.target.value })} placeholder="예: ELEC-1003" />
               </Field>
@@ -1227,7 +2946,7 @@ function Inbound({ items, onSubmit }) {
             <Field label="품목명">
               <input style={inputStyle} value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} placeholder="품목명을 입력하세요" />
             </Field>
-            <div className="field-row" style={{ display: "flex", gap: 12 }}>
+            <div style={{ display: "flex", gap: 12 }}>
               <Field label="단위">
                 <input style={inputStyle} value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="개 / 박스 / 세트" />
               </Field>
@@ -1241,7 +2960,7 @@ function Inbound({ items, onSubmit }) {
           </>
         )}
 
-        <div className="field-row" style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12 }}>
           <Field label="입고 수량">
             <input style={inputStyle} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
           </Field>
@@ -1319,7 +3038,7 @@ function Outbound({ items, onSubmit }) {
           </div>
         )}
 
-        <div className="field-row" style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12 }}>
           <Field label="출고 수량">
             <input style={inputStyle} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
           </Field>
@@ -1407,7 +3126,7 @@ function HistoryView({ tx }) {
         </select>
       </div>
 
-      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
             <tr>
