@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>재고관리센터 · WMS 데모</title>
+<title>재고관리센터 · WMS</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
@@ -594,64 +594,249 @@ const inputStyle = {
 };
 
 /* ---------- main app ---------- */
+/* ---------- backend API 연동 ---------- */
+// 백엔드 서버 주소가 바뀌면 이 값만 수정하면 됩니다.
+const API_BASE_URL = "https://wms-backend-rk07.onrender.com";
+
+async function apiFetch(path, token, options = {}) {
+  let res;
+  try {
+    res = await fetch(API_BASE_URL + path, {
+      method: options.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (networkErr) {
+    throw new Error("서버에 연결할 수 없습니다. 인터넷 연결이나 백엔드 상태를 확인해주세요.");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `요청이 실패했습니다 (${res.status})`);
+  return data;
+}
+
+function mapItemFromApi(i) {
+  return {
+    id: i.id,
+    sku: i.sku,
+    name: i.name,
+    category: i.category,
+    location: i.location,
+    unit: i.unit,
+    qty: i.qty,
+    safety: i.safety,
+    tempZone: i.temp_zone,
+    workType: i.work_type,
+    unitQty: i.unit_qty,
+    boxQty: i.box_qty,
+    cbm: Number(i.cbm) || 0,
+    replenished: false,
+  };
+}
+function mapOrderFromApi(o) {
+  return {
+    id: o.id,
+    orderNo: o.order_no,
+    customer: o.customer,
+    storeCode: o.store_code,
+    supplier: o.supplier,
+    supplierCode: o.supplier_code,
+    channel: o.channel,
+    status: o.status,
+    pickDocNo: o.pick_doc_no,
+    pmsStatus: o.pms_status,
+    invoiceIssued: o.invoice_issued,
+    createdAt: (o.created_at || "").slice(0, 10),
+    completedAt: o.completed_at ? String(o.completed_at).slice(0, 10) : null,
+    lines: (o.lines || []).map((l) => ({
+      sku: l.sku,
+      name: l.name,
+      qty: l.qty,
+      changedQty: l.changed_qty,
+      allocatedQty: l.allocated_qty,
+      allocStatus: l.alloc_status,
+      location: l.location,
+      unit: l.unit,
+      packQty: l.pack_qty,
+      picked: l.picked,
+    })),
+  };
+}
+function mapTxFromApi(t) {
+  return { id: t.id, type: t.type, sku: t.sku, name: t.name, qty: t.qty, location: t.location, date: (t.tx_date || "").slice(0, 10), memo: t.memo };
+}
+function mapDocFromApi(d) {
+  return { docNo: d.doc_no, date: (d.doc_date || "").slice(0, 10), orderNo: d.order_no, customer: d.customer, status: d.status, reprints: d.reprints };
+}
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr("");
+    if (!username || !password) return setErr("아이디와 비밀번호를 입력해주세요.");
+    setLoading(true);
+    try {
+      const data = await apiFetch("/auth/login", null, { method: "POST", body: { username, password } });
+      onLogin(data.token, data.user);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: T.bg, fontFamily: "'IBM Plex Sans KR', sans-serif" }}>
+      <style>{`${FONT_IMPORT} * { box-sizing: border-box; } input:focus { border-color: ${T.steel} !important; box-shadow: 0 0 0 2px rgba(43,50,57,0.12); }`}</style>
+      <form
+        onSubmit={submit}
+        style={{ width: 340, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "32px 28px", display: "flex", flexDirection: "column", gap: 14 }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 7, background: T.amber, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Package size={18} color={T.steel} strokeWidth={2.5} />
+          </div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>재고관리센터</div>
+            <div style={{ fontSize: 10.5, color: T.inkSoft }}>WMS · HUB CENTER</div>
+          </div>
+        </div>
+        <Field label="아이디">
+          <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="staff1" autoFocus />
+        </Field>
+        <Field label="비밀번호">
+          <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+        </Field>
+        {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
+        <button
+          type="submit"
+          disabled={loading}
+          style={{ background: T.steel, color: "#fff", border: "none", borderRadius: 6, padding: "11px 16px", fontWeight: 700, fontSize: 14, cursor: loading ? "default" : "pointer", opacity: loading ? 0.7 : 1 }}
+        >
+          {loading ? "로그인 중..." : "로그인"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function WMSApp() {
+  const [authToken, setAuthToken] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
   const [tab, setTab] = useState("dashboard");
   const [items, setItems] = useState([]);
   const [tx, setTx] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [pickingDocs, setPickingDocs] = useState([]);
+  const [replenishedSkus, setReplenishedSkus] = useState({});
+
   const [stores, setStores] = useState([]);
   const [vehicles, setVehicles] = useState([]);
   const [courses, setCourses] = useState([]);
   const [cells, setCells] = useState([]);
-  const [pickingDocs, setPickingDocs] = useState([]);
-  const [ready, setReady] = useState(false);
-  const [saveErr, setSaveErr] = useState(false);
 
+  const [ready, setReady] = useState(false);
+  const [apiErr, setApiErr] = useState("");
+
+  // 로그인 정보 복원 (토큰은 로컬에 저장하지만, 실제 데이터는 전부 서버에서 가져옵니다)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem("wms-data");
+      const raw = localStorage.getItem("wms-auth");
       if (raw) {
         const parsed = JSON.parse(raw);
-        setItems(parsed.items || seedItems());
-        setTx(parsed.transactions || seedTx());
-        setOrders(parsed.orders || seedOrders());
+        setAuthToken(parsed.token);
+        setAuthUser(parsed.user);
+      }
+    } catch (e) {}
+    setAuthReady(true);
+  }, []);
+
+  // 아직 서버로 옮기지 않은 로컬 전용 기준정보(매장/차량/코스/셀, 보충 체크상태)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("wms-local-masters");
+      if (raw) {
+        const parsed = JSON.parse(raw);
         setStores(parsed.stores || seedStores());
         setVehicles(parsed.vehicles || seedVehicles());
         setCourses(parsed.courses || seedCourses());
         setCells(parsed.cells || seedCells());
-        setPickingDocs(parsed.pickingDocs || seedPickingDocs());
+        setReplenishedSkus(parsed.replenishedSkus || {});
       } else {
-        setItems(seedItems());
-        setTx(seedTx());
-        setOrders(seedOrders());
         setStores(seedStores());
         setVehicles(seedVehicles());
         setCourses(seedCourses());
         setCells(seedCells());
-        setPickingDocs(seedPickingDocs());
       }
     } catch (e) {
-      setItems(seedItems());
-      setTx(seedTx());
-      setOrders(seedOrders());
       setStores(seedStores());
       setVehicles(seedVehicles());
       setCourses(seedCourses());
       setCells(seedCells());
-      setPickingDocs(seedPickingDocs());
     }
-    setReady(true);
   }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("wms-local-masters", JSON.stringify({ stores, vehicles, courses, cells, replenishedSkus }));
+    } catch (e) {}
+  }, [stores, vehicles, courses, cells, replenishedSkus]);
+
+  const loadCoreData = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      setApiErr("");
+      const [itemsRes, ordersRes, txRes, docsRes] = await Promise.all([
+        apiFetch("/items", authToken),
+        apiFetch("/orders", authToken),
+        apiFetch("/transactions?limit=300", authToken),
+        apiFetch("/orders/picking-docs", authToken),
+      ]);
+      setItems(itemsRes.items.map(mapItemFromApi));
+      setOrders(ordersRes.orders.map(mapOrderFromApi));
+      setTx(txRes.transactions.map(mapTxFromApi));
+      setPickingDocs(docsRes.docs.map(mapDocFromApi));
+    } catch (e) {
+      setApiErr(e.message);
+      if (String(e.message).includes("토큰")) doLogout();
+    } finally {
+      setReady(true);
+    }
+  }, [authToken]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (authToken) loadCoreData();
+  }, [authToken]); // eslint-disable-line
+
+  function doLogin(token, user) {
+    setAuthToken(token);
+    setAuthUser(user);
     try {
-      localStorage.setItem("wms-data", JSON.stringify({ items, transactions: tx, orders, stores, vehicles, courses, cells, pickingDocs }));
-      setSaveErr(false);
-    } catch (e) {
-      setSaveErr(true);
-    }
-  }, [items, tx, orders, stores, vehicles, courses, cells, pickingDocs, ready]);
+      localStorage.setItem("wms-auth", JSON.stringify({ token, user }));
+    } catch (e) {}
+  }
+  function doLogout() {
+    setAuthToken(null);
+    setAuthUser(null);
+    setItems([]);
+    setTx([]);
+    setOrders([]);
+    setPickingDocs([]);
+    setReady(false);
+    try {
+      localStorage.removeItem("wms-auth");
+    } catch (e) {}
+  }
+
+  const itemsView = useMemo(() => items.map((i) => ({ ...i, replenished: !!replenishedSkus[i.sku] })), [items, replenishedSkus]);
 
   const lowStock = useMemo(() => items.filter((i) => i.qty < i.safety), [items]);
   const totalQty = useMemo(() => items.reduce((a, b) => a + b.qty, 0), [items]);
@@ -660,212 +845,227 @@ function WMSApp() {
   const allocatedCount = useMemo(() => orders.filter((o) => o.status === "ALLOCATED").length, [orders]);
   const readyToShipCount = useMemo(() => orders.filter((o) => o.status === "PICK_CONFIRMED").length, [orders]);
 
-  const applyInbound = useCallback((payload) => {
-    setItems((prev) => {
-      const exists = prev.find((i) => i.sku === payload.sku);
-      if (exists) {
-        return prev.map((i) => (i.sku === payload.sku ? { ...i, qty: i.qty + payload.qty, location: payload.location || i.location } : i));
+  const applyInbound = useCallback(
+    async (payload) => {
+      try {
+        const exists = items.find((i) => i.sku === payload.sku);
+        if (!exists) {
+          await apiFetch("/items", authToken, {
+            method: "POST",
+            body: {
+              sku: payload.sku,
+              name: payload.name,
+              category: payload.category,
+              location: payload.location,
+              unit: payload.unit,
+              qty: 0,
+              safety: payload.safety || 10,
+              temp_zone: payload.tempZone || "상온",
+              work_type: payload.workType || "피킹",
+              unit_qty: 1,
+              box_qty: 1,
+              cbm: 0.01,
+            },
+          });
+        }
+        await apiFetch(`/items/${encodeURIComponent(payload.sku)}/inbound`, authToken, {
+          method: "POST",
+          body: { qty: payload.qty, memo: payload.memo, date: payload.date, location: payload.location },
+        });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
       }
-      return [
-        ...prev,
-        {
-          id: uid(),
-          sku: payload.sku,
-          name: payload.name,
-          category: payload.category,
-          location: payload.location,
-          unit: payload.unit,
-          qty: payload.qty,
-          safety: payload.safety || 10,
-          tempZone: payload.tempZone || "상온",
-          workType: payload.workType || "피킹",
-          unitQty: 1,
-          boxQty: 1,
-          cbm: 0.01,
-          replenished: false,
-        },
-      ];
-    });
-    setTx((prev) => [
-      { id: uid(), type: "IN", sku: payload.sku, name: payload.name, qty: payload.qty, location: payload.location, date: payload.date, memo: payload.memo },
-      ...prev,
-    ]);
-  }, []);
+    },
+    [items, authToken, loadCoreData]
+  );
 
-  const applyOutbound = useCallback((payload) => {
-    setItems((prev) => prev.map((i) => (i.sku === payload.sku ? { ...i, qty: i.qty - payload.qty } : i)));
-    setTx((prev) => [
-      { id: uid(), type: "OUT", sku: payload.sku, name: payload.name, qty: payload.qty, location: payload.location, date: payload.date, memo: payload.memo },
-      ...prev,
-    ]);
-  }, []);
+  const applyOutbound = useCallback(
+    async (payload) => {
+      try {
+        await apiFetch(`/items/${encodeURIComponent(payload.sku)}/outbound`, authToken, {
+          method: "POST",
+          body: { qty: payload.qty, memo: payload.memo, date: payload.date },
+        });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
-  const addOrder = useCallback((order) => {
-    setOrders((prev) => [order, ...prev]);
-  }, []);
+  const addOrder = useCallback(
+    async (order) => {
+      try {
+        await apiFetch("/orders", authToken, {
+          method: "POST",
+          body: {
+            orderNo: order.orderNo,
+            customer: order.customer,
+            storeCode: order.storeCode,
+            supplier: order.supplier,
+            supplierCode: order.supplierCode,
+            channel: order.channel,
+            lines: order.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, packQty: l.packQty, location: l.location, unit: l.unit })),
+          },
+        });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
-  const updateChangedQty = useCallback((orderId, sku, value) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, lines: o.lines.map((l) => (l.sku === sku ? { ...l, changedQty: value } : l)) } : o))
-    );
-  }, []);
+  const updateChangedQty = useCallback(
+    async (orderId, sku, value) => {
+      try {
+        await apiFetch(`/orders/${orderId}/lines/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body: { changedQty: value } });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
   // II. 상품할당
-  const allocateOrders = useCallback(
-    (orderIds) => {
-      const idSet = new Set(orderIds);
-      setOrders((prev) =>
-        prev.map((o) => {
-          if (!idSet.has(o.id)) return o;
-          const lines = o.lines.map((l) => {
-            const stockItem = items.find((i) => i.sku === l.sku);
-            const stock = stockItem ? stockItem.qty : 0;
-            const allocatedQty = Math.max(0, Math.min(l.changedQty ?? l.qty, stock));
-            const allocStatus = allocatedQty === 0 ? "미할당" : allocatedQty < (l.changedQty ?? l.qty) ? "부분할당" : "할당";
-            return { ...l, allocatedQty, allocStatus };
-          });
-          return { ...o, status: "ALLOCATED", lines };
-        })
-      );
+  const allocateOrder = useCallback(
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/allocate`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [items]
+    [authToken, loadCoreData]
   );
-  const allocateOrder = useCallback((orderId) => allocateOrders([orderId]), [allocateOrders]);
 
   // I. 주문정보 - 공급사별 "피킹지시서 변환하기"
   const convertSupplierToPicking = useCallback(
-    (supplierKey) => {
-      const targetIds = orders.filter((o) => o.status === "NEW" && (o.supplierCode || o.supplier) === supplierKey).map((o) => o.id);
-      if (targetIds.length === 0) return;
-      allocateOrders(targetIds);
-      setTab("pickinglist");
+    async (supplierKey) => {
+      try {
+        await apiFetch("/orders/convert-to-picking", authToken, { method: "POST", body: { supplierKey } });
+        await loadCoreData();
+        setTab("pickinglist");
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [orders, allocateOrders]
+    [authToken, loadCoreData]
   );
 
   // III. 할당리스트 - 할당취소
-  const cancelAllocationLine = useCallback((orderId, sku) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== orderId) return o;
-        const lines = o.lines.map((l) => (l.sku === sku ? { ...l, allocatedQty: 0, allocStatus: "미할당" } : l));
-        const anyAllocated = lines.some((l) => l.allocatedQty > 0);
-        return { ...o, lines, status: anyAllocated ? o.status : "NEW" };
-      })
-    );
-  }, []);
+  const cancelAllocationLine = useCallback(
+    async (orderId, sku) => {
+      try {
+        await apiFetch(`/orders/${orderId}/lines/${encodeURIComponent(sku)}/cancel-allocation`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
-  // IV. 보충지시
+  // IV. 보충지시 (아직 서버로 옮기지 않은 로컬 전용 기능)
   const toggleReplenish = useCallback((sku) => {
-    setItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, replenished: !i.replenished } : i)));
+    setReplenishedSkus((prev) => ({ ...prev, [sku]: !prev[sku] }));
   }, []);
 
   // V. 피킹리스트
-  const togglePicked = useCallback((orderId, sku) => {
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id === orderId ? { ...o, lines: o.lines.map((l) => (l.sku === sku ? { ...l, picked: !l.picked } : l)) } : o
-      )
-    );
-  }, []);
+  const togglePicked = useCallback(
+    async (orderId, sku) => {
+      try {
+        const order = orders.find((o) => o.id === orderId);
+        const line = order && order.lines.find((l) => l.sku === sku);
+        const nextPicked = !(line && line.picked);
+        await apiFetch(`/orders/${orderId}/lines/${encodeURIComponent(sku)}/pick`, authToken, { method: "PATCH", body: { picked: nextPicked } });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [orders, authToken, loadCoreData]
+  );
 
   const confirmPicking = useCallback(
-    (orderId) => {
-      const order = orders.find((o) => o.id === orderId);
-      if (!order) return;
-      const docNo = genDocNo();
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "PICK_CONFIRMED", pickDocNo: docNo } : o)));
-      setPickingDocs((pd) => [
-        { docNo, date: todayStr(), orderNo: order.orderNo, customer: order.customer, status: "확정", reprints: 0 },
-        ...pd,
-      ]);
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/confirm-pick`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [orders]
+    [authToken, loadCoreData]
   );
 
   const cancelPickingConfirm = useCallback(
-    (orderId) => {
-      const order = orders.find((o) => o.id === orderId);
-      if (!order) return;
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "ALLOCATED", pickDocNo: null } : o)));
-      setPickingDocs((pd) => pd.map((d) => (d.docNo === order.pickDocNo ? { ...d, status: "취소" } : d)));
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/cancel-pick`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [orders]
+    [authToken, loadCoreData]
   );
 
   // VI. 피킹재발행
-  const reissueDoc = useCallback((docNo) => {
-    setPickingDocs((prev) => prev.map((d) => (d.docNo === docNo ? { ...d, reprints: d.reprints + 1 } : d)));
-  }, []);
+  const reissueDoc = useCallback(
+    async (docNo) => {
+      try {
+        await apiFetch(`/orders/picking-docs/${encodeURIComponent(docNo)}/reissue`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
   // VII. 출고처리
   const shipOrder = useCallback(
-    (orderId) => {
-      const order = orders.find((o) => o.id === orderId);
-      if (!order) return;
-      const date = todayStr();
-      setItems((prev) =>
-        prev.map((i) => {
-          const line = order.lines.find((l) => l.sku === i.sku);
-          return line ? { ...i, qty: i.qty - line.allocatedQty } : i;
-        })
-      );
-      setTx((prev) => [
-        ...order.lines
-          .filter((l) => l.allocatedQty > 0)
-          .map((l) => ({
-            id: uid(),
-            type: "OUT",
-            sku: l.sku,
-            name: l.name,
-            qty: l.allocatedQty,
-            location: l.location,
-            date,
-            memo: `발주 ${order.orderNo} 출고 (거래명세서 발행)`,
-          })),
-        ...prev,
-      ]);
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "SHIPPED", invoiceIssued: true, pmsStatus: "대기" } : o)));
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/ship`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [orders]
+    [authToken, loadCoreData]
   );
 
   const cancelShip = useCallback(
-    (orderId) => {
-      const order = orders.find((o) => o.id === orderId);
-      if (!order || order.pmsStatus === "전송완료") return;
-      const date = todayStr();
-      setItems((prev) =>
-        prev.map((i) => {
-          const line = order.lines.find((l) => l.sku === i.sku);
-          return line ? { ...i, qty: i.qty + line.allocatedQty } : i;
-        })
-      );
-      setTx((prev) => [
-        ...order.lines
-          .filter((l) => l.allocatedQty > 0)
-          .map((l) => ({
-            id: uid(),
-            type: "IN",
-            sku: l.sku,
-            name: l.name,
-            qty: l.allocatedQty,
-            location: l.location,
-            date,
-            memo: `발주 ${order.orderNo} 출고취소 재입고`,
-          })),
-        ...prev,
-      ]);
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "PICK_CONFIRMED", invoiceIssued: false, pmsStatus: null } : o)));
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/cancel-ship`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
     },
-    [orders]
+    [authToken, loadCoreData]
   );
 
-  const confirmPms = useCallback((orderId) => {
-    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: "DONE", pmsStatus: "전송완료" } : o)));
-  }, []);
+  const confirmPms = useCallback(
+    async (orderId) => {
+      try {
+        await apiFetch(`/orders/${orderId}/confirm-pms`, authToken, { method: "POST" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
-  // IX. 차량/매장 매핑
+  // IX. 차량/매장 매핑 (로컬 전용)
   const addVehicle = useCallback((name) => {
     setVehicles((prev) => [...prev, { id: uid(), name }]);
   }, []);
@@ -874,11 +1074,26 @@ function WMSApp() {
   }, []);
 
   // X. 상품마스터
-  const updateItemMaster = useCallback((sku, fields) => {
-    setItems((prev) => prev.map((i) => (i.sku === sku ? { ...i, ...fields } : i)));
-  }, []);
+  const updateItemMaster = useCallback(
+    async (sku, fields) => {
+      try {
+        const body = {};
+        if (fields.tempZone !== undefined) body.temp_zone = fields.tempZone;
+        if (fields.workType !== undefined) body.work_type = fields.workType;
+        if (fields.location !== undefined) body.location = fields.location;
+        if (fields.unitQty !== undefined) body.unit_qty = fields.unitQty;
+        if (fields.boxQty !== undefined) body.box_qty = fields.boxQty;
+        if (fields.cbm !== undefined) body.cbm = fields.cbm;
+        await apiFetch(`/items/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
 
-  // XI. 창고CELL
+  // XI. 창고CELL (로컬 전용)
   const addCell = useCallback((cell) => {
     setCells((prev) => [...prev, { id: uid(), ...cell }]);
   }, []);
@@ -886,7 +1101,7 @@ function WMSApp() {
     setCells((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
-  // XII. 배송코스차수
+  // XII. 배송코스차수 (로컬 전용)
   const addCourse = useCallback((course) => {
     setCourses((prev) => [...prev, { id: uid(), ...course }]);
   }, []);
@@ -939,12 +1154,24 @@ function WMSApp() {
   ];
   const badgeCount = { new: newOrderCount, alloc: allocatedCount, ship: readyToShipCount };
 
-  if (!ready) {
-
+  if (!authReady) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400, color: T.inkSoft, gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: T.inkSoft, gap: 8, fontFamily: "'IBM Plex Sans KR', sans-serif" }}>
         <Loader2 size={18} className="spin" />
         불러오는 중...
+      </div>
+    );
+  }
+
+  if (!authToken) {
+    return <LoginScreen onLogin={doLogin} />;
+  }
+
+  if (!ready) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: T.inkSoft, gap: 8, fontFamily: "'IBM Plex Sans KR', sans-serif" }}>
+        <Loader2 size={18} className="spin" />
+        서버에서 데이터를 불러오는 중...
       </div>
     );
   }
@@ -1065,29 +1292,44 @@ function WMSApp() {
           </div>
         ))}
 
-        <div className="wms-footer" style={{ marginTop: "auto", padding: "10px", fontSize: 11, color: "#8B9198", borderTop: "1px solid #3E4750" }}>
-          {saveErr ? "⚠ 저장 실패 — 재시도 중" : "자동 저장됨"}
+        <div className="wms-footer" style={{ marginTop: "auto", padding: "10px", borderTop: "1px solid #3E4750", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11.5, color: "#C7CCD1" }}>{authUser?.name || authUser?.username} 님</div>
+          <button
+            onClick={doLogout}
+            style={{ background: "transparent", border: "1px solid #3E4750", color: "#D7DBDE", borderRadius: 5, padding: "5px 8px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            로그아웃
+          </button>
         </div>
       </div>
 
       {/* content */}
       <div className="wms-main" style={{ flex: 1, padding: "24px 28px", overflow: "auto", minWidth: 0 }}>
-        {tab === "dashboard" && <Dashboard items={items} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} />}
-        {tab === "inventory" && <Inventory items={items} />}
-        {tab === "3d" && <ThreeDView items={items} />}
-        {tab === "inbound" && <Inbound items={items} onSubmit={applyInbound} />}
-        {tab === "outbound" && <Outbound items={items} onSubmit={applyOutbound} />}
+        {apiErr && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "#FBEAEA", border: `1px solid ${T.danger}55`, borderRadius: 6, padding: "10px 12px", marginBottom: 16, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>
+            <AlertTriangle size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+            {apiErr}
+            <button onClick={() => setApiErr("")} style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: T.danger }}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} />}
+        {tab === "inventory" && <Inventory items={itemsView} />}
+        {tab === "3d" && <ThreeDView items={itemsView} />}
+        {tab === "inbound" && <Inbound items={itemsView} onSubmit={applyInbound} />}
+        {tab === "outbound" && <Outbound items={itemsView} onSubmit={applyOutbound} />}
         {tab === "history" && <HistoryView tx={tx} />}
 
         {tab === "orderinfo" && (
-          <OrderInfo items={items} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} onConvert={convertSupplierToPicking} />
+          <OrderInfo items={itemsView} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} onConvert={convertSupplierToPicking} />
         )}
-        {tab === "allocation" && <Allocation items={items} orders={orders} onAllocate={allocateOrder} />}
+        {tab === "allocation" && <Allocation items={itemsView} orders={orders} onAllocate={allocateOrder} />}
         {tab === "alloclist" && <AllocationList orders={orders} onCancel={cancelAllocationLine} />}
 
-        {tab === "replenish" && <Replenishment items={items} onToggle={toggleReplenish} />}
+        {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickinglist" && (
-          <PickingList orders={orders} items={items} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} />
+          <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} />
         )}
         {tab === "pickingreissue" && <PickingReissue docs={pickingDocs} onReissue={reissueDoc} />}
 
@@ -1095,9 +1337,9 @@ function WMSApp() {
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
 
-        {tab === "masdatacheck" && <MasterDataCheck items={items} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
+        {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={items} onSave={updateItemMaster} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
