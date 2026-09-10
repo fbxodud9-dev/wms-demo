@@ -15,11 +15,13 @@
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const XLSX = window.XLSX;
 
 function IconBase(props) {
   const { size = 16, strokeWidth = 2, color, style, className, children } = props;
@@ -338,6 +340,16 @@ function PlayCircle(props) {
 }
 
 
+function Upload(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12 3v12" />
+      <polyline points="7 8 12 3 17 8" />
+      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+    </IconBase>
+  );
+}
+
 
 /* ---------- design tokens ---------- */
 const T = {
@@ -445,6 +457,9 @@ function seedOrders() {
       id: "o1",
       orderNo: "ORD-A10293",
       customer: "강남관할센터",
+      storeCode: "",
+      supplier: "샘플 발주",
+      supplierCode: "",
       channel: "정기발주",
       createdAt: todayStr(),
       status: "NEW",
@@ -452,21 +467,24 @@ function seedOrders() {
       pmsStatus: null,
       invoiceIssued: false,
       lines: [
-        { sku: "ELEC-1001", name: "무선 이어폰", qty: 2, changedQty: 2, allocatedQty: 0, allocStatus: "미할당", location: "A-01-01", unit: "개", picked: false },
-        { sku: "PACK-5001", name: "골판지 박스(중)", qty: 1, changedQty: 1, allocatedQty: 0, allocStatus: "미할당", location: "E-01-01", unit: "개", picked: false },
+        { sku: "ELEC-1001", name: "무선 이어폰", qty: 2, changedQty: 2, allocatedQty: 0, allocStatus: "미할당", location: "A-01-01", unit: "개", packQty: 20, picked: false },
+        { sku: "PACK-5001", name: "골판지 박스(중)", qty: 1, changedQty: 1, allocatedQty: 0, allocStatus: "미할당", location: "E-01-01", unit: "개", packQty: 1, picked: false },
       ],
     },
     {
       id: "o2",
       orderNo: "ORD-A10294",
       customer: "분당관할센터",
+      storeCode: "",
+      supplier: "샘플 발주",
+      supplierCode: "",
       channel: "긴급발주",
       createdAt: todayStr(),
       status: "NEW",
       pickDocNo: null,
       pmsStatus: null,
       invoiceIssued: false,
-      lines: [{ sku: "FOOD-4002", name: "생수 2L 6팩", qty: 3, changedQty: 3, allocatedQty: 0, allocStatus: "미할당", location: "D-01-02", unit: "팩", picked: false }],
+      lines: [{ sku: "FOOD-4002", name: "생수 2L 6팩", qty: 3, changedQty: 3, allocatedQty: 0, allocStatus: "미할당", location: "D-01-02", unit: "팩", packQty: 6, picked: false }],
     },
   ];
 }
@@ -476,6 +494,16 @@ function stockStatus(item) {
   if (item.qty < item.safety) return { label: "부족", color: T.danger, bg: "#FBEAEA" };
   if (item.qty < item.safety * 1.3) return { label: "주의", color: T.amberDeep, bg: "#FCF1DD" };
   return { label: "정상", color: T.tealDeep, bg: "#E7F4EF" };
+}
+
+function boxBreakdown(qty, packQty) {
+  const pq = Number(packQty) || 0;
+  if (!pq || pq <= 0) return `${qty}개`;
+  const box = Math.floor(qty / pq);
+  const rem = qty % pq;
+  if (box > 0 && rem > 0) return `${box}박스 ${rem}개`;
+  if (box > 0) return `${box}박스`;
+  return `${qty}개`;
 }
 
 /* ---------- shared UI bits ---------- */
@@ -683,11 +711,12 @@ function WMSApp() {
   }, []);
 
   // II. 상품할당
-  const allocateOrder = useCallback(
-    (orderId) => {
+  const allocateOrders = useCallback(
+    (orderIds) => {
+      const idSet = new Set(orderIds);
       setOrders((prev) =>
         prev.map((o) => {
-          if (o.id !== orderId) return o;
+          if (!idSet.has(o.id)) return o;
           const lines = o.lines.map((l) => {
             const stockItem = items.find((i) => i.sku === l.sku);
             const stock = stockItem ? stockItem.qty : 0;
@@ -700,6 +729,18 @@ function WMSApp() {
       );
     },
     [items]
+  );
+  const allocateOrder = useCallback((orderId) => allocateOrders([orderId]), [allocateOrders]);
+
+  // I. 주문정보 - 공급사별 "피킹지시서 변환하기"
+  const convertSupplierToPicking = useCallback(
+    (supplierKey) => {
+      const targetIds = orders.filter((o) => o.status === "NEW" && (o.supplierCode || o.supplier) === supplierKey).map((o) => o.id);
+      if (targetIds.length === 0) return;
+      allocateOrders(targetIds);
+      setTab("pickinglist");
+    },
+    [orders, allocateOrders]
   );
 
   // III. 할당리스트 - 할당취소
@@ -936,6 +977,12 @@ function WMSApp() {
         .table-wrap { overflow-x: auto !important; overflow-y: hidden; -webkit-overflow-scrolling: touch; max-width: 100%; }
         input, select, textarea { max-width: 100%; }
         .navgroup-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #7C838B; padding: 14px 12px 6px; }
+        @media print {
+          body * { visibility: hidden; }
+          .print-area, .print-area * { visibility: visible; }
+          .print-area { position: absolute; left: 0; top: 0; width: 100%; border: none !important; box-shadow: none !important; }
+          .no-print { display: none !important; }
+        }
         @media (max-width: 720px) {
           .wms-shell { flex-direction: column !important; }
           .wms-sidebar { width: 100% !important; flex-direction: row !important; align-items: center !important; gap: 4px !important; padding: 8px !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
@@ -1032,7 +1079,9 @@ function WMSApp() {
         {tab === "outbound" && <Outbound items={items} onSubmit={applyOutbound} />}
         {tab === "history" && <HistoryView tx={tx} />}
 
-        {tab === "orderinfo" && <OrderInfo items={items} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} />}
+        {tab === "orderinfo" && (
+          <OrderInfo items={items} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} onConvert={convertSupplierToPicking} />
+        )}
         {tab === "allocation" && <Allocation items={items} orders={orders} onAllocate={allocateOrder} />}
         {tab === "alloclist" && <AllocationList orders={orders} onCancel={cancelAllocationLine} />}
 
@@ -1712,7 +1761,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
+function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -1720,9 +1769,181 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
   const [formErr, setFormErr] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [statusFilter, setStatusFilter] = useState("전체");
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [uploadErr, setUploadErr] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
   const selected = orders.find((o) => o.id === selectedId) || null;
-  const filtered = orders.filter((o) => statusFilter === "전체" || o.status === statusFilter);
+  const [storeFilter, setStoreFilter] = useState("전체");
+  const storeOptions = useMemo(() => {
+    const map = new Map();
+    orders.forEach((o) => {
+      const key = o.storeCode || o.customer;
+      if (!map.has(key)) map.set(key, { key, label: o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer });
+    });
+    return Array.from(map.values());
+  }, [orders]);
+  const filtered = orders.filter(
+    (o) => (statusFilter === "전체" || o.status === statusFilter) && (storeFilter === "전체" || (o.storeCode || o.customer) === storeFilter)
+  );
+
+  const supplierGroups = useMemo(() => {
+    const map = {};
+    orders
+      .filter((o) => o.status === "NEW")
+      .forEach((o) => {
+        const key = o.supplierCode || o.supplier || "기타";
+        if (!map[key]) map[key] = { key, name: o.supplier || "기타 화주사", orderCount: 0, skuSet: new Set(), totalQty: 0 };
+        map[key].orderCount += 1;
+        o.lines.forEach((l) => {
+          map[key].skuSet.add(l.sku);
+          map[key].totalQty += l.qty;
+        });
+      });
+    return Object.values(map).map((g) => ({ ...g, skuCount: g.skuSet.size }));
+  }, [orders]);
+
+  async function handleFile(file) {
+    setUploadErr("");
+    setUploadMsg("");
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let rows = [];
+
+      const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // 진짜 xlsx/xls 바이너리(ZIP)
+      if (isZip && typeof XLSX !== "undefined") {
+        const wb = XLSX.read(bytes, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+      } else {
+        // 국내 물류/발주 시스템에서 흔한 "HTML 표를 .xls로 저장" 방식 (대개 EUC-KR 인코딩)
+        let text;
+        try {
+          text = new TextDecoder("euc-kr").decode(bytes);
+        } catch (e) {
+          text = new TextDecoder("utf-8").decode(bytes);
+        }
+        if (!/<table/i.test(text)) text = new TextDecoder("utf-8").decode(bytes);
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const tables = Array.from(doc.querySelectorAll("table"));
+        let best = null,
+          bestRows = 0;
+        tables.forEach((t) => {
+          const n = t.querySelectorAll("tr").length;
+          if (n > bestRows) {
+            bestRows = n;
+            best = t;
+          }
+        });
+        if (best) {
+          rows = Array.from(best.querySelectorAll("tr")).map((tr) =>
+            Array.from(tr.querySelectorAll("td,th")).map((td) => td.textContent.replace(/\u00a0/g, " ").trim())
+          );
+        }
+      }
+
+      if (rows.length < 2) throw new Error("표 형식의 데이터를 찾지 못했습니다.");
+      const header = rows[0].map((h) => (h == null ? "" : String(h)));
+      const dataRows = rows.slice(1).filter((r) => r.some((c) => c !== "" && c != null));
+
+      const findCol = (candidates) => {
+        for (const cand of candidates) {
+          const idx = header.findIndex((h) => h && h.includes(cand));
+          if (idx !== -1) return idx;
+        }
+        return -1;
+      };
+      const col = {
+        orderNo: findCol(["발주번호", "주문번호"]),
+        store: findCol(["납품처", "배송처", "발주처"]),
+        supplier: findCol(["공급자", "화주사"]),
+        sku: findCol(["상품코드", "품목코드", "SKU"]),
+        name: findCol(["상품명", "품목명"]),
+        qty: findCol(["낱개수량", "발주량", "수량"]),
+        packQty: findCol(["입수"]),
+        unit: findCol(["단위"]),
+        date: findCol(["납품일자", "발주일자"]),
+        type: findCol(["발주타입", "발주유형"]),
+      };
+      if (col.sku === -1 || col.qty === -1) {
+        throw new Error("파일에서 '상품코드/품목코드'와 '수량' 컬럼을 찾지 못했습니다. 헤더명을 확인해주세요.");
+      }
+
+      // "VV99 (주)지에스리테일고촌2저온" 처럼 코드+명칭이 붙어있는 셀을 정확히 분리
+      // (예: "고촌"과 "고촌2"처럼 이름이 비슷해도 코드로 구분해 절대 섞이지 않도록 함)
+      const splitCodeName = (raw) => {
+        const s = String(raw || "").trim();
+        const m = s.match(/^([A-Za-z0-9]+)\s+(.+)$/);
+        if (m) return { code: m[1], name: m[2].trim() };
+        return { code: "", name: s };
+      };
+
+      const groups = {};
+      dataRows.forEach((r) => {
+        const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
+        const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
+        const supplierSplit = splitCodeName(col.supplier !== -1 ? r[col.supplier] : "기타 화주사");
+        // 그룹 키는 반드시 코드 기준 (이름이 비슷해도 코드가 다르면 다른 그룹)
+        const key = (orderNoRaw || "UPLOAD") + "__" + (storeSplit.code || storeSplit.name);
+        if (!groups[key]) {
+          groups[key] = {
+            id: uid(),
+            orderNo: orderNoRaw ? String(orderNoRaw) : genOrderNo(),
+            customer: storeSplit.name || "미지정 매장",
+            storeCode: storeSplit.code,
+            supplier: supplierSplit.name || "기타 화주사",
+            supplierCode: supplierSplit.code,
+            channel: (col.type !== -1 && r[col.type]) || "화주사발주",
+            createdAt: (col.date !== -1 && r[col.date] && String(r[col.date]).slice(0, 10)) || todayStr(),
+            status: "NEW",
+            pickDocNo: null,
+            pmsStatus: null,
+            invoiceIssued: false,
+            lines: [],
+          };
+        }
+        const sku = String(r[col.sku] ?? "").trim();
+        if (!sku) return;
+        const name = (col.name !== -1 && r[col.name]) || sku;
+        const qty = Number(r[col.qty]) || 0;
+        if (qty <= 0) return;
+        const unit = (col.unit !== -1 && r[col.unit]) || "EA";
+        const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
+        const matched = items.find((i) => i.sku === sku || i.name === name);
+        groups[key].lines.push({
+          sku,
+          name,
+          qty,
+          changedQty: qty,
+          allocatedQty: 0,
+          allocStatus: "미할당",
+          location: matched ? matched.location : "-",
+          unit,
+          packQty: packQty || matched?.boxQty || 0,
+          picked: false,
+        });
+      });
+
+      const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
+      if (newOrders.length === 0) throw new Error("유효한 발주 라인을 찾지 못했습니다.");
+      newOrders.forEach((o) => onAdd(o));
+      const totalLines = newOrders.reduce((a, o) => a + o.lines.length, 0);
+      const unmatched = newOrders.reduce((a, o) => a + o.lines.filter((l) => l.location === "-").length, 0);
+      const supplierCount = new Set(newOrders.map((o) => o.supplierCode || o.supplier)).size;
+      setUploadMsg(
+        `공급사 ${supplierCount}곳 · 발주 ${newOrders.length}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
+          (unmatched > 0 ? ` (상품마스터에 없는 품목 ${unmatched}건은 로케이션 미배정 상태입니다 — 상품마스터에서 등록해주세요.)` : "")
+      );
+    } catch (e) {
+      setUploadErr("파일을 읽는 중 문제가 발생했습니다: " + e.message);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
 
   function randomOrder() {
     const inStock = items.filter((i) => i.qty > 0);
@@ -1731,12 +1952,15 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
     const shuffled = [...inStock].sort(() => Math.random() - 0.5).slice(0, lineCount);
     const lines = shuffled.map((i) => {
       const qty = Math.min(i.qty, 1 + Math.floor(Math.random() * 3));
-      return { sku: i.sku, name: i.name, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: i.location, unit: i.unit, picked: false };
+      return { sku: i.sku, name: i.name, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: i.location, unit: i.unit, packQty: i.boxQty || 0, picked: false };
     });
     onAdd({
       id: uid(),
       orderNo: genOrderNo(),
       customer: STORE_NAMES[Math.floor(Math.random() * STORE_NAMES.length)],
+      storeCode: "",
+      supplier: "샘플 발주",
+      supplierCode: "",
       channel: ORDER_TYPES[Math.floor(Math.random() * ORDER_TYPES.length)],
       createdAt: todayStr(),
       status: "NEW",
@@ -1763,10 +1987,24 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
       .map((l) => {
         const it = items.find((i) => i.sku === l.sku);
         const qty = Number(l.qty);
-        return { sku: l.sku, name: it ? it.name : l.sku, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: it ? it.location : "-", unit: it ? it.unit : "", picked: false };
+        return { sku: l.sku, name: it ? it.name : l.sku, qty, changedQty: qty, allocatedQty: 0, allocStatus: "미할당", location: it ? it.location : "-", unit: it ? it.unit : "", packQty: it?.boxQty || 0, picked: false };
       });
     if (lines.length === 0) return setFormErr("수량이 1 이상인 품목을 하나 이상 추가해주세요.");
-    onAdd({ id: uid(), orderNo: genOrderNo(), customer, channel: orderType, createdAt: todayStr(), status: "NEW", pickDocNo: null, pmsStatus: null, invoiceIssued: false, lines });
+    onAdd({
+      id: uid(),
+      orderNo: genOrderNo(),
+      customer,
+      storeCode: "",
+      supplier: "직접입력",
+      supplierCode: "",
+      channel: orderType,
+      createdAt: todayStr(),
+      status: "NEW",
+      pickDocNo: null,
+      pmsStatus: null,
+      invoiceIssued: false,
+      lines,
+    });
     setDraftLines([{ sku: items[0]?.sku || "", qty: "" }]);
     setShowForm(false);
   }
@@ -1796,6 +2034,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
                   <th>SKU</th>
                   <th>품목명</th>
                   <th>주문수량</th>
+                  <th>박스/낱개 환산</th>
                   <th>변경단위수량</th>
                   <th>할당수량</th>
                   <th>할당상태</th>
@@ -1808,6 +2047,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
                     <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{l.sku}</td>
                     <td style={{ fontWeight: 600 }}>{l.name}</td>
                     <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{l.qty}</td>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.tealDeep, fontWeight: 600 }}>{boxBreakdown(l.qty, l.packQty)}</td>
                     <td>
                       <input
                         type="number"
@@ -1837,11 +2077,15 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
 
   return (
     <div>
-      <PageHeader title="I. 주문정보" sub="관할센터에서 접수된 발주 데이터를 조회·관리합니다" />
+      <PageHeader title="I. 주문정보" sub="화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다" />
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 13, color: T.inkSoft }}>관할센터 발주가 들어오면 여기서 접수돼요. 데모에서는 아래 버튼으로 시뮬레이션합니다.</div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ fontSize: 13, color: T.inkSoft }}>화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주가 등록됩니다.</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
+            <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={uploading} className="primary-btn" style={primaryBtnStyle}>
+              <Upload size={14} /> {uploading ? "읽는 중..." : "발주파일 업로드"}
+            </button>
             <button onClick={randomOrder} className="ghost-btn" style={smallBtnStyle}>
               <ClipboardList size={14} /> 샘플 발주 가져오기
             </button>
@@ -1850,6 +2094,16 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
             </button>
           </div>
         </div>
+        {uploadMsg && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: T.tealDeep, fontWeight: 600, display: "flex", alignItems: "flex-start", gap: 6 }}>
+            <Check size={14} style={{ marginTop: 1, flexShrink: 0 }} /> {uploadMsg}
+          </div>
+        )}
+        {uploadErr && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: T.danger, fontWeight: 600, display: "flex", alignItems: "flex-start", gap: 6 }}>
+            <AlertTriangle size={14} style={{ marginTop: 1, flexShrink: 0 }} /> {uploadErr}
+          </div>
+        )}
         {showForm && (
           <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="field-row" style={{ display: "flex", gap: 12 }}>
@@ -1906,7 +2160,41 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+      {supplierGroups.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>공급사별 발주 현황 (신규)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {supplierGroups.map((g) => (
+              <div
+                key={g.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  background: T.surface,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 8,
+                  padding: "14px 18px",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>{g.name}</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                    발주 {g.orderCount}건 · 품목 {g.skuCount}종 · 총수량 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{g.totalQty.toLocaleString()}</span>개
+                  </div>
+                </div>
+                <button onClick={() => onConvert(g.key)} className="primary-btn" style={primaryBtnStyle}>
+                  <ClipboardList size={15} /> 피킹지시서 변환하기
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         {["전체", "NEW", "ALLOCATED", "PICK_CONFIRMED", "SHIPPED", "DONE"].map((f) => (
           <button
             key={f}
@@ -1919,6 +2207,14 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
             {f === "전체" ? "전체" : ORDER_STATUS[f].label}
           </button>
         ))}
+        <select style={{ ...inputStyle, width: 240, marginLeft: "auto" }} value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)}>
+          <option value="전체">납품처(지역) 전체</option>
+          {storeOptions.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
@@ -1926,7 +2222,8 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
           <thead>
             <tr>
               <th>발주번호</th>
-              <th>발주처</th>
+              <th>공급사</th>
+              <th>납품처(지역)</th>
               <th>유형</th>
               <th>상태</th>
               <th>품목수</th>
@@ -1937,7 +2234,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={8}>
                   <EmptyRow text="해당 발주가 없습니다." />
                 </td>
               </tr>
@@ -1945,7 +2242,11 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty }) {
               filtered.map((o) => (
                 <tr key={o.id} className="rowhover" style={{ cursor: "pointer" }} onClick={() => setSelectedId(o.id)}>
                   <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{o.orderNo}</td>
-                  <td>{o.customer}</td>
+                  <td>{o.supplier || "-"}</td>
+                  <td>
+                    {o.storeCode && <span style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft, marginRight: 6 }}>{o.storeCode}</span>}
+                    {o.customer}
+                  </td>
                   <td>{o.channel}</td>
                   <td>
                     <OrderStatusPill status={o.status} />
@@ -2218,10 +2519,10 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
 
     return (
       <div>
-        <button onClick={() => setSelectedId(null)} className="ghost-btn" style={{ ...smallBtnStyle, marginBottom: 14 }}>
+        <button onClick={() => setSelectedId(null)} className="ghost-btn no-print" style={{ ...smallBtnStyle, marginBottom: 14 }}>
           <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> 목록으로
         </button>
-        <div style={cardStyle}>
+        <div style={cardStyle} className="print-area">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2232,38 +2533,51 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
                 {selected.customer} {selected.pickDocNo && <> · 지시서 {selected.pickDocNo}</>}
               </div>
             </div>
-            {selected.status === "ALLOCATED" ? (
-              <button onClick={() => canConfirm && onConfirm(selected.id)} disabled={!canConfirm} style={{ ...primaryBtnStyle, background: canConfirm ? T.teal : "#C7C2B4", cursor: canConfirm ? "pointer" : "not-allowed" }}>
-                <Check size={15} /> 확정
+            <div className="no-print" style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
+                <Printer size={14} /> 출력하기
               </button>
-            ) : (
-              <button onClick={() => onCancelConfirm(selected.id)} style={{ ...primaryBtnStyle, background: T.clay }}>
-                <RotateCcw size={15} /> 확정취소
-              </button>
-            )}
+              {selected.status === "ALLOCATED" ? (
+                <button onClick={() => canConfirm && onConfirm(selected.id)} disabled={!canConfirm} style={{ ...primaryBtnStyle, background: canConfirm ? T.teal : "#C7C2B4", cursor: canConfirm ? "pointer" : "not-allowed" }}>
+                  <Check size={15} /> 확정
+                </button>
+              ) : (
+                <button onClick={() => onCancelConfirm(selected.id)} style={{ ...primaryBtnStyle, background: T.clay }}>
+                  <RotateCcw size={15} /> 확정취소
+                </button>
+              )}
+            </div>
           </div>
           <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "16px 0 8px" }}>피킹 경로 순서 (구역 → 열 → 단 기준, 할당수량 기준)</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {sortedLines.map((l) => (
-              <div key={l.sku} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
-                <input
-                  type="checkbox"
-                  checked={!!l.picked}
-                  disabled={selected.status !== "ALLOCATED"}
-                  onChange={() => onToggle(selected.id, l.sku)}
-                  style={{ width: 18, height: 18, cursor: selected.status === "ALLOCATED" ? "pointer" : "not-allowed" }}
-                />
-                <LocationTag loc={l.location} />
-                <div style={{ flex: 1, minWidth: 120 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, textDecoration: l.picked ? "line-through" : "none", color: l.picked ? T.inkSoft : T.ink }}>{l.name}</div>
-                  <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{l.sku}</div>
+          {sortedLines.length === 0 ? (
+            <EmptyRow text="할당된 품목이 없습니다. 상품마스터에 품목을 등록한 뒤 다시 할당해주세요." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {sortedLines.map((l) => (
+                <div key={l.sku} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                  <input
+                    type="checkbox"
+                    className="no-print"
+                    checked={!!l.picked}
+                    disabled={selected.status !== "ALLOCATED"}
+                    onChange={() => onToggle(selected.id, l.sku)}
+                    style={{ width: 18, height: 18, cursor: selected.status === "ALLOCATED" ? "pointer" : "not-allowed" }}
+                  />
+                  <LocationTag loc={l.location} />
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, textDecoration: l.picked ? "line-through" : "none", color: l.picked ? T.inkSoft : T.ink }}>{l.name}</div>
+                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{l.sku}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14 }}>
+                      {l.allocatedQty} {l.unit}
+                    </div>
+                    <div style={{ fontSize: 11, color: T.tealDeep, fontWeight: 600 }}>{boxBreakdown(l.allocatedQty, l.packQty)}</div>
+                  </div>
                 </div>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14 }}>
-                  {l.allocatedQty} {l.unit}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
