@@ -1093,6 +1093,50 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  // 발주파일에 있지만 상품마스터에 없는 바코드를 "미배정" 상태로 자동 등록
+  const registerPlaceholderItem = useCallback(
+    async (sku, name) => {
+      try {
+        await apiFetch("/items", authToken, {
+          method: "POST",
+          body: { sku, name, category: null, location: "미배정", unit: "EA", qty: 0, safety: 0, temp_zone: "상온", work_type: "피킹", unit_qty: 1, box_qty: 1, cbm: 0 },
+        });
+      } catch (e) {
+        // 이미 있으면 이름만 갱신되고 넘어감
+      }
+    },
+    [authToken]
+  );
+
+  // X. 상품마스터 - 신규 품목 직접 등록
+  const createItem = useCallback(
+    async (fields) => {
+      try {
+        await apiFetch("/items", authToken, {
+          method: "POST",
+          body: {
+            sku: fields.sku,
+            name: fields.name,
+            category: fields.category || null,
+            location: fields.location || "미배정",
+            unit: fields.unit || "EA",
+            qty: fields.qty || 0,
+            safety: fields.safety || 0,
+            temp_zone: fields.tempZone || "상온",
+            work_type: fields.workType || "피킹",
+            unit_qty: fields.unitQty || 1,
+            box_qty: fields.boxQty || 1,
+            cbm: fields.cbm || 0,
+          },
+        });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
+
   // XI. 창고CELL (로컬 전용)
   const addCell = useCallback((cell) => {
     setCells((prev) => [...prev, { id: uid(), ...cell }]);
@@ -1134,6 +1178,7 @@ function WMSApp() {
       items: [
         { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
         { key: "pickinglist", label: "V. 피킹리스트", icon: ListOrdered, badgeKey: "alloc" },
+        { key: "pickinginspection", label: "품목별 검수표", icon: Grid3x3 },
         { key: "pickingreissue", label: "VI. 피킹재발행", icon: Printer },
       ],
     },
@@ -1322,7 +1367,14 @@ function WMSApp() {
         {tab === "history" && <HistoryView tx={tx} />}
 
         {tab === "orderinfo" && (
-          <OrderInfo items={itemsView} orders={orders} onAdd={addOrder} onUpdateChangedQty={updateChangedQty} onConvert={convertSupplierToPicking} />
+          <OrderInfo
+            items={itemsView}
+            orders={orders}
+            onAdd={addOrder}
+            onUpdateChangedQty={updateChangedQty}
+            onConvert={convertSupplierToPicking}
+            onRegisterItem={registerPlaceholderItem}
+          />
         )}
         {tab === "allocation" && <Allocation items={itemsView} orders={orders} onAllocate={allocateOrder} />}
         {tab === "alloclist" && <AllocationList orders={orders} onCancel={cancelAllocationLine} />}
@@ -1331,6 +1383,7 @@ function WMSApp() {
         {tab === "pickinglist" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} />
         )}
+        {tab === "pickinginspection" && <PickingInspection orders={orders} />}
         {tab === "pickingreissue" && <PickingReissue docs={pickingDocs} onReissue={reissueDoc} />}
 
         {tab === "shipping" && (
@@ -1339,7 +1392,7 @@ function WMSApp() {
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -2003,7 +2056,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert }) {
+function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegisterItem }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -2124,6 +2177,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert }) {
       };
 
       const groups = {};
+      const unmatchedMap = new Map(); // sku -> name (자동 등록용)
       dataRows.forEach((r) => {
         const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
         const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
@@ -2155,6 +2209,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert }) {
         const unit = (col.unit !== -1 && r[col.unit]) || "EA";
         const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
         const matched = items.find((i) => i.sku === sku || i.name === name);
+        if (!matched && !unmatchedMap.has(sku)) unmatchedMap.set(sku, name);
         groups[key].lines.push({
           sku,
           name,
@@ -2171,13 +2226,20 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert }) {
 
       const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
       if (newOrders.length === 0) throw new Error("유효한 발주 라인을 찾지 못했습니다.");
-      newOrders.forEach((o) => onAdd(o));
+
+      for (const [sku, name] of unmatchedMap.entries()) {
+        if (onRegisterItem) await onRegisterItem(sku, name);
+      }
+      for (const o of newOrders) {
+        await onAdd(o);
+      }
+
       const totalLines = newOrders.reduce((a, o) => a + o.lines.length, 0);
-      const unmatched = newOrders.reduce((a, o) => a + o.lines.filter((l) => l.location === "-").length, 0);
+      const unmatched = unmatchedMap.size;
       const supplierCount = new Set(newOrders.map((o) => o.supplierCode || o.supplier)).size;
       setUploadMsg(
         `공급사 ${supplierCount}곳 · 발주 ${newOrders.length}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
-          (unmatched > 0 ? ` (상품마스터에 없는 품목 ${unmatched}건은 로케이션 미배정 상태입니다 — 상품마스터에서 등록해주세요.)` : "")
+          (unmatched > 0 ? ` (상품마스터에 없던 품목 ${unmatched}건은 '미배정' 위치로 자동 등록되었습니다 — X.상품마스터에서 실제 로케이션을 입력해주세요.)` : "")
       );
     } catch (e) {
       setUploadErr("파일을 읽는 중 문제가 발생했습니다: " + e.message);
@@ -2867,6 +2929,117 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
 }
 
 /* ================= VI. 피킹재발행 ================= */
+/* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown) ================= */
+function PickingInspection({ orders }) {
+  const [selectedSku, setSelectedSku] = useState(null);
+
+  // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 다시 집계
+  const products = useMemo(() => {
+    const bySku = {};
+    orders.forEach((o) => {
+      if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
+      const regionKey = o.storeCode || o.customer;
+      const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+      o.lines.forEach((l) => {
+        if (l.allocatedQty <= 0) return;
+        if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, regions: {} };
+        if (!bySku[l.sku].regions[regionKey]) bySku[l.sku].regions[regionKey] = { key: regionKey, label: regionLabel, qty: 0 };
+        bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
+      });
+    });
+    return Object.values(bySku)
+      .map((p) => {
+        const regionRows = Object.values(p.regions).sort((a, b) => a.label.localeCompare(b.label));
+        const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
+        return { ...p, regionRows, totalQty };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [orders]);
+
+  const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
+
+  return (
+    <div>
+      <PageHeader title="품목별 검수표" sub="발주번호와 상관없이, 상품 하나를 기준으로 어느 지역에 몇 개씩 나가는지 정리합니다" />
+      {products.length === 0 ? (
+        <div style={cardStyle}>
+          <EmptyRow text="할당된 품목이 없습니다. 먼저 상품할당(또는 피킹지시서 변환)을 진행해주세요." />
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ flex: "1 1 260px" }}>
+            <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 520, overflowY: "auto" }}>
+              {products.map((p) => (
+                <button
+                  key={p.sku}
+                  onClick={() => setSelectedSku(p.sku)}
+                  className="rowhover"
+                  style={{
+                    display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none",
+                    background: selected && selected.sku === p.sku ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                  <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                    {p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ flex: "2 1 420px" }}>
+            {selected && (
+              <div style={cardStyle} className="print-area">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
+                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku}</div>
+                  </div>
+                  <button onClick={() => window.print()} className="ghost-btn no-print" style={smallBtnStyle}>
+                    <Printer size={14} /> 출력하기
+                  </button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>지역(납품처)</th>
+                        <th>입수</th>
+                        <th>총수량</th>
+                        <th>박스/낱개</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.regionRows.map((r) => (
+                        <tr key={r.key}>
+                          <td style={{ fontWeight: 600 }}>{r.label}</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{selected.packQty || "-"}</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.tealDeep, fontWeight: 600 }}>{boxBreakdown(r.qty, selected.packQty)}</td>
+                        </tr>
+                      ))}
+                      <tr>
+                        <td style={{ fontWeight: 700 }}>합계</td>
+                        <td></td>
+                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{selected.totalQty}</td>
+                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{boxBreakdown(selected.totalQty, selected.packQty)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>
+                  * 발주번호와 관계없이 같은 지역으로 가는 수량은 합산되어 표시됩니다.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PickingReissue({ docs, onReissue }) {
   const [query, setQuery] = useState("");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -3187,15 +3360,19 @@ function VehicleStoreMap({ stores, vehicles, onAddVehicle, onMap }) {
 }
 
 /* ================= X. 상품마스터 ================= */
-function ProductMaster({ items, onSave }) {
+function ProductMaster({ items, onSave, onCreate }) {
   const [selectedSku, setSelectedSku] = useState(items[0]?.sku || null);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(null);
+  const [mode, setMode] = useState("edit"); // "edit" | "create"
+  const [createForm, setCreateForm] = useState({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0 });
+  const [createErr, setCreateErr] = useState("");
 
   const selected = items.find((i) => i.sku === selectedSku) || null;
   const filtered = items.filter((i) => !query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase()));
 
   function openEdit(item) {
+    setMode("edit");
     setSelectedSku(item.sku);
     setForm({ tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm });
   }
@@ -3203,15 +3380,27 @@ function ProductMaster({ items, onSave }) {
     if (!selected || !form) return;
     onSave(selected.sku, form);
   }
+  function submitCreate() {
+    setCreateErr("");
+    if (!createForm.sku.trim() || !createForm.name.trim()) return setCreateErr("SKU와 품목명은 필수입니다.");
+    if (items.some((i) => i.sku === createForm.sku.trim())) return setCreateErr("이미 존재하는 SKU입니다.");
+    onCreate({ ...createForm, sku: createForm.sku.trim(), location: createForm.location.trim() || "미배정" });
+    setCreateForm({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0 });
+  }
 
   return (
     <div>
       <PageHeader title="X. 상품마스터" sub="품목별 온도구역·작업유형·로케이션·단위정보를 관리합니다" />
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "2 1 420px" }}>
-          <div style={{ position: "relative", marginBottom: 12 }}>
-            <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
-            <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명 또는 SKU 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <div style={{ position: "relative", flex: 1 }}>
+              <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
+              <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명 또는 SKU 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <button onClick={() => setMode("create")} className="primary-btn" style={primaryBtnStyle}>
+              <Plus size={14} /> 새 품목 추가
+            </button>
           </div>
           <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
             <table>
@@ -3226,30 +3415,93 @@ function ProductMaster({ items, onSave }) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((i) => (
-                  <tr key={i.id} className="rowhover">
-                    <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
-                    <td style={{ fontWeight: 600 }}>{i.name}</td>
-                    <td>{i.tempZone}</td>
-                    <td>{i.workType}</td>
-                    <td>
-                      <LocationTag loc={i.location} />
-                    </td>
-                    <td>
-                      <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
-                        <Pencil size={13} /> 수정
-                      </button>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <EmptyRow text="등록된 품목이 없습니다." />
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  filtered.map((i) => (
+                    <tr key={i.id} className="rowhover">
+                      <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
+                      <td style={{ fontWeight: 600 }}>{i.name}</td>
+                      <td>{i.tempZone}</td>
+                      <td>{i.workType}</td>
+                      <td>
+                        <LocationTag loc={i.location} />
+                      </td>
+                      <td>
+                        <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
+                          <Pencil size={13} /> 수정
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
         </div>
         <div style={{ flex: "1 1 280px" }}>
           <div style={cardStyle}>
-            {!selected || !form ? (
-              <div style={{ fontSize: 13, color: T.inkSoft }}>목록에서 "수정"을 눌러 품목 정보를 편집하세요.</div>
+            {mode === "create" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>새 품목 추가</div>
+                <Field label="SKU (바코드/품목코드)">
+                  <input style={inputStyle} value={createForm.sku} onChange={(e) => setCreateForm({ ...createForm, sku: e.target.value })} placeholder="예: 8809494071723" />
+                </Field>
+                <Field label="품목명">
+                  <input style={inputStyle} value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} placeholder="품목명을 입력하세요" />
+                </Field>
+                <Field label="카테고리">
+                  <input style={inputStyle} value={createForm.category} onChange={(e) => setCreateForm({ ...createForm, category: e.target.value })} placeholder="예: 베이커리" />
+                </Field>
+                <Field label="온도구역">
+                  <select style={inputStyle} value={createForm.tempZone} onChange={(e) => setCreateForm({ ...createForm, tempZone: e.target.value })}>
+                    {TEMP_ZONES.map((z) => (
+                      <option key={z}>{z}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="작업유형">
+                  <select style={inputStyle} value={createForm.workType} onChange={(e) => setCreateForm({ ...createForm, workType: e.target.value })}>
+                    {WORK_TYPES.map((w) => (
+                      <option key={w}>{w}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="피킹 로케이션 (모르면 비워두면 '미배정')">
+                  <input style={inputStyle} value={createForm.location} onChange={(e) => setCreateForm({ ...createForm, location: e.target.value })} placeholder="예: A-01-03" />
+                </Field>
+                <div className="field-row" style={{ display: "flex", gap: 10 }}>
+                  <Field label="낱개단위">
+                    <input style={inputStyle} type="number" value={createForm.unitQty} onChange={(e) => setCreateForm({ ...createForm, unitQty: Number(e.target.value) })} />
+                  </Field>
+                  <Field label="박스단위(입수)">
+                    <input style={inputStyle} type="number" value={createForm.boxQty} onChange={(e) => setCreateForm({ ...createForm, boxQty: Number(e.target.value) })} />
+                  </Field>
+                </div>
+                <div className="field-row" style={{ display: "flex", gap: 10 }}>
+                  <Field label="초기 재고">
+                    <input style={inputStyle} type="number" value={createForm.qty} onChange={(e) => setCreateForm({ ...createForm, qty: Number(e.target.value) })} />
+                  </Field>
+                  <Field label="안전재고">
+                    <input style={inputStyle} type="number" value={createForm.safety} onChange={(e) => setCreateForm({ ...createForm, safety: Number(e.target.value) })} />
+                  </Field>
+                </div>
+                {createErr && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{createErr}</div>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={submitCreate} className="primary-btn" style={primaryBtnStyle}>
+                    <Check size={14} /> 등록
+                  </button>
+                  <button onClick={() => setMode("edit")} className="ghost-btn" style={smallBtnStyle}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            ) : !selected || !form ? (
+              <div style={{ fontSize: 13, color: T.inkSoft }}>목록에서 "수정"을 눌러 품목 정보를 편집하거나, 위 "새 품목 추가" 버튼을 눌러 미리 등록하세요.</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{selected.name}</div>
