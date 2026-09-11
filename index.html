@@ -1152,6 +1152,16 @@ function WMSApp() {
   );
 
   // 발주파일에 있지만 상품마스터에 없는 바코드를 "미배정" 상태로 자동 등록
+  // 테스트 데이터 초기화 (모든 발주 삭제, 재고/상품마스터는 유지)
+  const resetAllOrders = useCallback(async () => {
+    try {
+      await apiFetch("/orders/reset-all", authToken, { method: "DELETE" });
+      await loadCoreData();
+    } catch (e) {
+      setApiErr(e.message);
+    }
+  }, [authToken, loadCoreData]);
+
   const registerPlaceholderItem = useCallback(
     async (sku, name) => {
       try {
@@ -1432,6 +1442,7 @@ function WMSApp() {
             onUpdateChangedQty={updateChangedQty}
             onConvert={convertSupplierToPicking}
             onRegisterItem={registerPlaceholderItem}
+            onReset={resetAllOrders}
           />
         )}
         {tab === "allocation" && <Allocation items={itemsView} orders={orders} onAllocate={allocateOrder} />}
@@ -2114,7 +2125,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegisterItem }) {
+function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegisterItem, onReset }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -2453,6 +2464,15 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
             </button>
             <button onClick={() => setShowForm((s) => !s)} className="ghost-btn" style={smallBtnStyle}>
               <Plus size={14} /> 직접 입력
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm("모든 발주 데이터를 삭제합니다. 재고/상품마스터는 그대로 유지됩니다. 계속할까요?")) onReset();
+              }}
+              className="ghost-btn"
+              style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}
+            >
+              <Trash2 size={14} /> 테스트 데이터 초기화
             </button>
           </div>
         </div>
