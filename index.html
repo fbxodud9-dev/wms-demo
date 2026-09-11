@@ -2933,6 +2933,7 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm, onRe
 /* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown) ================= */
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
+  const [checkpointSize, setCheckpointSize] = useState(5);
 
   // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 다시 집계
   const products = useMemo(() => {
@@ -2959,9 +2960,41 @@ function PickingInspection({ orders }) {
 
   const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
 
+  // 오피킹 방지용: 전체 지역을 앞/뒤 두 구역(A/B)으로 나누고, 몇 개마다 체크포인트(누적·잔여) 행을 끼워넣음
+  const buildZoneRows = (rows, packQty, zoneLabel) => {
+    const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
+    const bd = (q) => (packQty > 0 ? { box: Math.floor(q / packQty), rem: q % packQty } : { box: 0, rem: q });
+    const out = [];
+    let cum = 0;
+    rows.forEach((r, idx) => {
+      cum += r.qty;
+      out.push({ type: "region", ...r, ...bd(r.qty) });
+      const isLast = idx === rows.length - 1;
+      const atCheckpoint = checkpointSize > 0 && (idx + 1) % checkpointSize === 0;
+      if (atCheckpoint && !isLast) {
+        const remaining = zoneTotalQty - cum;
+        out.push({ type: "checkpoint", cum: bd(cum), remaining: bd(remaining) });
+      }
+    });
+    out.push({ type: "zoneTotal", label: zoneLabel, qty: zoneTotalQty, ...bd(zoneTotalQty) });
+    return out;
+  };
+
+  const tableRows = useMemo(() => {
+    if (!selected) return [];
+    const rows = selected.regionRows;
+    if (rows.length === 0) return [];
+    const half = Math.ceil(rows.length / 2);
+    const zoneA = rows.slice(0, half);
+    const zoneB = rows.slice(half);
+    const out = [...buildZoneRows(zoneA, selected.packQty, "A구역 합계")];
+    if (zoneB.length > 0) out.push(...buildZoneRows(zoneB, selected.packQty, "B구역 합계"));
+    return out;
+  }, [selected, checkpointSize]);
+
   return (
     <div>
-      <PageHeader title="품목별 검수표" sub="발주번호와 상관없이, 상품 하나를 기준으로 어느 지역에 몇 개씩 나가는지 정리합니다" />
+      <PageHeader title="품목별 검수표" sub="발주번호와 상관없이, 상품 하나를 기준으로 어느 지역에 몇 개씩 나가는지 정리합니다 (오피킹 방지 체크포인트 포함)" />
       {products.length === 0 ? (
         <div style={cardStyle}>
           <EmptyRow text="할당된 품목이 없습니다. 먼저 상품할당(또는 피킹지시서 변환)을 진행해주세요." />
@@ -2989,50 +3022,95 @@ function PickingInspection({ orders }) {
             </div>
           </div>
 
-          <div style={{ flex: "2 1 420px" }}>
+          <div style={{ flex: "2 1 460px" }}>
             {selected && (
-              <div style={cardStyle} className="print-area">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
-                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku}</div>
+              <>
+                <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 12.5, color: T.inkSoft }}>체크포인트 간격</span>
+                  <input
+                    type="number"
+                    min={0}
+                    style={{ ...inputStyle, width: 70, padding: "6px 8px" }}
+                    value={checkpointSize}
+                    onChange={(e) => setCheckpointSize(Math.max(0, Number(e.target.value)))}
+                  />
+                  <span style={{ fontSize: 12, color: T.inkSoft }}>개 지역마다 (0이면 체크포인트 없음)</span>
+                </div>
+                <div style={cardStyle} className="print-area">
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
+                      <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku} · 입수 {selected.packQty || "-"}</div>
+                    </div>
+                    <button onClick={() => window.print()} className="ghost-btn no-print" style={smallBtnStyle}>
+                      <Printer size={14} /> 출력하기
+                    </button>
                   </div>
-                  <button onClick={() => window.print()} className="ghost-btn no-print" style={smallBtnStyle}>
-                    <Printer size={14} /> 출력하기
-                  </button>
-                </div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>지역(납품처)</th>
-                        <th>입수</th>
-                        <th>총수량</th>
-                        <th>박스/낱개</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selected.regionRows.map((r) => (
-                        <tr key={r.key}>
-                          <td style={{ fontWeight: 600 }}>{r.label}</td>
-                          <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{selected.packQty || "-"}</td>
-                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
-                          <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.tealDeep, fontWeight: 600 }}>{boxBreakdown(r.qty, selected.packQty)}</td>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>지역(납품처)</th>
+                          <th>총수량</th>
+                          <th>박스</th>
+                          <th>낱개</th>
+                          <th>체크포인트</th>
                         </tr>
-                      ))}
-                      <tr>
-                        <td style={{ fontWeight: 700 }}>합계</td>
-                        <td></td>
-                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{selected.totalQty}</td>
-                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{boxBreakdown(selected.totalQty, selected.packQty)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {tableRows.map((r, idx) => {
+                          if (r.type === "checkpoint") {
+                            return (
+                              <tr key={`cp-${idx}`} style={{ background: "#FCF1DD" }}>
+                                <td colSpan={4} style={{ fontSize: 12, color: T.amberDeep, fontWeight: 700 }}>
+                                  ▸ 체크포인트: 여기까지 피킹 완료됐는지 확인
+                                </td>
+                                <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: T.amberDeep }}>
+                                  누적 {r.cum.box}박스 {r.cum.rem}개 · 잔여 {r.remaining.box}박스 {r.remaining.rem}개
+                                </td>
+                              </tr>
+                            );
+                          }
+                          if (r.type === "zoneTotal") {
+                            return (
+                              <tr key={`zt-${idx}`} style={{ background: T.bg }}>
+                                <td style={{ fontWeight: 700 }}>{r.label}</td>
+                                <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
+                                <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.box}</td>
+                                <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.rem}</td>
+                                <td></td>
+                              </tr>
+                            );
+                          }
+                          return (
+                            <tr key={r.key}>
+                              <td style={{ fontWeight: 600 }}>{r.label}</td>
+                              <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
+                              <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.box}</td>
+                              <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.rem}</td>
+                              <td></td>
+                            </tr>
+                          );
+                        })}
+                        <tr style={{ background: T.steel }}>
+                          <td style={{ fontWeight: 700, color: "#fff" }}>총합계</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>{selected.totalQty}</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
+                            {selected.packQty > 0 ? Math.floor(selected.totalQty / selected.packQty) : 0}
+                          </td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
+                            {selected.packQty > 0 ? selected.totalQty % selected.packQty : selected.totalQty}
+                          </td>
+                          <td></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>
+                    * 발주번호와 관계없이 같은 지역으로 가는 수량은 합산됩니다. A/B구역은 지리적 구분이 아니라 오피킹 방지를 위한 절반 나누기이며, 체크포인트는 실제 지역 순서를 임의로 나눈 것이라 원본 문서의 위치와 정확히 일치하지 않을 수 있습니다.
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>
-                  * 발주번호와 관계없이 같은 지역으로 가는 수량은 합산되어 표시됩니다.
-                </div>
-              </div>
+              </>
             )}
           </div>
         </div>
