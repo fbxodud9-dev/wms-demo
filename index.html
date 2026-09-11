@@ -2442,7 +2442,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
       <PageHeader title="I. 주문정보" sub="화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다" />
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 13, color: T.inkSoft }}>화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주가 등록됩니다.</div>
+          <div style={{ fontSize: 13, color: T.inkSoft }}>화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주 등록과 할당까지 한 번에 완료됩니다. 바로 품목별 검수표에서 확인하세요.</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
             <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={uploading} className="primary-btn" style={primaryBtnStyle}>
@@ -2633,7 +2633,7 @@ function Allocation({ items, orders, onAllocate }) {
 
   return (
     <div>
-      <PageHeader title="II. 상품할당" sub="신규 발주를 요청수량 그대로 할당합니다 (재고와 무관하게 100% 할당, 크로스도킹 정책)" />
+      <PageHeader title="II. 상품할당" sub="발주 등록과 동시에 요청수량 그대로 자동 할당됩니다 (별도 버튼 조작 불필요, 크로스도킹 정책)" />
       {newOrders.length > 1 && (
         <div style={{ marginBottom: 14 }}>
           <button onClick={() => newOrders.forEach((o) => onAllocate(o.id))} className="ghost-btn" style={smallBtnStyle}>
@@ -2643,7 +2643,7 @@ function Allocation({ items, orders, onAllocate }) {
       )}
       {newOrders.length === 0 ? (
         <div style={cardStyle}>
-          <EmptyRow text="할당 대기 중인 신규 발주가 없습니다." />
+          <EmptyRow text="발주 등록과 동시에 자동으로 할당되기 때문에, 여기서 따로 처리할 신규 발주는 없습니다." />
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
