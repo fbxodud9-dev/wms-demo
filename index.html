@@ -1084,6 +1084,7 @@ function WMSApp() {
         if (fields.unitQty !== undefined) body.unit_qty = fields.unitQty;
         if (fields.boxQty !== undefined) body.box_qty = fields.boxQty;
         if (fields.cbm !== undefined) body.cbm = fields.cbm;
+        if (fields.qty !== undefined) body.qty = fields.qty;
         await apiFetch(`/items/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body });
         await loadCoreData();
       } catch (e) {
@@ -1381,7 +1382,7 @@ function WMSApp() {
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickinglist" && (
-          <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} />
+          <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
         {tab === "pickinginspection" && <PickingInspection orders={orders} />}
         {tab === "pickingreissue" && <PickingReissue docs={pickingDocs} onReissue={reissueDoc} />}
@@ -2575,7 +2576,7 @@ function Allocation({ items, orders, onAllocate }) {
 
   return (
     <div>
-      <PageHeader title="II. 상품할당" sub="신규 발주에 대해 재고를 확인하고 할당수량을 계산합니다" />
+      <PageHeader title="II. 상품할당" sub="신규 발주를 요청수량 그대로 할당합니다 (재고와 무관하게 100% 할당, 크로스도킹 정책)" />
       {newOrders.length > 1 && (
         <div style={{ marginBottom: 14 }}>
           <button onClick={() => newOrders.forEach((o) => onAllocate(o.id))} className="ghost-btn" style={smallBtnStyle}>
@@ -2591,7 +2592,6 @@ function Allocation({ items, orders, onAllocate }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {newOrders.map((o) => {
             const totalReq = o.lines.reduce((a, l) => a + (l.changedQty ?? l.qty), 0);
-            const totalAvail = o.lines.reduce((a, l) => a + Math.min(l.changedQty ?? l.qty, stockOf(l.sku)), 0);
             return (
               <div key={o.id} style={cardStyle}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
@@ -2613,25 +2613,21 @@ function Allocation({ items, orders, onAllocate }) {
                         <th>품목명</th>
                         <th>SKU</th>
                         <th>요청수량</th>
-                        <th>현재재고</th>
-                        <th>예상 할당수량</th>
-                        <th>예상 미할당량</th>
+                        <th>현재재고(참고용)</th>
+                        <th>할당예정수량</th>
                       </tr>
                     </thead>
                     <tbody>
                       {o.lines.map((l) => {
                         const req = l.changedQty ?? l.qty;
                         const stock = stockOf(l.sku);
-                        const alloc = Math.min(req, stock);
-                        const unalloc = req - alloc;
                         return (
                           <tr key={l.sku}>
                             <td style={{ fontWeight: 600 }}>{l.name}</td>
                             <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{l.sku}</td>
                             <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{req}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{stock}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: T.tealDeep }}>{alloc}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: unalloc > 0 ? T.danger : T.inkSoft }}>{unalloc}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{stock}</td>
+                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: T.tealDeep }}>{req}</td>
                           </tr>
                         );
                       })}
@@ -2639,7 +2635,7 @@ function Allocation({ items, orders, onAllocate }) {
                   </table>
                 </div>
                 <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10 }}>
-                  합계: 요청 {totalReq} / 할당 가능 {totalAvail} {totalAvail < totalReq && <span style={{ color: T.danger, fontWeight: 700 }}> · 재고 부족으로 부분할당 예상</span>}
+                  합계: 요청 {totalReq} · 요청수량 전체가 그대로 할당됩니다 (재고 부족과 무관)
                 </div>
               </div>
             );
@@ -2804,7 +2800,7 @@ function Replenishment({ items, onToggle }) {
 }
 
 /* ================= V. 피킹리스트 ================= */
-function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
+function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm, onReallocate }) {
   const [selectedId, setSelectedId] = useState(null);
   const relevant = orders.filter((o) => o.status === "ALLOCATED" || o.status === "PICK_CONFIRMED");
   const selected = relevant.find((o) => o.id === selectedId) || null;
@@ -2841,6 +2837,11 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm }) {
               <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
                 <Printer size={14} /> 출력하기
               </button>
+              {selected.status === "ALLOCATED" && (
+                <button onClick={() => onReallocate(selected.id)} className="ghost-btn" style={smallBtnStyle}>
+                  <RotateCcw size={14} /> 재할당
+                </button>
+              )}
               {selected.status === "ALLOCATED" ? (
                 <button onClick={() => canConfirm && onConfirm(selected.id)} disabled={!canConfirm} style={{ ...primaryBtnStyle, background: canConfirm ? T.teal : "#C7C2B4", cursor: canConfirm ? "pointer" : "not-allowed" }}>
                   <Check size={15} /> 확정
@@ -3374,7 +3375,7 @@ function ProductMaster({ items, onSave, onCreate }) {
   function openEdit(item) {
     setMode("edit");
     setSelectedSku(item.sku);
-    setForm({ tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm });
+    setForm({ tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm, qty: item.qty });
   }
   function save() {
     if (!selected || !form) return;
@@ -3522,6 +3523,9 @@ function ProductMaster({ items, onSave, onCreate }) {
                 </Field>
                 <Field label="피킹 로케이션">
                   <input style={inputStyle} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+                </Field>
+                <Field label="재고수량 (직접 수정 — 보통은 입고등록을 이용하세요)">
+                  <input style={inputStyle} type="number" value={form.qty} onChange={(e) => setForm({ ...form, qty: Number(e.target.value) })} />
                 </Field>
                 <div className="field-row" style={{ display: "flex", gap: 10 }}>
                   <Field label="낱개단위">
