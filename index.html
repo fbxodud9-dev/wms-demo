@@ -440,14 +440,14 @@ const COURSE_NAMES = ["A", "B", "S"];
 // 오피킹 방지용 고정 지역 순서 + A/B 구역 (화주사 제공 기준표)
 const REGION_ORDER_TABLE = [
   { code: "VV16", name: "원주", zone: "A" },
-  { code: "VV69", name: "강릉", zone: "A" },
+  { code: "VV69", name: "강릉", zone: "A", checkpoint: true },
   { code: "VV57", name: "김해", zone: "A" },
   { code: "VV58", name: "김해2", zone: "A" },
   { code: "VV25", name: "진주", zone: "A" },
   { code: "VV20", name: "CVS", zone: "A" },
   { code: "VV92", name: "신제주", zone: "A" },
   { code: "VV95", name: "신광주", zone: "A" },
-  { code: "VV96", name: "신광주2", zone: "A" },
+  { code: "VV96", name: "신광주2", zone: "A", checkpoint: true },
   { code: "VV83", name: "경산", zone: "A" },
   { code: "VV84", name: "경산2", zone: "A" },
   { code: "VV97", name: "경산3", zone: "A" },
@@ -455,23 +455,23 @@ const REGION_ORDER_TABLE = [
   { code: "VV04", name: "공주", zone: "A" },
   { code: "VV75", name: "공주2", zone: "A" },
   { code: "VV34", name: "청주", zone: "A" },
-  { code: "VV03", name: "아신A", zone: "A" },
+  { code: "VV03", name: "아신A", zone: "A", checkpoint: true },
   { code: "VV63", name: "고양", zone: "B" },
   { code: "VV64", name: "고양2", zone: "B" },
   { code: "VV81", name: "고양3", zone: "B" },
   { code: "VV62", name: "김포2", zone: "B" },
-  { code: "VV70", name: "김포3", zone: "B" },
+  { code: "VV70", name: "김포3", zone: "B", checkpoint: true },
   { code: "VV98", name: "고촌", zone: "B" },
   { code: "VV99", name: "고촌2", zone: "B" },
   { code: "VV90", name: "포천", zone: "B" },
   { code: "VV91", name: "포천2", zone: "B" },
   { code: "VV66", name: "도화", zone: "B" },
-  { code: "VV67", name: "도화2", zone: "B" },
+  { code: "VV67", name: "도화2", zone: "B", checkpoint: true },
   { code: "VV17", name: "발안", zone: "B" },
   { code: "VV71", name: "발안2", zone: "B" },
   { code: "VV85", name: "신오산1", zone: "B" },
   { code: "VV86", name: "신오산2", zone: "B" },
-  { code: "VV87", name: "신오산3", zone: "B" },
+  { code: "VV87", name: "신오산3", zone: "B", checkpoint: true },
   { code: "VV53", name: "송파", zone: "B" },
   { code: "VV55", name: "송파2", zone: "B" },
   { code: "VV93", name: "곤지암", zone: "B" },
@@ -480,7 +480,7 @@ const REGION_ORDER_TABLE = [
 const REGION_ORDER_MAP = (() => {
   const m = {};
   REGION_ORDER_TABLE.forEach((r, i) => {
-    m[r.code] = { order: i, zone: r.zone, shortName: r.name };
+    m[r.code] = { order: i, zone: r.zone, shortName: r.name, checkpoint: !!r.checkpoint };
   });
   return m;
 })();
@@ -3088,17 +3088,18 @@ function addStyledInspectionSheet(workbook, product, usedNames) {
     row.height = 26.25;
     const size = { A: 11, B: 11, C: 14, D: 12, E: 14, F: 12 };
     const bold = { A: false, B: false, C: true, D: false, E: true, F: false };
+    const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
     const isGray = bandIndex % 2 === 0;
     bandIndex++;
     ["A", "B", "C", "D", "E", "F"].forEach((col) => {
       const c = row.getCell(col);
       c.font = { name: XLFONT, size: size[col], bold: bold[col] };
       if (isGray) c.fill = XL_GRAY_FILL;
-      c.alignment = { horizontal: col === "A" ? "left" : "center", vertical: "middle" };
+      c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
-    // 체크포인트: 이 지역 다음부터 남은 전체 낱개를 박스로 환산 (오피킹 방지용 중간 검산)
-    if (pack > 0 && flatIdx < flat.length - 1) {
+    // 체크포인트: 화주사가 지정한 특정 지역에서만 표시 (강릉·신광주2·아신A·김포3·도화2·신오산3)
+    if (pack > 0 && r.checkpoint && flatIdx < flat.length - 1) {
       const remainingRem = remAfter[flatIdx + 1];
       const cpBox = Math.floor(remainingRem / pack);
       const cpRem = remainingRem - cpBox * pack;
@@ -3117,10 +3118,11 @@ function addStyledInspectionSheet(workbook, product, usedNames) {
     const { box, rem } = bd(qty);
     const row = ws.addRow([label, pack || "", qty, box, "", rem]);
     row.height = 27;
+    const alignH = { A: "center", B: "center", C: "right", D: "center", E: "center", F: "center" };
     ["A", "B", "C", "D", "E", "F"].forEach((col) => {
       const c = row.getCell(col);
       c.font = { name: XLFONT, size: 16, bold: true };
-      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
     return row;
@@ -3156,15 +3158,16 @@ function addStyledInspectionSheet(workbook, product, usedNames) {
   const subRem = totalRemSum - subBox * pack;
   const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
   finalRow.height = 27;
+  const finalAlign = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 12, bold: true };
-    c.alignment = { horizontal: col === "A" ? "left" : "center", vertical: "middle" };
+    c.font = { name: XLFONT, size: 16, bold: true };
+    c.alignment = { horizontal: finalAlign[col], vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
   ["G", "H"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 18, bold: true };
+    c.font = { name: XLFONT, size: 20, bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
@@ -3215,6 +3218,7 @@ function PickingInspection({ orders }) {
             shortName: ref ? ref.shortName : null,
             zone: ref ? ref.zone : "미지정",
             order: ref ? ref.order : 9999,
+            checkpoint: ref ? ref.checkpoint : false,
             qty: 0,
           };
         }
