@@ -16,12 +16,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
 const XLSX = window.XLSX;
+const ExcelJS = window.ExcelJS;
 
 function IconBase(props) {
   const { size = 16, strokeWidth = 2, color, style, className, children } = props;
@@ -3007,28 +3009,6 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm, onRe
 }
 
 // 품목별 검수표 1개 품목을 원본 피킹지시서와 동일한 레이아웃의 시트 데이터(AOA)로 변환
-function buildInspectionSheetAOA(product) {
-  const bd = (q) => (product.packQty > 0 ? { box: Math.floor(q / product.packQty), rem: q % product.packQty } : { box: 0, rem: q });
-  const aoa = [];
-  aoa.push([todayStr(), product.supplier || "", "", "", "", "", "박스", "낱개"]);
-  aoa.push(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
-  const merges = [{ s: { r: 0, c: 1 }, e: { r: 0, c: 5 } }];
-  ["A", "B", "미지정"].forEach((zone) => {
-    const rows = product.regionRows.filter((r) => r.zone === zone);
-    if (rows.length === 0) return;
-    rows.forEach((r) => {
-      const { box, rem } = bd(r.qty);
-      aoa.push([r.label, product.packQty || "", r.qty, box, r.shortName || "", rem]);
-    });
-    const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
-    const zt = bd(zoneTotalQty);
-    aoa.push([zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, product.packQty || "", zoneTotalQty, zt.box, "", zt.rem]);
-  });
-  const grand = bd(product.totalQty);
-  aoa.push(["총합계", product.packQty || "", product.totalQty, grand.box, "", grand.rem]);
-  return { aoa, merges };
-}
-
 function safeSheetName(name, used) {
   let base = String(name || "품목").replace(/[\\/?*[\]:]/g, "").slice(0, 28) || "품목";
   let candidate = base;
@@ -3041,22 +3021,113 @@ function safeSheetName(name, used) {
   return candidate;
 }
 
-function downloadInspectionExcel(products, filename) {
-  const wb = XLSX.utils.book_new();
-  const used = new Set();
-  products.forEach((p) => {
-    const { aoa, merges } = buildInspectionSheetAOA(p);
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!merges"] = merges;
-    ws["!cols"] = [{ wch: 32 }, { wch: 8 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 8 }];
-    XLSX.utils.book_append_sheet(wb, ws, safeSheetName(p.name, used));
+const XLFONT = "맑은 고딕";
+const XL_THIN = { style: "thin", color: { argb: "FF000000" } };
+const XL_MEDIUM = { style: "medium", color: { argb: "FF000000" } };
+const XL_GRAY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
+
+// 실제 피킹지시서 디자인(테두리·음영·폰트 크기)을 그대로 적용해 1개 품목 시트를 만듦
+function addStyledInspectionSheet(workbook, product, usedNames) {
+  const pack = product.packQty || 0;
+  const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+  const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
+  ws.columns = [{ width: 34 }, { width: 8 }, { width: 31 }, { width: 10 }, { width: 12 }, { width: 11 }];
+
+  // 1행: 장식용 빈 줄 (위쪽 굵은 테두리)
+  ws.addRow([]);
+  ws.getRow(1).height = 8;
+  ws.mergeCells("A1:F1");
+  ["A", "B", "C", "D", "E", "F"].forEach((col) => (ws.getCell(`${col}1`).border = { bottom: XL_MEDIUM }));
+
+  // 2행: 날짜 | 공급자명(병합) | 박스 | 낱개
+  const r2 = ws.addRow([todayStr(), product.supplier || "", "", "", "", ""]);
+  r2.height = 24.75;
+  ws.mergeCells("B2:F2");
+  const a2 = ws.getCell("A2");
+  a2.font = { name: XLFONT, size: 14, bold: true };
+  a2.alignment = { horizontal: "left", vertical: "middle" };
+  a2.numFmt = "yyyy-mm-dd";
+  a2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_MEDIUM, right: XL_THIN };
+  const b2 = ws.getCell("B2");
+  b2.font = { name: XLFONT, size: 14, bold: true };
+  b2.alignment = { horizontal: "center", vertical: "middle" };
+  b2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_THIN, right: XL_MEDIUM };
+  ["C2", "D2", "E2"].forEach((a) => (ws.getCell(a).border = { top: XL_MEDIUM, bottom: XL_THIN }));
+
+  // 3행: 헤더
+  const r3 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
+  r3.height = 24;
+  const headerSize = { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 };
+  ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+    const c = ws.getCell(`${col}3`);
+    c.font = { name: XLFONT, size: headerSize[col], bold: true };
+    c.alignment = { horizontal: "center", vertical: "middle" };
+    c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
-  XLSX.writeFile(wb, filename);
+
+  function addRegionRow(r) {
+    const { box, rem } = bd(r.qty);
+    const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
+    row.height = 26.25;
+    const size = { A: 11, B: 11, C: 14, D: 12, E: 14, F: 12 };
+    const bold = { A: false, B: false, C: true, D: false, E: true, F: false };
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = row.getCell(col);
+      c.font = { name: XLFONT, size: size[col], bold: bold[col] };
+      c.fill = XL_GRAY_FILL;
+      c.alignment = { horizontal: col === "A" ? "left" : "center", vertical: "middle" };
+      c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
+    });
+  }
+
+  function addTotalRow(label, qty) {
+    const { box, rem } = bd(qty);
+    const row = ws.addRow([label, pack || "", qty, box, "", rem]);
+    row.height = 27;
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = row.getCell(col);
+      c.font = { name: XLFONT, size: 16, bold: true };
+      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
+    });
+  }
+
+  ["A", "B", "미지정"].forEach((zone) => {
+    const rows = product.regionRows.filter((r) => r.zone === zone);
+    if (rows.length === 0) return;
+    rows.forEach(addRegionRow);
+    ws.addRow([]);
+    addTotalRow(zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, rows.reduce((a, r) => a + r.qty, 0));
+    ws.addRow([]);
+  });
+  addTotalRow("총합계", product.totalQty);
+}
+
+async function downloadStyledInspectionExcel(products, filename, setBusy) {
+  if (setBusy) setBusy(true);
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const usedNames = new Set();
+    products.forEach((p) => addStyledInspectionSheet(workbook, p, usedNames));
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (setBusy) setBusy(false);
+  }
 }
 
 /* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown, 고정 순서/구역 기준) ================= */
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 다시 집계
   const products = useMemo(() => {
@@ -3120,11 +3191,12 @@ function PickingInspection({ orders }) {
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div style={{ flex: "1 1 260px" }}>
             <button
-              onClick={() => downloadInspectionExcel(products, `피킹지시서_${todayStr()}.xlsx`)}
+              onClick={() => downloadStyledInspectionExcel(products, `피킹지시서_${todayStr()}.xlsx`, setExporting)}
+              disabled={exporting}
               className="primary-btn no-print"
-              style={{ ...primaryBtnStyle, width: "100%", justifyContent: "center", marginBottom: 10 }}
+              style={{ ...primaryBtnStyle, width: "100%", justifyContent: "center", marginBottom: 10, opacity: exporting ? 0.7 : 1 }}
             >
-              <Download size={15} /> 전체 품목 엑셀 다운로드 ({products.length}개 시트)
+              <Download size={15} /> {exporting ? "생성 중..." : `전체 품목 엑셀 다운로드 (${products.length}개 시트)`}
             </button>
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
               {products.map((p) => (
@@ -3158,8 +3230,13 @@ function PickingInspection({ orders }) {
                     <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
                       <Printer size={14} /> 출력하기
                     </button>
-                    <button onClick={() => downloadInspectionExcel([selected], `${selected.name}_${todayStr()}.xlsx`)} className="ghost-btn" style={smallBtnStyle}>
-                      <Download size={14} /> 엑셀 다운로드
+                    <button
+                      onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${todayStr()}.xlsx`, setExporting)}
+                      disabled={exporting}
+                      className="ghost-btn"
+                      style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }}
+                    >
+                      <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
                     </button>
                   </div>
                 </div>
