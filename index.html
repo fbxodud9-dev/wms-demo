@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>재고관리센터 · WMS</title>
+<title>창고관리시스템 · WMS</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
@@ -358,6 +358,18 @@ function Download(props) {
       <path d="M12 3v12" />
       <polyline points="7 11 12 16 17 11" />
       <path d="M4 17v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+    </IconBase>
+  );
+}
+
+function FileText(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M6 2h9l5 5v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" />
+      <polyline points="15 2 15 7 20 7" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="16" y2="17" />
+      <line x1="8" y1="9" x2="10" y2="9" />
     </IconBase>
   );
 }
@@ -764,7 +776,7 @@ function LoginScreen({ onLogin }) {
             <Package size={18} color={T.steel} strokeWidth={2.5} />
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700 }}>재고관리센터</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>창고관리시스템</div>
             <div style={{ fontSize: 10.5, color: T.inkSoft }}>WMS · HUB CENTER</div>
           </div>
         </div>
@@ -1208,6 +1220,18 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  const deleteItem = useCallback(
+    async (sku) => {
+      try {
+        await apiFetch(`/items/${encodeURIComponent(sku)}`, authToken, { method: "DELETE" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
+
   // XI. 창고CELL (로컬 전용)
   const addCell = useCallback((cell) => {
     setCells((prev) => [...prev, { id: uid(), ...cell }]);
@@ -1237,25 +1261,26 @@ function WMSApp() {
       ],
     },
     {
-      label: "I~III  주문 · 할당",
+      label: "주문 · 할당",
       items: [
         { key: "orderinfo", label: "I. 주문정보", icon: ClipboardList },
         { key: "allocation", label: "II. 상품할당", icon: CheckSquare, badgeKey: "new" },
-        { key: "alloclist", label: "III. 할당리스트", icon: ListChecks },
       ],
     },
     {
-      label: "IV~VI  보충 · 피킹",
+      label: "보충 · 피킹",
       items: [
         { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
-        { key: "pickinglist", label: "V. 피킹리스트", icon: ListOrdered, badgeKey: "alloc" },
-        { key: "pickinginspection", label: "품목별 검수표", icon: Grid3x3 },
-        { key: "pickingreissue", label: "VI. 피킹재발행", icon: Printer },
+        { key: "pickingconfirm", label: "V. 피킹 확정", icon: ListOrdered, badgeKey: "alloc" },
+        { key: "pickinginspection", label: "피킹지시서 출력", icon: Grid3x3 },
       ],
     },
     {
-      label: "VII  출고",
-      items: [{ key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" }],
+      label: "출고",
+      items: [
+        { key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" },
+        { key: "invoice", label: "거래명세서", icon: FileText },
+      ],
     },
     {
       label: "VIII~XII  기준정보",
@@ -1351,7 +1376,7 @@ function WMSApp() {
             <Package size={17} color={T.steel} strokeWidth={2.5} />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.2 }}>재고관리센터</div>
+            <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.2 }}>창고관리시스템</div>
             <div style={{ fontSize: 10.5, color: "#A9AFB6" }}>WMS · HUB CENTER</div>
           </div>
         </div>
@@ -1449,22 +1474,21 @@ function WMSApp() {
           />
         )}
         {tab === "allocation" && <Allocation items={itemsView} orders={orders} onAllocate={allocateOrder} />}
-        {tab === "alloclist" && <AllocationList orders={orders} onCancel={cancelAllocationLine} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickinglist" && (
+        {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
         {tab === "pickinginspection" && <PickingInspection orders={orders} />}
-        {tab === "pickingreissue" && <PickingReissue docs={pickingDocs} onReissue={reissueDoc} />}
 
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
+        {tab === "invoice" && <InvoiceView orders={orders} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -2143,6 +2167,7 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
 
   const selected = orders.find((o) => o.id === selectedId) || null;
   const [storeFilter, setStoreFilter] = useState("전체");
+  const [downloading, setDownloading] = useState(false);
   const storeOptions = useMemo(() => {
     const map = new Map();
     orders.forEach((o) => {
@@ -2154,6 +2179,18 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
   const filtered = orders.filter(
     (o) => (statusFilter === "전체" || o.status === statusFilter) && (storeFilter === "전체" || (o.storeCode || o.customer) === storeFilter)
   );
+  const dateGroups = useMemo(() => {
+    const map = new Map();
+    orders.forEach((o) => {
+      if (!map.has(o.createdAt)) map.set(o.createdAt, { date: o.createdAt, orders: [], orderCount: 0, lineCount: 0, totalQty: 0 });
+      const g = map.get(o.createdAt);
+      g.orders.push(o);
+      g.orderCount += 1;
+      g.lineCount += o.lines.length;
+      g.totalQty += o.lines.reduce((a, l) => a + l.qty, 0);
+    });
+    return Array.from(map.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [orders]);
 
   const supplierGroups = useMemo(() => {
     const map = {};
@@ -2579,71 +2616,40 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-        {["전체", "NEW", "ALLOCATED", "PICK_CONFIRMED", "SHIPPED", "DONE"].map((f) => (
-          <button
-            key={f}
-            onClick={() => setStatusFilter(f)}
-            style={{
-              border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-              background: statusFilter === f ? T.steel : "#EAE7DC", color: statusFilter === f ? "#fff" : T.inkSoft,
-            }}
-          >
-            {f === "전체" ? "전체" : ORDER_STATUS[f].label}
-          </button>
-        ))}
-        <select style={{ ...inputStyle, width: 240, marginLeft: "auto" }} value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)}>
-          <option value="전체">납품처(지역) 전체</option>
-          {storeOptions.map((s) => (
-            <option key={s.key} value={s.key}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
-        <table>
-          <thead>
-            <tr>
-              <th>발주번호</th>
-              <th>공급사</th>
-              <th>납품처(지역)</th>
-              <th>유형</th>
-              <th>상태</th>
-              <th>품목수</th>
-              <th>총수량</th>
-              <th>발주일</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={8}>
-                  <EmptyRow text="해당 발주가 없습니다." />
-                </td>
-              </tr>
-            ) : (
-              filtered.map((o) => (
-                <tr key={o.id} className="rowhover" style={{ cursor: "pointer" }} onClick={() => setSelectedId(o.id)}>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{o.orderNo}</td>
-                  <td>{o.supplier || "-"}</td>
-                  <td>
-                    {o.storeCode && <span style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft, marginRight: 6 }}>{o.storeCode}</span>}
-                    {o.customer}
-                  </td>
-                  <td>{o.channel}</td>
-                  <td>
-                    <OrderStatusPill status={o.status} />
-                  </td>
-                  <td>{o.lines.length}종</td>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{o.lines.reduce((a, l) => a + l.qty, 0)}</td>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5 }}>{fmtDate(o.createdAt)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+      <div className="no-print">
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>날짜별 발주 현황</div>
+        {dateGroups.length === 0 ? (
+          <div style={cardStyle}>
+            <EmptyRow text="등록된 발주가 없습니다." />
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {dateGroups.map((g) => (
+              <div
+                key={g.date}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+                  background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "14px 18px",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(g.date)}</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                    발주 {g.orderCount}건 · 품목라인 {g.lineCount}개 · 총수량 {g.totalQty.toLocaleString()}개
+                  </div>
+                </div>
+                <button
+                  onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_${g.date}.xlsx`, setDownloading)}
+                  disabled={downloading}
+                  className="primary-btn"
+                  style={{ ...primaryBtnStyle, opacity: downloading ? 0.7 : 1 }}
+                >
+                  <Download size={15} /> {downloading ? "생성 중..." : "엑셀로 보기"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2970,7 +2976,7 @@ function PickingList({ orders, items, onToggle, onConfirm, onCancelConfirm, onRe
 
   return (
     <div>
-      <PageHeader title="V. 피킹리스트" sub="할당 완료된 발주에 대해 피킹지시를 확정합니다" />
+      <PageHeader title="V. 피킹 확정" sub="할당 완료된 발주에 대해 지역·위치별로 피킹 체크하고 확정합니다" />
       <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
@@ -3205,6 +3211,115 @@ async function downloadStyledInspectionExcel(products, filename, setBusy) {
   }
 }
 
+async function downloadOrderInfoExcel(ordersForDate, dateLabel, filename, setBusy) {
+  if (setBusy) setBusy(true);
+  try {
+    const workbook = new ExcelJS.Workbook();
+
+    // 1. 주문요약 시트 (발주 단위)
+    const wsSummary = workbook.addWorksheet("주문요약");
+    wsSummary.columns = [
+      { header: "발주번호", key: "orderNo", width: 16 },
+      { header: "공급사", key: "supplier", width: 24 },
+      { header: "납품처코드", key: "storeCode", width: 12 },
+      { header: "납품처(지역)", key: "customer", width: 28 },
+      { header: "유형", key: "channel", width: 12 },
+      { header: "상태", key: "status", width: 12 },
+      { header: "품목수", key: "lineCount", width: 9 },
+      { header: "총수량", key: "totalQty", width: 10 },
+      { header: "발주일", key: "createdAt", width: 12 },
+    ];
+    wsSummary.getRow(1).font = { name: XLFONT, bold: true, size: 11 };
+    wsSummary.getRow(1).eachCell((c) => {
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2B3239" } };
+      c.font = { name: XLFONT, bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+    });
+    wsSummary.views = [{ state: "frozen", ySplit: 1 }];
+    wsSummary.autoFilter = { from: "A1", to: "I1" };
+    ordersForDate.forEach((o, idx) => {
+      const row = wsSummary.addRow({
+        orderNo: o.orderNo,
+        supplier: o.supplier || "-",
+        storeCode: o.storeCode || "-",
+        customer: o.customer,
+        channel: o.channel || "-",
+        status: ORDER_STATUS[o.status] ? ORDER_STATUS[o.status].label : o.status,
+        lineCount: o.lines.length,
+        totalQty: o.lines.reduce((a, l) => a + l.qty, 0),
+        createdAt: o.createdAt,
+      });
+      const isGray = idx % 2 === 0;
+      row.eachCell((c, colNumber) => {
+        c.font = { name: XLFONT, size: 10.5 };
+        if (isGray) c.fill = XL_GRAY_FILL;
+        c.alignment = { horizontal: colNumber <= 2 || colNumber === 4 ? "left" : "center", vertical: "middle" };
+        c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+      });
+    });
+
+    // 2. 라인상세 시트 (품목 단위)
+    const wsLines = workbook.addWorksheet("라인상세");
+    wsLines.columns = [
+      { header: "발주번호", key: "orderNo", width: 16 },
+      { header: "납품처(지역)", key: "customer", width: 28 },
+      { header: "SKU", key: "sku", width: 18 },
+      { header: "품목명", key: "name", width: 28 },
+      { header: "수량", key: "qty", width: 10 },
+      { header: "단위", key: "unit", width: 8 },
+      { header: "로케이션", key: "location", width: 12 },
+    ];
+    wsLines.getRow(1).eachCell((c) => {
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2B3239" } };
+      c.font = { name: XLFONT, bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+    });
+    wsLines.views = [{ state: "frozen", ySplit: 1 }];
+    wsLines.autoFilter = { from: "A1", to: "G1" };
+    let lineIdx = 0;
+    ordersForDate.forEach((o) => {
+      o.lines.forEach((l) => {
+        const row = wsLines.addRow({
+          orderNo: o.orderNo,
+          customer: o.customer,
+          sku: l.sku,
+          name: l.name,
+          qty: l.qty,
+          unit: l.unit,
+          location: l.location,
+        });
+        const isGray = lineIdx % 2 === 0;
+        lineIdx++;
+        row.eachCell((c, colNumber) => {
+          c.font = { name: XLFONT, size: 10.5 };
+          if (isGray) c.fill = XL_GRAY_FILL;
+          c.alignment = { horizontal: colNumber === 2 || colNumber === 4 ? "left" : "center", vertical: "middle" };
+          c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+        });
+      });
+    });
+
+    [wsSummary, wsLines].forEach((ws) => {
+      ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (setBusy) setBusy(false);
+  }
+}
+
 /* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown, 고정 순서/구역 기준) ================= */
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
@@ -3264,7 +3379,7 @@ function PickingInspection({ orders }) {
 
   return (
     <div>
-      <PageHeader title="품목별 검수표" sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다" />
+      <PageHeader title="피킹지시서 출력" sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다" />
       {products.length === 0 ? (
         <div style={cardStyle}>
           <EmptyRow text="할당된 품목이 없습니다. 먼저 상품할당(또는 피킹지시서 변환)을 진행해주세요." />
@@ -3379,59 +3494,98 @@ function PickingInspection({ orders }) {
   );
 }
 
-function PickingReissue({ docs, onReissue }) {
+/* ================= 거래명세서 ================= */
+function InvoiceView({ orders }) {
   const [query, setQuery] = useState("");
-  const [selectedDoc, setSelectedDoc] = useState(null);
-  const confirmedDocs = docs.filter((d) => d.status === "확정");
-  const filtered = confirmedDocs.filter((d) => !query || d.docNo.toLowerCase().includes(query.toLowerCase()) || d.orderNo.toLowerCase().includes(query.toLowerCase()));
-  const selected = confirmedDocs.find((d) => d.docNo === selectedDoc) || null;
+  const [selectedId, setSelectedId] = useState(null);
+  const invoiced = orders.filter((o) => o.invoiceIssued);
+  const filtered = invoiced.filter((o) => !query || o.orderNo.toLowerCase().includes(query.toLowerCase()) || o.customer.includes(query));
+  const selected = invoiced.find((o) => o.id === selectedId) || null;
 
   return (
     <div>
-      <PageHeader title="VI. 피킹재발행" sub="확정된 피킹지시서 문서번호로 조회 후 재발행합니다" />
+      <PageHeader title="거래명세서" sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)" />
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div style={{ flex: "1 1 320px" }}>
           <div style={{ position: "relative", marginBottom: 12 }}>
             <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
-            <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="지시서 문서번호 또는 발주번호 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="발주번호 또는 발주처 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
-          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
             {filtered.length === 0 ? (
-              <EmptyRow text="확정된 피킹지시서가 없습니다." />
+              <EmptyRow text="출고 완료(거래명세서 발행)된 발주가 없습니다." />
             ) : (
-              filtered.map((d) => (
+              filtered.map((o) => (
                 <button
-                  key={d.docNo}
-                  onClick={() => setSelectedDoc(d.docNo)}
+                  key={o.id}
+                  onClick={() => setSelectedId(o.id)}
                   className="rowhover"
-                  style={{ display: "block", width: "100%", textAlign: "left", padding: "12px 14px", border: "none", background: selectedDoc === d.docNo ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit" }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "12px 14px", border: "none", background: selectedId === o.id ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit" }}
                 >
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{d.docNo}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{o.orderNo}</span>
+                    <OrderStatusPill status={o.status} />
+                  </div>
                   <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 2 }}>
-                    {d.orderNo} · {d.customer} · {fmtDate(d.date)}
+                    {o.customer} · {fmtDate(o.createdAt)}
                   </div>
                 </button>
               ))
             )}
           </div>
         </div>
-        <div style={{ flex: "1 1 300px" }}>
-          <div style={cardStyle}>
-            {!selected ? (
-              <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽 목록에서 지시서를 선택하세요.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 16 }}>{selected.docNo}</div>
-                <div style={{ fontSize: 13, color: T.inkSoft }}>발주번호: {selected.orderNo}</div>
-                <div style={{ fontSize: 13, color: T.inkSoft }}>발주처: {selected.customer}</div>
-                <div style={{ fontSize: 13, color: T.inkSoft }}>발행일: {fmtDate(selected.date)}</div>
-                <div style={{ fontSize: 13, color: T.inkSoft }}>재발행 횟수: {selected.reprints}회</div>
-                <button onClick={() => onReissue(selected.docNo)} className="primary-btn" style={{ ...primaryBtnStyle, marginTop: 6, alignSelf: "flex-start" }}>
-                  <Printer size={15} /> 재발행
+        <div style={{ flex: "1 1 380px" }}>
+          {!selected ? (
+            <div style={cardStyle}>
+              <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽 목록에서 발주를 선택하세요.</div>
+            </div>
+          ) : (
+            <div style={cardStyle} className="print-area">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 16 }}>거래명세서</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>{fmtDate(selected.completedAt || selected.createdAt)}</div>
+                </div>
+                <button onClick={() => window.print()} className="ghost-btn no-print" style={smallBtnStyle}>
+                  <Printer size={14} /> 출력하기
                 </button>
               </div>
-            )}
-          </div>
+              <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 4 }}>발주번호: <b style={{ color: T.ink }}>{selected.orderNo}</b></div>
+              <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 4 }}>발주처: <b style={{ color: T.ink }}>{selected.customer}</b></div>
+              <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 12 }}>공급사: <b style={{ color: T.ink }}>{selected.supplier || "-"}</b></div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>품목명</th>
+                      <th>수량</th>
+                      <th>로케이션</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selected.lines
+                      .filter((l) => l.allocatedQty > 0)
+                      .map((l) => (
+                        <tr key={l.sku}>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{l.sku}</td>
+                          <td style={{ fontWeight: 600 }}>{l.name}</td>
+                          <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>
+                            {l.allocatedQty} {l.unit}
+                          </td>
+                          <td>
+                            <LocationTag loc={l.location} />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 12 }}>
+                * 현재는 수량 기준 명세서입니다. 단가·금액 자동 반영은 추후 화주사 단가 정보 연동 후 지원됩니다.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -3699,7 +3853,7 @@ function VehicleStoreMap({ stores, vehicles, onAddVehicle, onMap }) {
 }
 
 /* ================= X. 상품마스터 ================= */
-function ProductMaster({ items, onSave, onCreate }) {
+function ProductMaster({ items, onSave, onCreate, onDelete }) {
   const [selectedSku, setSelectedSku] = useState(items[0]?.sku || null);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(null);
@@ -3771,9 +3925,20 @@ function ProductMaster({ items, onSave, onCreate }) {
                         <LocationTag loc={i.location} />
                       </td>
                       <td>
-                        <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
-                          <Pencil size={13} /> 수정
-                        </button>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
+                            <Pencil size={13} /> 수정
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`"${i.name}" 품목을 삭제할까요? 되돌릴 수 없습니다.`)) onDelete(i.sku);
+                            }}
+                            className="ghost-btn"
+                            style={{ ...smallBtnStyle, padding: "6px 10px", color: T.danger, borderColor: T.danger + "55" }}
+                          >
+                            <Trash2 size={13} /> 삭제
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
