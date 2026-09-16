@@ -804,7 +804,20 @@ function WMSApp() {
   const [authUser, setAuthUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTabState] = useState(() => {
+    try {
+      const h = window.location.hash.replace("#", "");
+      return h || "dashboard";
+    } catch (e) {
+      return "dashboard";
+    }
+  });
+  const setTab = useCallback((next) => {
+    setTabState(next);
+    try {
+      window.location.hash = next;
+    } catch (e) {}
+  }, []);
   const [items, setItems] = useState([]);
   const [tx, setTx] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -1021,7 +1034,7 @@ function WMSApp() {
       try {
         await apiFetch("/orders/convert-to-picking", authToken, { method: "POST", body: { supplierKey } });
         await loadCoreData();
-        setTab("pickinglist");
+        setTab("pickingconfirm");
       } catch (e) {
         setApiErr(e.message);
       }
@@ -2208,150 +2221,171 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
     return Object.values(map).map((g) => ({ ...g, skuCount: g.skuSet.size }));
   }, [orders]);
 
-  async function handleFile(file) {
+  async function parseOneFile(file) {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let rows = [];
+
+    const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // 진짜 xlsx/xls 바이너리(ZIP)
+    if (isZip && typeof XLSX !== "undefined") {
+      const wb = XLSX.read(bytes, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    } else {
+      // 국내 물류/발주 시스템에서 흔한 "HTML 표를 .xls로 저장" 방식 (대개 EUC-KR 인코딩)
+      let text;
+      try {
+        text = new TextDecoder("euc-kr").decode(bytes);
+      } catch (e) {
+        text = new TextDecoder("utf-8").decode(bytes);
+      }
+      if (!/<table/i.test(text)) text = new TextDecoder("utf-8").decode(bytes);
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      const tables = Array.from(doc.querySelectorAll("table"));
+      let best = null,
+        bestRows = 0;
+      tables.forEach((t) => {
+        const n = t.querySelectorAll("tr").length;
+        if (n > bestRows) {
+          bestRows = n;
+          best = t;
+        }
+      });
+      if (best) {
+        rows = Array.from(best.querySelectorAll("tr")).map((tr) =>
+          Array.from(tr.querySelectorAll("td,th")).map((td) => td.textContent.replace(/\u00a0/g, " ").trim())
+        );
+      }
+    }
+
+    if (rows.length < 2) throw new Error(`${file.name}: 표 형식의 데이터를 찾지 못했습니다.`);
+    const header = rows[0].map((h) => (h == null ? "" : String(h)));
+    const dataRows = rows.slice(1).filter((r) => r.some((c) => c !== "" && c != null));
+
+    const findCol = (candidates) => {
+      for (const cand of candidates) {
+        const idx = header.findIndex((h) => h && h.includes(cand));
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+    const col = {
+      orderNo: findCol(["발주번호", "주문번호"]),
+      store: findCol(["납품처", "배송처", "발주처"]),
+      supplier: findCol(["공급자", "화주사"]),
+      sku: findCol(["상품코드", "품목코드", "SKU"]),
+      name: findCol(["상품명", "품목명"]),
+      qty: findCol(["낱개수량", "발주량", "수량"]),
+      packQty: findCol(["입수"]),
+      unit: findCol(["단위"]),
+      date: findCol(["납품일자", "발주일자"]),
+      type: findCol(["발주타입", "발주유형"]),
+    };
+    if (col.sku === -1 || col.qty === -1) {
+      throw new Error(`${file.name}: '상품코드/품목코드'와 '수량' 컬럼을 찾지 못했습니다. 헤더명을 확인해주세요.`);
+    }
+
+    // "VV99 (주)지에스리테일고촌2저온" 처럼 코드+명칭이 붙어있는 셀을 정확히 분리
+    // (예: "고촌"과 "고촌2"처럼 이름이 비슷해도 코드로 구분해 절대 섞이지 않도록 함)
+    const splitCodeName = (raw) => {
+      const s = String(raw || "").trim();
+      const m = s.match(/^([A-Za-z0-9]+)\s+(.+)$/);
+      if (m) return { code: m[1], name: m[2].trim() };
+      return { code: "", name: s };
+    };
+
+    const groups = {};
+    const unmatchedMap = new Map(); // sku -> name (자동 등록용)
+    dataRows.forEach((r) => {
+      const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
+      const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
+      const supplierSplit = splitCodeName(col.supplier !== -1 ? r[col.supplier] : "기타 화주사");
+      // 그룹 키는 반드시 코드 기준 (이름이 비슷해도 코드가 다르면 다른 그룹)
+      const key = (orderNoRaw || "UPLOAD") + "__" + (storeSplit.code || storeSplit.name);
+      if (!groups[key]) {
+        groups[key] = {
+          id: uid(),
+          orderNo: orderNoRaw ? String(orderNoRaw) : genOrderNo(),
+          customer: storeSplit.name || "미지정 매장",
+          storeCode: storeSplit.code,
+          supplier: supplierSplit.name || "기타 화주사",
+          supplierCode: supplierSplit.code,
+          channel: (col.type !== -1 && r[col.type]) || "화주사발주",
+          createdAt: (col.date !== -1 && r[col.date] && String(r[col.date]).slice(0, 10)) || todayStr(),
+          status: "NEW",
+          pickDocNo: null,
+          pmsStatus: null,
+          invoiceIssued: false,
+          lines: [],
+        };
+      }
+      const sku = String(r[col.sku] ?? "").trim();
+      if (!sku) return;
+      const name = (col.name !== -1 && r[col.name]) || sku;
+      const qty = Number(r[col.qty]) || 0;
+      if (qty <= 0) return;
+      const unit = (col.unit !== -1 && r[col.unit]) || "EA";
+      const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
+      const matched = items.find((i) => i.sku === sku || i.name === name);
+      if (!matched && !unmatchedMap.has(sku)) unmatchedMap.set(sku, name);
+      groups[key].lines.push({
+        sku,
+        name,
+        qty,
+        changedQty: qty,
+        allocatedQty: 0,
+        allocStatus: "미할당",
+        location: matched ? matched.location : "-",
+        unit,
+        packQty: packQty || matched?.boxQty || 0,
+        picked: false,
+      });
+    });
+
+    const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
+    if (newOrders.length === 0) throw new Error(`${file.name}: 유효한 발주 라인을 찾지 못했습니다.`);
+    return { newOrders, unmatchedMap };
+  }
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList);
     setUploadErr("");
     setUploadMsg("");
     setUploading(true);
+    const allNewOrders = [];
+    const allUnmatched = new Map();
+    const fileErrors = [];
     try {
-      const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let rows = [];
-
-      const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // 진짜 xlsx/xls 바이너리(ZIP)
-      if (isZip && typeof XLSX !== "undefined") {
-        const wb = XLSX.read(bytes, { type: "array" });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
-      } else {
-        // 국내 물류/발주 시스템에서 흔한 "HTML 표를 .xls로 저장" 방식 (대개 EUC-KR 인코딩)
-        let text;
+      for (const file of files) {
         try {
-          text = new TextDecoder("euc-kr").decode(bytes);
+          const { newOrders, unmatchedMap } = await parseOneFile(file);
+          allNewOrders.push(...newOrders);
+          unmatchedMap.forEach((name, sku) => {
+            if (!allUnmatched.has(sku)) allUnmatched.set(sku, name);
+          });
         } catch (e) {
-          text = new TextDecoder("utf-8").decode(bytes);
-        }
-        if (!/<table/i.test(text)) text = new TextDecoder("utf-8").decode(bytes);
-        const doc = new DOMParser().parseFromString(text, "text/html");
-        const tables = Array.from(doc.querySelectorAll("table"));
-        let best = null,
-          bestRows = 0;
-        tables.forEach((t) => {
-          const n = t.querySelectorAll("tr").length;
-          if (n > bestRows) {
-            bestRows = n;
-            best = t;
-          }
-        });
-        if (best) {
-          rows = Array.from(best.querySelectorAll("tr")).map((tr) =>
-            Array.from(tr.querySelectorAll("td,th")).map((td) => td.textContent.replace(/\u00a0/g, " ").trim())
-          );
+          fileErrors.push(e.message);
         }
       }
 
-      if (rows.length < 2) throw new Error("표 형식의 데이터를 찾지 못했습니다.");
-      const header = rows[0].map((h) => (h == null ? "" : String(h)));
-      const dataRows = rows.slice(1).filter((r) => r.some((c) => c !== "" && c != null));
-
-      const findCol = (candidates) => {
-        for (const cand of candidates) {
-          const idx = header.findIndex((h) => h && h.includes(cand));
-          if (idx !== -1) return idx;
-        }
-        return -1;
-      };
-      const col = {
-        orderNo: findCol(["발주번호", "주문번호"]),
-        store: findCol(["납품처", "배송처", "발주처"]),
-        supplier: findCol(["공급자", "화주사"]),
-        sku: findCol(["상품코드", "품목코드", "SKU"]),
-        name: findCol(["상품명", "품목명"]),
-        qty: findCol(["낱개수량", "발주량", "수량"]),
-        packQty: findCol(["입수"]),
-        unit: findCol(["단위"]),
-        date: findCol(["납품일자", "발주일자"]),
-        type: findCol(["발주타입", "발주유형"]),
-      };
-      if (col.sku === -1 || col.qty === -1) {
-        throw new Error("파일에서 '상품코드/품목코드'와 '수량' 컬럼을 찾지 못했습니다. 헤더명을 확인해주세요.");
-      }
-
-      // "VV99 (주)지에스리테일고촌2저온" 처럼 코드+명칭이 붙어있는 셀을 정확히 분리
-      // (예: "고촌"과 "고촌2"처럼 이름이 비슷해도 코드로 구분해 절대 섞이지 않도록 함)
-      const splitCodeName = (raw) => {
-        const s = String(raw || "").trim();
-        const m = s.match(/^([A-Za-z0-9]+)\s+(.+)$/);
-        if (m) return { code: m[1], name: m[2].trim() };
-        return { code: "", name: s };
-      };
-
-      const groups = {};
-      const unmatchedMap = new Map(); // sku -> name (자동 등록용)
-      dataRows.forEach((r) => {
-        const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
-        const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
-        const supplierSplit = splitCodeName(col.supplier !== -1 ? r[col.supplier] : "기타 화주사");
-        // 그룹 키는 반드시 코드 기준 (이름이 비슷해도 코드가 다르면 다른 그룹)
-        const key = (orderNoRaw || "UPLOAD") + "__" + (storeSplit.code || storeSplit.name);
-        if (!groups[key]) {
-          groups[key] = {
-            id: uid(),
-            orderNo: orderNoRaw ? String(orderNoRaw) : genOrderNo(),
-            customer: storeSplit.name || "미지정 매장",
-            storeCode: storeSplit.code,
-            supplier: supplierSplit.name || "기타 화주사",
-            supplierCode: supplierSplit.code,
-            channel: (col.type !== -1 && r[col.type]) || "화주사발주",
-            createdAt: (col.date !== -1 && r[col.date] && String(r[col.date]).slice(0, 10)) || todayStr(),
-            status: "NEW",
-            pickDocNo: null,
-            pmsStatus: null,
-            invoiceIssued: false,
-            lines: [],
-          };
-        }
-        const sku = String(r[col.sku] ?? "").trim();
-        if (!sku) return;
-        const name = (col.name !== -1 && r[col.name]) || sku;
-        const qty = Number(r[col.qty]) || 0;
-        if (qty <= 0) return;
-        const unit = (col.unit !== -1 && r[col.unit]) || "EA";
-        const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
-        const matched = items.find((i) => i.sku === sku || i.name === name);
-        if (!matched && !unmatchedMap.has(sku)) unmatchedMap.set(sku, name);
-        groups[key].lines.push({
-          sku,
-          name,
-          qty,
-          changedQty: qty,
-          allocatedQty: 0,
-          allocStatus: "미할당",
-          location: matched ? matched.location : "-",
-          unit,
-          packQty: packQty || matched?.boxQty || 0,
-          picked: false,
-        });
-      });
-
-      const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
-      if (newOrders.length === 0) throw new Error("유효한 발주 라인을 찾지 못했습니다.");
-
-      for (const [sku, name] of unmatchedMap.entries()) {
+      for (const [sku, name] of allUnmatched.entries()) {
         if (onRegisterItem) await onRegisterItem(sku, name);
       }
-      for (const o of newOrders) {
+      for (const o of allNewOrders) {
         await onAdd(o);
       }
 
-      const totalLines = newOrders.reduce((a, o) => a + o.lines.length, 0);
-      const unmatched = unmatchedMap.size;
-      const supplierCount = new Set(newOrders.map((o) => o.supplierCode || o.supplier)).size;
-      setUploadMsg(
-        `공급사 ${supplierCount}곳 · 발주 ${newOrders.length}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
-          (unmatched > 0 ? ` (상품마스터에 없던 품목 ${unmatched}건은 '미배정' 위치로 자동 등록되었습니다 — X.상품마스터에서 실제 로케이션을 입력해주세요.)` : "")
-      );
-    } catch (e) {
-      setUploadErr("파일을 읽는 중 문제가 발생했습니다: " + e.message);
+      const totalLines = allNewOrders.reduce((a, o) => a + o.lines.length, 0);
+      const supplierCount = new Set(allNewOrders.map((o) => o.supplierCode || o.supplier)).size;
+      if (allNewOrders.length > 0) {
+        setUploadMsg(
+          `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
+            (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "")
+        );
+      }
+      if (fileErrors.length > 0) {
+        setUploadErr(fileErrors.join(" / "));
+      }
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -2493,9 +2527,20 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
       <PageHeader title="I. 주문정보" sub="화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다" />
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 13, color: T.inkSoft }}>화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주 등록과 할당까지 한 번에 완료됩니다. 바로 품목별 검수표에서 확인하세요.</div>
+          <div style={{ fontSize: 13, color: T.inkSoft }}>
+            화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주 등록과 할당까지 한 번에 완료됩니다. 바로 품목별 검수표에서 확인하세요.
+            <br />
+            여러 파일을 한 번에 선택해서 업로드할 수 있어요.
+          </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => e.target.files.length > 0 && handleFiles(e.target.files)}
+            />
             <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={uploading} className="primary-btn" style={primaryBtnStyle}>
               <Upload size={14} /> {uploading ? "읽는 중..." : "발주파일 업로드"}
             </button>
