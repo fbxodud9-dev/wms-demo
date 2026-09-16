@@ -1405,7 +1405,7 @@ function WMSApp() {
         .print-only { display: none; }
         .print-portal { display: none; }
         @media print {
-          @page { size: landscape; margin: 8mm; }
+          @page { size: landscape; margin: 5mm; }
           body * { visibility: hidden; }
           .print-area, .print-area * { visibility: visible; }
           .print-area { position: absolute; left: 0; top: 0; width: 100%; border: none !important; box-shadow: none !important; }
@@ -3579,7 +3579,7 @@ function buildFullInspectionData(product) {
 function InspectionPrintSheet({ product, pageBreak }) {
   const data = useMemo(() => buildFullInspectionData(product), [product]);
   const pack = product.packQty || 0;
-  const cell = { border: "1px solid #000", padding: "3px 7px", fontSize: 10.5, fontFamily: "'맑은 고딕', 'Malgun Gothic', sans-serif" };
+  const cell = { border: "1px solid #000", padding: "2px 6px", fontSize: 9.5, fontFamily: "'맑은 고딕', 'Malgun Gothic', sans-serif", wordBreak: "break-word", overflowWrap: "break-word" };
   const right = { ...cell, textAlign: "right" };
   const center = { ...cell, textAlign: "center" };
   const boldCenter = { ...center, fontWeight: 700 };
@@ -3587,7 +3587,17 @@ function InspectionPrintSheet({ product, pageBreak }) {
 
   return (
     <div style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed" }}>
+        <colgroup>
+          <col style={{ width: "27%" }} />
+          <col style={{ width: "6.5%" }} />
+          <col style={{ width: "25%" }} />
+          <col style={{ width: "8%" }} />
+          <col style={{ width: "10%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "7.25%" }} />
+          <col style={{ width: "7.25%" }} />
+        </colgroup>
         <tbody>
           <tr>
             <td style={{ ...cell, fontWeight: 700, fontSize: 13 }}>{todayStr()}</td>
