@@ -3798,12 +3798,12 @@ function PickingInspection({ orders }) {
                     <Download size={15} /> {exporting ? "생성 중..." : `엑셀 (${products.length}개 시트)`}
                   </button>
                   <button
-                    onClick={() => setPrintMode("all")}
-                    disabled={!!printMode}
+                    disabled
+                    title="인쇄/PDF 디자인을 다듬는 중이에요. 지금은 엑셀 다운로드를 이용해주세요."
                     className="ghost-btn"
-                    style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: printMode ? 0.7 : 1 }}
+                    style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: 0.5, cursor: "not-allowed" }}
                   >
-                    <Printer size={15} /> {printMode === "all" ? "출력 준비 중..." : `전체 출력 (PDF)`}
+                    🚧 전체 출력 (공사중)
                   </button>
                 </div>
                 <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
@@ -3830,8 +3830,13 @@ function PickingInspection({ orders }) {
                 {selected && (
                   <div style={cardStyle}>
                     <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
-                      <button onClick={() => setPrintMode("single")} disabled={!!printMode} className="ghost-btn" style={{ ...smallBtnStyle, opacity: printMode ? 0.7 : 1 }}>
-                        <Printer size={14} /> {printMode === "single" ? "출력 준비 중..." : "출력하기"}
+                      <button
+                        disabled
+                        title="인쇄/PDF 디자인을 다듬는 중이에요. 지금은 엑셀 다운로드를 이용해주세요."
+                        className="ghost-btn"
+                        style={{ ...smallBtnStyle, opacity: 0.5, cursor: "not-allowed" }}
+                      >
+                        🚧 출력 (공사중)
                       </button>
                       <button
                         onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting)}
