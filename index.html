@@ -22,6 +22,7 @@
 <div id="root"></div>
 <script type="text/babel" data-presets="react,env">
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const { createPortal } = ReactDOM;
 const XLSX = window.XLSX;
 const ExcelJS = window.ExcelJS;
 
@@ -1402,6 +1403,7 @@ function WMSApp() {
         input, select, textarea { max-width: 100%; }
         .navgroup-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #7C838B; padding: 14px 12px 6px; }
         .print-only { display: none; }
+        .print-portal { display: none; }
         @media print {
           @page { size: landscape; margin: 8mm; }
           body * { visibility: hidden; }
@@ -1409,6 +1411,10 @@ function WMSApp() {
           .print-area { position: absolute; left: 0; top: 0; width: 100%; border: none !important; box-shadow: none !important; }
           .print-only { display: block !important; }
           .no-print { display: none !important; }
+          body.portal-printing #root { display: none !important; }
+          body.portal-printing .print-portal,
+          body.portal-printing .print-portal * { visibility: visible !important; }
+          body.portal-printing .print-portal { display: block !important; position: static !important; }
         }
         @media (max-width: 720px) {
           .wms-shell { flex-direction: column !important; }
@@ -3580,7 +3586,7 @@ function InspectionPrintSheet({ product, pageBreak }) {
   const boldRight = { ...right, fontWeight: 700 };
 
   return (
-    <div className="print-area print-only" style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
+    <div style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <tbody>
           <tr>
@@ -3659,18 +3665,23 @@ function InspectionPrintSheet({ product, pageBreak }) {
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [exporting, setExporting] = useState(false);
-  const [printAllMode, setPrintAllMode] = useState(false);
+  const [printMode, setPrintMode] = useState(null); // null | "single" | "all"
 
   useEffect(() => {
-    if (!printAllMode) return;
+    if (!printMode) return;
+    document.body.classList.add("portal-printing");
     const timer = setTimeout(() => window.print(), 150);
-    const onAfterPrint = () => setPrintAllMode(false);
+    const onAfterPrint = () => {
+      document.body.classList.remove("portal-printing");
+      setPrintMode(null);
+    };
     window.addEventListener("afterprint", onAfterPrint);
     return () => {
       clearTimeout(timer);
       window.removeEventListener("afterprint", onAfterPrint);
+      document.body.classList.remove("portal-printing");
     };
-  }, [printAllMode]);
+  }, [printMode]);
 
   // 피킹은 날짜 단위 작업이므로, 날짜를 하나 선택해서 그 날짜의 발주만 집계
   const dateOptions = useMemo(() => {
@@ -3754,12 +3765,12 @@ function PickingInspection({ orders }) {
                     <Download size={15} /> {exporting ? "생성 중..." : `엑셀 (${products.length}개 시트)`}
                   </button>
                   <button
-                    onClick={() => setPrintAllMode(true)}
-                    disabled={printAllMode}
+                    onClick={() => setPrintMode("all")}
+                    disabled={!!printMode}
                     className="ghost-btn"
-                    style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: printAllMode ? 0.7 : 1 }}
+                    style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: printMode ? 0.7 : 1 }}
                   >
-                    <Printer size={15} /> {printAllMode ? "출력 준비 중..." : `전체 출력 (PDF)`}
+                    <Printer size={15} /> {printMode === "all" ? "출력 준비 중..." : `전체 출력 (PDF)`}
                   </button>
                 </div>
                 <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
@@ -3786,8 +3797,8 @@ function PickingInspection({ orders }) {
                 {selected && (
                   <div style={cardStyle}>
                     <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
-                      <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
-                        <Printer size={14} /> 출력하기
+                      <button onClick={() => setPrintMode("single")} disabled={!!printMode} className="ghost-btn" style={{ ...smallBtnStyle, opacity: printMode ? 0.7 : 1 }}>
+                        <Printer size={14} /> {printMode === "single" ? "출력 준비 중..." : "출력하기"}
                       </button>
                       <button
                         onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting)}
@@ -3799,20 +3810,20 @@ function PickingInspection({ orders }) {
                       </button>
                     </div>
                     <InspectionTable product={selected} />
-                    {/* 화면에는 안 보이고, 출력하기/PDF에서만 엑셀과 동일한 디자인으로 나타남 */}
-                    {!printAllMode && <InspectionPrintSheet product={selected} />}
                   </div>
                 )}
               </div>
             </div>
           )}
-          {printAllMode && (
-            <div>
-              {products.map((p, idx) => (
-                <InspectionPrintSheet key={p.sku} product={p} pageBreak={idx < products.length - 1} />
-              ))}
-            </div>
-          )}
+          {printMode &&
+            createPortal(
+              <div className="print-portal">
+                {printMode === "all"
+                  ? products.map((p, idx) => <InspectionPrintSheet key={p.sku} product={p} pageBreak={idx < products.length - 1} />)
+                  : selected && <InspectionPrintSheet product={selected} />}
+              </div>,
+              document.body
+            )}
         </>
       )}
     </div>
