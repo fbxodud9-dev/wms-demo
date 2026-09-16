@@ -3579,11 +3579,25 @@ function buildFullInspectionData(product) {
 function InspectionPrintSheet({ product, pageBreak }) {
   const data = useMemo(() => buildFullInspectionData(product), [product]);
   const pack = product.packQty || 0;
-  const cell = { border: "1px solid #000", padding: "2px 6px", fontSize: 9.5, fontFamily: "'맑은 고딕', 'Malgun Gothic', sans-serif", wordBreak: "break-word", overflowWrap: "break-word" };
-  const right = { ...cell, textAlign: "right" };
-  const center = { ...cell, textAlign: "center" };
-  const boldCenter = { ...center, fontWeight: 700 };
-  const boldRight = { ...right, fontWeight: 700 };
+  const THIN = "1px solid #000";
+  const MED = "2.5px solid #000";
+  const base = { padding: "2px 6px", fontSize: 9.5, fontFamily: "'맑은 고딕', 'Malgun Gothic', sans-serif", wordBreak: "break-word", overflowWrap: "break-word" };
+
+  // col: 0=A(맨왼쪽, 굵은 테두리) ... 5=F(맨오른쪽, 굵은 테두리) / bottomMed: 구역합계·총합계 등 아래쪽 굵은 줄
+  function cellStyle(col, { align = "center", bold = false, size, bottomMed = false, topMed = false, bg } = {}) {
+    return {
+      ...base,
+      textAlign: align,
+      fontWeight: bold ? 700 : 400,
+      fontSize: size || base.fontSize,
+      background: bg,
+      borderTop: topMed ? MED : THIN,
+      borderBottom: bottomMed ? MED : THIN,
+      borderLeft: col === 0 ? MED : THIN,
+      borderRight: col === 5 ? MED : THIN,
+    };
+  }
+  const ghCell = (bottomMed) => ({ ...base, textAlign: "center", fontWeight: 700, borderTop: THIN, borderBottom: bottomMed ? MED : THIN, borderLeft: THIN, borderRight: THIN });
 
   return (
     <div style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
@@ -3599,72 +3613,81 @@ function InspectionPrintSheet({ product, pageBreak }) {
           <col style={{ width: "7.25%" }} />
         </colgroup>
         <tbody>
-          <tr>
-            <td style={{ ...cell, fontWeight: 700, fontSize: 13 }}>{todayStr()}</td>
-            <td colSpan={4} style={{ ...center, fontWeight: 700, fontSize: 13 }}>
-              {product.supplier || ""}
-            </td>
-            <td style={boldCenter}>박스</td>
-            <td style={boldCenter}>낱개</td>
+          {/* 장식용 빈 줄 (위쪽 굵은 테두리) */}
+          <tr style={{ height: 6 }}>
+            {Array.from({ length: 8 }).map((_, i) => (
+              <td key={i} style={{ border: "none", borderBottom: MED, padding: 0 }}></td>
+            ))}
           </tr>
           <tr>
-            <th style={cell}>행 레이블</th>
-            <th style={center}>입수</th>
-            <th style={center}>{product.name}</th>
-            <th style={center}>박스</th>
-            <th style={center}>센터명</th>
-            <th style={center}>낱개</th>
-            <th style={cell}></th>
-            <th style={cell}></th>
+            <td style={cellStyle(0, { align: "left", bold: true, size: 13, topMed: true })}>{todayStr()}</td>
+            <td colSpan={4} style={{ ...cellStyle(2, { bold: true, size: 13, topMed: true }), borderLeft: THIN, borderRight: MED }}>
+              {product.supplier || ""}
+            </td>
+            <td style={ghCell(false)}>박스</td>
+            <td style={ghCell(false)}>낱개</td>
+          </tr>
+          <tr>
+            <th style={cellStyle(0, { bold: true })}>행 레이블</th>
+            <th style={cellStyle(1, { bold: true })}>입수</th>
+            <th style={cellStyle(2, { bold: true, size: 12 })}>{product.name}</th>
+            <th style={cellStyle(3, { bold: true })}>박스</th>
+            <th style={cellStyle(4, { bold: true })}>센터명</th>
+            <th style={cellStyle(5, { bold: true })}>낱개</th>
+            <th style={ghCell(false)}></th>
+            <th style={ghCell(false)}></th>
           </tr>
           {data.zones.map((z, zi) => (
             <React.Fragment key={zi}>
-              {z.rows.map((r) => (
-                <tr key={r.key} style={{ background: r.isGray ? "#D9D9D9" : "#fff" }}>
-                  <td style={cell}>{r.label}</td>
-                  <td style={center}>{pack || ""}</td>
-                  <td style={boldRight}>{r.qty}</td>
-                  <td style={center}>{r.box}</td>
-                  <td style={boldCenter}>{r.shortName || "-"}</td>
-                  <td style={center}>{r.rem}</td>
-                  <td style={boldCenter}>{r.checkpoint ? r.checkpoint.box : ""}</td>
-                  <td style={boldCenter}>{r.checkpoint ? r.checkpoint.rem : ""}</td>
-                </tr>
-              ))}
+              {z.rows.map((r) => {
+                const bg = r.isGray ? "#D9D9D9" : "#fff";
+                return (
+                  <tr key={r.key}>
+                    <td style={cellStyle(0, { align: "left", bg })}>{r.label}</td>
+                    <td style={cellStyle(1, { bg })}>{pack || ""}</td>
+                    <td style={cellStyle(2, { align: "right", bold: true, size: 12, bg })}>{r.qty}</td>
+                    <td style={cellStyle(3, { bg })}>{r.box}</td>
+                    <td style={cellStyle(4, { bold: true, size: 12, bg })}>{r.shortName || "-"}</td>
+                    <td style={cellStyle(5, { bg })}>{r.rem}</td>
+                    <td style={ghCell(false)}>{r.checkpoint ? r.checkpoint.box : ""}</td>
+                    <td style={ghCell(false)}>{r.checkpoint ? r.checkpoint.rem : ""}</td>
+                  </tr>
+                );
+              })}
               <tr>
-                <td style={{ ...boldCenter, textAlign: "left" }} colSpan={2}>
+                <td colSpan={2} style={cellStyle(0, { bold: true, size: 14, bottomMed: true })}>
                   {z.zone === "미지정" ? "미지정 지역 합계" : `${z.zone}구역 합계`}
                 </td>
-                <td style={boldRight}>{z.total.qty}</td>
-                <td style={boldCenter}>{z.total.box}</td>
-                <td style={cell}></td>
-                <td style={boldCenter}>{z.total.rem}</td>
-                <td style={cell}></td>
-                <td style={cell}></td>
+                <td style={cellStyle(2, { align: "right", bold: true, size: 14, bottomMed: true })}>{z.total.qty}</td>
+                <td style={cellStyle(3, { bold: true, size: 14, bottomMed: true })}>{z.total.box}</td>
+                <td style={cellStyle(4, { bold: true, size: 14, bottomMed: true })}></td>
+                <td style={cellStyle(5, { bold: true, size: 14, bottomMed: true })}>{z.total.rem}</td>
+                <td style={ghCell(true)}></td>
+                <td style={ghCell(true)}></td>
               </tr>
             </React.Fragment>
           ))}
           <tr>
-            <td style={{ ...boldCenter, textAlign: "left" }} colSpan={2}>
+            <td colSpan={2} style={cellStyle(0, { bold: true, size: 14, bottomMed: true })}>
               총합계
             </td>
-            <td style={boldRight}>{product.totalQty}</td>
-            <td style={boldCenter}>{data.grand.box}</td>
-            <td style={cell}></td>
-            <td style={boldCenter}>{data.grand.rem}</td>
-            <td style={boldCenter}>소분박스</td>
-            <td style={boldCenter}>소분낱개</td>
+            <td style={cellStyle(2, { align: "right", bold: true, size: 14, bottomMed: true })}>{product.totalQty}</td>
+            <td style={cellStyle(3, { bold: true, size: 14, bottomMed: true })}>{data.grand.box}</td>
+            <td style={cellStyle(4, { bold: true, size: 14, bottomMed: true })}></td>
+            <td style={cellStyle(5, { bold: true, size: 14, bottomMed: true })}>{data.grand.rem}</td>
+            <td style={ghCell(true)}>소분박스</td>
+            <td style={ghCell(true)}>소분낱개</td>
           </tr>
           <tr>
-            <td style={{ ...cell, fontWeight: 700, textAlign: "left" }} colSpan={2}>
+            <td colSpan={2} style={cellStyle(0, { align: "left", bold: true, size: 14, bottomMed: true })}>
               총 박스 수량 / 총 낱개 수량
             </td>
-            <td style={cell}></td>
-            <td style={boldCenter}>{data.totalBoxSum}</td>
-            <td style={cell}></td>
-            <td style={boldCenter}>{data.totalRemSum}</td>
-            <td style={{ ...boldCenter, background: "#FFFF00", fontSize: 13 }}>{data.sub.box}</td>
-            <td style={{ ...boldCenter, background: "#FFFF00", fontSize: 13 }}>{data.sub.rem}</td>
+            <td style={cellStyle(2, { bold: true, size: 14, bottomMed: true })}></td>
+            <td style={cellStyle(3, { bold: true, size: 14, bottomMed: true })}>{data.totalBoxSum}</td>
+            <td style={cellStyle(4, { bold: true, size: 14, bottomMed: true })}></td>
+            <td style={cellStyle(5, { bold: true, size: 14, bottomMed: true })}>{data.totalRemSum}</td>
+            <td style={{ ...ghCell(true), background: "#FFFF00", fontSize: 15 }}>{data.sub.box}</td>
+            <td style={{ ...ghCell(true), background: "#FFFF00", fontSize: 15 }}>{data.sub.rem}</td>
           </tr>
         </tbody>
       </table>
