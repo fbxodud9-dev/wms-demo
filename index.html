@@ -3359,6 +3359,13 @@ function PickingInspection({ orders }) {
         bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
       });
     });
+    return Object.values(bySku)
+      .map((p) => {
+        const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+        const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
+        return { ...p, regionRows, totalQty };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [orders, activeDate]);
 
   const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
