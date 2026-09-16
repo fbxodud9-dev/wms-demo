@@ -1274,10 +1274,11 @@ function WMSApp() {
       ],
     },
     {
-      label: "주문 · 할당",
+      label: "주문정보",
       items: [
-        { key: "orderinfo", label: "I. 주문정보", icon: ClipboardList },
-        { key: "allocation", label: "II. 상품할당", icon: CheckSquare, badgeKey: "new" },
+        { key: "orderinfo", label: "I. 주문정보 (GS)", icon: ClipboardList },
+        { key: "orderinfo-bgf", label: "주문정보 (BGF)", icon: ClipboardList },
+        { key: "orderinfo-emart", label: "주문정보 (E.MART)", icon: ClipboardList },
       ],
     },
     {
@@ -1486,7 +1487,8 @@ function WMSApp() {
             onReset={resetAllOrders}
           />
         )}
-        {tab === "allocation" && <Allocation items={itemsView} orders={orders} onAllocate={allocateOrder} />}
+        {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
+        {tab === "orderinfo-emart" && <ComingSoon title="주문정보 (E.MART)" />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickingconfirm" && (
@@ -1613,6 +1615,26 @@ function SectionHead({ icon: Icon, title, color, onMore }) {
 
 function EmptyRow({ text }) {
   return <div style={{ padding: "28px 16px", textAlign: "center", color: T.inkSoft, fontSize: 13 }}>{text}</div>;
+}
+
+function ComingSoon({ title }) {
+  return (
+    <div>
+      <PageHeader title={title} sub="아직 준비 중인 화면이에요" />
+      <div
+        style={{
+          background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
+          padding: "80px 20px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 52, lineHeight: 1 }}>🚧🐣</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: T.ink }}>공사중이에요</div>
+        <div style={{ fontSize: 13, color: T.inkSoft, maxWidth: 360 }}>
+          {title} 연동은 곧 준비될 예정이에요. 조금만 기다려주세요!
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function PageHeader({ title, sub, action }) {
