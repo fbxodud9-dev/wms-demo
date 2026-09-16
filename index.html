@@ -3447,9 +3447,98 @@ async function downloadOrderInfoExcel(ordersForDate, dateLabel, filename, setBus
 }
 
 /* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown, 고정 순서/구역 기준) ================= */
+// 화주사 기준표의 A/B 구역 그대로 사용 (임의 반분 없음). 기준표에 없는 지역은 "미지정"으로 맨 뒤에 붙음
+function buildTableRowsForProduct(product) {
+  if (!product) return [];
+  const bd = (q) => (product.packQty > 0 ? { box: Math.floor(q / product.packQty), rem: q % product.packQty } : { box: 0, rem: q });
+  const zoneOrder = ["A", "B", "미지정"];
+  const out = [];
+  zoneOrder.forEach((zone) => {
+    const rows = product.regionRows.filter((r) => r.zone === zone);
+    if (rows.length === 0) return;
+    rows.forEach((r) => out.push({ type: "region", ...r, ...bd(r.qty) }));
+    const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
+    out.push({ type: "zoneTotal", label: zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, qty: zoneTotalQty, ...bd(zoneTotalQty) });
+  });
+  return out;
+}
+
+// 품목별 검수표 1개 상품의 표 (단일 출력 / 전체 출력 모두에서 재사용)
+function InspectionTable({ product, pageBreak }) {
+  const rows = useMemo(() => buildTableRowsForProduct(product), [product]);
+  return (
+    <div style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
+      <div style={{ fontWeight: 700, fontSize: 15.5 }}>{product.name}</div>
+      <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
+        {product.sku} · 입수 {product.packQty || "-"}
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>행 레이블 (납품처)</th>
+              <th>센터명</th>
+              <th>총수량</th>
+              <th>박스</th>
+              <th>낱개</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) =>
+              r.type === "zoneTotal" ? (
+                <tr key={`zt-${idx}`} style={{ background: T.bg }}>
+                  <td style={{ fontWeight: 700 }}>{r.label}</td>
+                  <td></td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.box}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.rem}</td>
+                </tr>
+              ) : (
+                <tr key={r.key}>
+                  <td style={{ fontWeight: 600 }}>{r.label}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{r.shortName || "-"}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.box}</td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.rem}</td>
+                </tr>
+              )
+            )}
+            <tr style={{ background: T.steel }}>
+              <td style={{ fontWeight: 700, color: "#fff" }}>총합계</td>
+              <td></td>
+              <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>{product.totalQty}</td>
+              <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
+                {product.packQty > 0 ? Math.floor(product.totalQty / product.packQty) : 0}
+              </td>
+              <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
+                {product.packQty > 0 ? product.totalQty % product.packQty : product.totalQty}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>
+        * 지역 순서와 A/B 구역은 화주사가 제공한 고정 기준표를 그대로 사용합니다 (임의로 나누지 않음). 기준표에 없는 신규 지역은 "미지정"으로 맨 뒤에 표시됩니다.
+      </div>
+    </div>
+  );
+}
+
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [printAllMode, setPrintAllMode] = useState(false);
+
+  useEffect(() => {
+    if (!printAllMode) return;
+    const timer = setTimeout(() => window.print(), 150);
+    const onAfterPrint = () => setPrintAllMode(false);
+    window.addEventListener("afterprint", onAfterPrint);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("afterprint", onAfterPrint);
+    };
+  }, [printAllMode]);
 
   // 피킹은 날짜 단위 작업이므로, 날짜를 하나 선택해서 그 날짜의 발주만 집계
   const dateOptions = useMemo(() => {
@@ -3496,22 +3585,6 @@ function PickingInspection({ orders }) {
 
   const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
 
-  // 화주사 기준표의 A/B 구역 그대로 사용 (임의 반분 없음). 기준표에 없는 지역은 "미지정"으로 맨 뒤에 붙음
-  const tableRows = useMemo(() => {
-    if (!selected) return [];
-    const bd = (q) => (selected.packQty > 0 ? { box: Math.floor(q / selected.packQty), rem: q % selected.packQty } : { box: 0, rem: q });
-    const zoneOrder = ["A", "B", "미지정"];
-    const out = [];
-    zoneOrder.forEach((zone) => {
-      const rows = selected.regionRows.filter((r) => r.zone === zone);
-      if (rows.length === 0) return;
-      rows.forEach((r) => out.push({ type: "region", ...r, ...bd(r.qty) }));
-      const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
-      out.push({ type: "zoneTotal", label: zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, qty: zoneTotalQty, ...bd(zoneTotalQty) });
-    });
-    return out;
-  }, [selected]);
-
   return (
     <div>
       <PageHeader title="피킹지시서 출력" sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다" />
@@ -3538,110 +3611,74 @@ function PickingInspection({ orders }) {
             </div>
           ) : (
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-              <div style={{ flex: "1 1 260px" }}>
-                <button
-                  onClick={() => downloadStyledInspectionExcel(products, `피킹지시서_${activeDate}.xlsx`, setExporting)}
-                  disabled={exporting}
-                  className="primary-btn no-print"
-                  style={{ ...primaryBtnStyle, width: "100%", justifyContent: "center", marginBottom: 10, opacity: exporting ? 0.7 : 1 }}
-                >
-                  <Download size={15} /> {exporting ? "생성 중..." : `전체 품목 엑셀 다운로드 (${products.length}개 시트)`}
-                </button>
+              <div className="no-print" style={{ flex: "1 1 260px" }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <button
+                    onClick={() => downloadStyledInspectionExcel(products, `피킹지시서_${activeDate}.xlsx`, setExporting)}
+                    disabled={exporting}
+                    className="primary-btn"
+                    style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: exporting ? 0.7 : 1 }}
+                  >
+                    <Download size={15} /> {exporting ? "생성 중..." : `엑셀 (${products.length}개 시트)`}
+                  </button>
+                  <button
+                    onClick={() => setPrintAllMode(true)}
+                    disabled={printAllMode}
+                    className="ghost-btn"
+                    style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: printAllMode ? 0.7 : 1 }}
+                  >
+                    <Printer size={15} /> {printAllMode ? "출력 준비 중..." : `전체 출력 (PDF)`}
+                  </button>
+                </div>
                 <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
                   {products.map((p) => (
                     <button
                       key={p.sku}
                       onClick={() => setSelectedSku(p.sku)}
                       className="rowhover"
-                  style={{
-                    display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none",
-                    background: selected && selected.sku === p.sku ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit",
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
-                  <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
-                    {p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ flex: "2 1 460px" }}>
-            {selected && (
-              <div style={cardStyle} className="print-area">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
-                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku} · 입수 {selected.packQty || "-"}</div>
-                  </div>
-                  <div className="no-print" style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
-                      <Printer size={14} /> 출력하기
-                    </button>
-                    <button
-                      onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting)}
-                      disabled={exporting}
-                      className="ghost-btn"
-                      style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }}
+                      style={{
+                        display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none",
+                        background: selected && selected.sku === p.sku ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit",
+                      }}
                     >
-                      <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                        {p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
+                      </div>
                     </button>
-                  </div>
-                </div>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>행 레이블 (납품처)</th>
-                        <th>센터명</th>
-                        <th>총수량</th>
-                        <th>박스</th>
-                        <th>낱개</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tableRows.map((r, idx) =>
-                        r.type === "zoneTotal" ? (
-                          <tr key={`zt-${idx}`} style={{ background: T.bg }}>
-                            <td style={{ fontWeight: 700 }}>{r.label}</td>
-                            <td></td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.box}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.rem}</td>
-                          </tr>
-                        ) : (
-                          <tr key={r.key}>
-                            <td style={{ fontWeight: 600 }}>{r.label}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{r.shortName || "-"}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.qty}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.box}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{r.rem}</td>
-                          </tr>
-                        )
-                      )}
-                      <tr style={{ background: T.steel }}>
-                        <td style={{ fontWeight: 700, color: "#fff" }}>총합계</td>
-                        <td></td>
-                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>{selected.totalQty}</td>
-                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
-                          {selected.packQty > 0 ? Math.floor(selected.totalQty / selected.packQty) : 0}
-                        </td>
-                        <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "#fff" }}>
-                          {selected.packQty > 0 ? selected.totalQty % selected.packQty : selected.totalQty}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>
-                  * 지역 순서와 A/B 구역은 화주사가 제공한 고정 기준표를 그대로 사용합니다 (임의로 나누지 않음). 기준표에 없는 신규 지역은 "미지정"으로 맨 뒤에 표시됩니다.
+                  ))}
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-      )}
+
+              <div style={{ flex: "2 1 460px" }} className={printAllMode ? "no-print" : undefined}>
+                {selected && (
+                  <div style={cardStyle} className={printAllMode ? undefined : "print-area"}>
+                    <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
+                      <button onClick={() => window.print()} className="ghost-btn" style={smallBtnStyle}>
+                        <Printer size={14} /> 출력하기
+                      </button>
+                      <button
+                        onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting)}
+                        disabled={exporting}
+                        className="ghost-btn"
+                        style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }}
+                      >
+                        <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
+                      </button>
+                    </div>
+                    <InspectionTable product={selected} />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {printAllMode && (
+            <div className="print-area">
+              {products.map((p, idx) => (
+                <InspectionTable key={p.sku} product={p} pageBreak={idx < products.length - 1} />
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>
