@@ -1003,6 +1003,48 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  // 발주파일 업로드처럼 여러 건을 한 번에 등록할 때 사용 (건마다 새로고침하지 않아 훨씬 빠름)
+  const addOrdersBulk = useCallback(
+    async (orderList) => {
+      try {
+        const body = {
+          orders: orderList.map((order) => ({
+            orderNo: order.orderNo,
+            customer: order.customer,
+            storeCode: order.storeCode,
+            supplier: order.supplier,
+            supplierCode: order.supplierCode,
+            channel: order.channel,
+            lines: order.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, packQty: l.packQty, location: l.location, unit: l.unit })),
+          })),
+        };
+        const res = await apiFetch("/orders/bulk", authToken, { method: "POST", body });
+        await loadCoreData();
+        return res;
+      } catch (e) {
+        setApiErr(e.message);
+        return { createdCount: 0, skippedCount: orderList.length, skippedOrderNos: [] };
+      }
+    },
+    [authToken, loadCoreData]
+  );
+
+  // 발주파일 업로드 시 미등록 품목을 한 번에 등록 (품목 개수만큼 반복 호출하지 않음)
+  const registerItemsBulk = useCallback(
+    async (skuNamePairs) => {
+      if (skuNamePairs.length === 0) return;
+      try {
+        await apiFetch("/orders/bulk-register-items", authToken, {
+          method: "POST",
+          body: { items: skuNamePairs.map(([sku, name]) => ({ sku, name })) },
+        });
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken]
+  );
+
   const updateChangedQty = useCallback(
     async (orderId, sku, value) => {
       try {
@@ -1481,6 +1523,8 @@ function WMSApp() {
             items={itemsView}
             orders={orders}
             onAdd={addOrder}
+            onAddBulk={addOrdersBulk}
+            onRegisterItemsBulk={registerItemsBulk}
             onUpdateChangedQty={updateChangedQty}
             onConvert={convertSupplierToPicking}
             onRegisterItem={registerPlaceholderItem}
@@ -2187,7 +2231,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegisterItem, onReset }) {
+function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpdateChangedQty, onConvert, onRegisterItem, onReset }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -2390,18 +2434,33 @@ function OrderInfo({ items, orders, onAdd, onUpdateChangedQty, onConvert, onRegi
         }
       }
 
-      for (const [sku, name] of allUnmatched.entries()) {
-        if (onRegisterItem) await onRegisterItem(sku, name);
+      const unmatchedList = Array.from(allUnmatched.entries());
+      if (onRegisterItemsBulk) {
+        await onRegisterItemsBulk(unmatchedList);
+      } else {
+        for (const [sku, name] of unmatchedList) {
+          if (onRegisterItem) await onRegisterItem(sku, name);
+        }
       }
-      for (const o of allNewOrders) {
-        await onAdd(o);
+
+      let skippedCount = 0;
+      if (allNewOrders.length > 0) {
+        if (onAddBulk) {
+          const res = await onAddBulk(allNewOrders);
+          skippedCount = res?.skippedCount || 0;
+        } else {
+          for (const o of allNewOrders) {
+            await onAdd(o);
+          }
+        }
       }
 
       const totalLines = allNewOrders.reduce((a, o) => a + o.lines.length, 0);
       const supplierCount = new Set(allNewOrders.map((o) => o.supplierCode || o.supplier)).size;
       if (allNewOrders.length > 0) {
         setUploadMsg(
-          `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
+          `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length - skippedCount}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
+            (skippedCount > 0 ? ` (이미 등록된 발주번호 ${skippedCount}건은 건너뛰었습니다.)` : "") +
             (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "")
         );
       }
