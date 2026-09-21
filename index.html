@@ -711,6 +711,7 @@ function mapItemFromApi(i) {
 function mapOrderFromApi(o) {
   return {
     id: o.id,
+    seq: o.seq,
     orderNo: o.order_no,
     customer: o.customer,
     storeCode: o.store_code,
@@ -3727,7 +3728,9 @@ function PickingInspection({ orders }) {
   // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 다시 집계 (선택한 날짜만)
   const products = useMemo(() => {
     const bySku = {};
-    orders.forEach((o) => {
+    // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
+    const ordered = [...orders].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    ordered.forEach((o) => {
       if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
       if (activeDate && o.createdAt !== activeDate) return; // 다른 날짜 발주는 제외
       const regionKey = o.storeCode || o.customer;
@@ -3750,13 +3753,12 @@ function PickingInspection({ orders }) {
         bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
       });
     });
-    return Object.values(bySku)
-      .map((p) => {
-        const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-        const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
-        return { ...p, regionRows, totalQty };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서) 그대로 유지
+    return Object.values(bySku).map((p) => {
+      const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+      const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
+      return { ...p, regionRows, totalQty };
+    });
   }, [orders, activeDate]);
 
   const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
