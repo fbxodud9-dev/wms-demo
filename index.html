@@ -450,6 +450,51 @@ const STORE_NAMES = ["강남관할센터", "분당관할센터", "일산관할�
 const ORDER_TYPES = ["정기발주", "긴급발주"];
 const COURSE_NAMES = ["A", "B", "S"];
 
+// 피킹지 업체(공급사) 고정 순서 - 이 순서대로 시트/목록이 나와야 함
+const SUPPLIER_ORDER_LIST = [
+  "영진베이커리",
+  "조인앤조인",
+  "네이처올리브푸드",
+  "탑스푸드",
+  "저스트그린",
+  "은성파머스",
+  "은성",
+  "미샛",
+  "채다원",
+  "스윗밸런스",
+  "태향",
+  "케이제이컴퍼니",
+  "엠즈베이커스",
+  "청정푸드",
+  "대광푸드",
+  "골든에프앤디",
+  "흥선",
+  "유라가",
+  "뜬뜬(락컴퍼니)",
+  "아워홈",
+  "삼진어묵",
+  "우리집사람들",
+  "브라더스팩토리",
+  "(네고)싱싱한",
+  "(네고)흥성엔에프",
+  "(네고)참맛나라",
+  "(네고)맛요일",
+  "(네고)H2글로벌",
+  "데어리젠",
+];
+function supplierPriority(supplier) {
+  const s = String(supplier || "");
+  const idx = SUPPLIER_ORDER_LIST.findIndex((name) => s.includes(name));
+  return idx === -1 ? SUPPLIER_ORDER_LIST.length : idx;
+}
+
+// 상품명 끝의 "1편"/"2편" 또는 숫자만으로 편을 판별. 숫자가 아예 없으면 기본 1편.
+function detectPart(name) {
+  const m = String(name || "").match(/(\d)\s*편?\s*$/);
+  if (m) return m[1] === "2" ? 2 : 1;
+  return 1;
+}
+
 // 오피킹 방지용 고정 지역 순서 + A/B 구역 (화주사 제공 기준표)
 const REGION_ORDER_TABLE = [
   { code: "VV16", name: "원주", zone: "A" },
@@ -3753,12 +3798,15 @@ function PickingInspection({ orders }) {
         bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
       });
     });
-    // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서) 그대로 유지
-    return Object.values(bySku).map((p) => {
-      const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-      const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
-      return { ...p, regionRows, totalQty };
-    });
+    // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서)를 기본으로 하되
+    // 1편이 전부 먼저, 2편이 전부 나중에 오도록 다시 묶음 (그룹 안에서는 업로드 순서 유지)
+    return Object.values(bySku)
+      .map((p) => {
+        const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+        const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
+        return { ...p, regionRows, totalQty, part: detectPart(p.name) };
+      })
+      .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
   }, [orders, activeDate]);
 
   const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
@@ -3819,9 +3867,19 @@ function PickingInspection({ orders }) {
                         background: selected && selected.sku === p.sku ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit",
                       }}
                     >
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span
+                          style={{
+                            fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                            background: p.part === 2 ? "#FCF1DD" : "#E7F4EF", color: p.part === 2 ? T.amberDeep : T.tealDeep,
+                          }}
+                        >
+                          {p.part}편
+                        </span>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                      </div>
                       <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
-                        {p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
+                        {p.supplier ? `${p.supplier} · ` : ""}{p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
                       </div>
                     </button>
                   ))}
