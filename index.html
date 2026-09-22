@@ -3747,6 +3747,8 @@ function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [printMode, setPrintMode] = useState(null); // null | "single" | "all"
+  const [supplierFilter, setSupplierFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     if (!printMode) return;
@@ -3811,7 +3813,23 @@ function PickingInspection({ orders }) {
       .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
   }, [orders, activeDate]);
 
-  const selected = products.find((p) => p.sku === selectedSku) || products[0] || null;
+  // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 고정 순서표 순으로)
+  const supplierOptions = useMemo(() => {
+    const set = new Set(products.map((p) => p.supplier || "미지정"));
+    return Array.from(set).sort((a, b) => supplierPriority(a) - supplierPriority(b) || a.localeCompare(b));
+  }, [products]);
+
+  // 공급사 선택 + 상품명/코드 검색어로 좌측 목록만 좁혀서 보여줌 (엑셀 일괄 다운로드는 전체 유지)
+  const filteredProducts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return products.filter((p) => {
+      if (supplierFilter !== "all" && (p.supplier || "미지정") !== supplierFilter) return false;
+      if (q && !p.name.toLowerCase().includes(q) && !String(p.sku).toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [products, supplierFilter, searchQuery]);
+
+  const selected = products.find((p) => p.sku === selectedSku) || filteredProducts[0] || products[0] || null;
 
   return (
     <div>
@@ -3858,8 +3876,46 @@ function PickingInspection({ orders }) {
                     🚧 전체 출력 (공사중)
                   </button>
                 </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                  <select
+                    style={{ ...inputStyle, width: "100%" }}
+                    value={supplierFilter}
+                    onChange={(e) => setSupplierFilter(e.target.value)}
+                  >
+                    <option value="all">전체 공급사 ({products.length})</option>
+                    {supplierOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s} ({products.filter((p) => (p.supplier || "미지정") === s).length})
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ position: "relative" }}>
+                    <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
+                    <input
+                      style={{ ...inputStyle, width: "100%", paddingLeft: 28 }}
+                      placeholder="상품명 또는 상품코드 검색"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  {(supplierFilter !== "all" || searchQuery) && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.inkSoft }}>
+                      <span>{filteredProducts.length}개 표시 중</span>
+                      <button
+                        onClick={() => { setSupplierFilter("all"); setSearchQuery(""); }}
+                        className="ghost-btn"
+                        style={{ border: "none", background: "none", padding: "2px 4px", fontSize: 12, color: T.inkSoft, cursor: "pointer", textDecoration: "underline" }}
+                      >
+                        필터 초기화
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
-                  {products.map((p) => (
+                  {filteredProducts.length === 0 ? (
+                    <EmptyRow text="조건에 맞는 상품이 없습니다." />
+                  ) : (
+                  filteredProducts.map((p) => (
                     <button
                       key={p.sku}
                       onClick={() => setSelectedSku(p.sku)}
@@ -3884,7 +3940,8 @@ function PickingInspection({ orders }) {
                         {p.supplier ? `${p.supplier} · ` : ""}{p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
                       </div>
                     </button>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
 
