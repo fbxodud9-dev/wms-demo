@@ -767,7 +767,7 @@ function mapOrderFromApi(o) {
     pickDocNo: o.pick_doc_no,
     pmsStatus: o.pms_status,
     invoiceIssued: o.invoice_issued,
-    createdAt: (o.created_at || "").slice(0, 10),
+    createdAt: o.order_date ? String(o.order_date).slice(0, 10) : (o.created_at || "").slice(0, 10),
     completedAt: o.completed_at ? String(o.completed_at).slice(0, 10) : null,
     lines: (o.lines || []).map((l) => ({
       sku: l.sku,
@@ -1034,6 +1034,7 @@ function WMSApp() {
           method: "POST",
           body: {
             orderNo: order.orderNo,
+            orderDate: order.createdAt,
             customer: order.customer,
             storeCode: order.storeCode,
             supplier: order.supplier,
@@ -1057,6 +1058,7 @@ function WMSApp() {
         const body = {
           orders: orderList.map((order) => ({
             orderNo: order.orderNo,
+            orderDate: order.createdAt,
             customer: order.customer,
             storeCode: order.storeCode,
             supplier: order.supplier,
