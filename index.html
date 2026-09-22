@@ -3835,7 +3835,7 @@ function PickingInspection({ orders }) {
     return Array.from(set).sort((a, b) => supplierPriority(a) - supplierPriority(b) || a.localeCompare(b));
   }, [products]);
 
-  // 공급사 선택 + 상품명/코드 검색어로 좌측 목록만 좁혀서 보여줌 (엑셀 일괄 다운로드는 전체 유지)
+  // 공급사 선택 + 상품명/코드 검색어로 좌측 목록을 좁힘. 이 결과가 그대로 엑셀 일괄 다운로드 대상이 됨.
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
@@ -3876,12 +3876,23 @@ function PickingInspection({ orders }) {
               <div className="no-print" style={{ flex: "1 1 260px" }}>
                 <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                   <button
-                    onClick={() => downloadStyledInspectionExcel(products, `피킹지시서_${activeDate}.xlsx`, setExporting)}
-                    disabled={exporting}
+                    onClick={() =>
+                      downloadStyledInspectionExcel(
+                        filteredProducts,
+                        `피킹지시서_${activeDate}${supplierFilter !== "all" ? `_${supplierFilter.replace(/[\\/:*?"<>|]/g, "")}` : ""}.xlsx`,
+                        setExporting
+                      )
+                    }
+                    disabled={exporting || filteredProducts.length === 0}
                     className="primary-btn"
-                    style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: exporting ? 0.7 : 1 }}
+                    style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: exporting || filteredProducts.length === 0 ? 0.7 : 1 }}
                   >
-                    <Download size={15} /> {exporting ? "생성 중..." : `엑셀 (${products.length}개 시트)`}
+                    <Download size={15} />{" "}
+                    {exporting
+                      ? "생성 중..."
+                      : supplierFilter !== "all" || searchQuery
+                      ? `필터 결과만 엑셀 (${filteredProducts.length}개 시트)`
+                      : `엑셀 (${products.length}개 시트)`}
                   </button>
                   <button
                     disabled
