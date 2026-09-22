@@ -1365,6 +1365,19 @@ function WMSApp() {
     }
   }, [authToken, loadCoreData]);
 
+  // 특정 날짜의 발주만 삭제 (다른 날짜는 그대로 유지, 테스트 데이터 정리용)
+  const deleteOrdersByDate = useCallback(
+    async (date) => {
+      try {
+        await apiFetch(`/orders/by-date/${date}`, authToken, { method: "DELETE" });
+        await loadCoreData();
+      } catch (e) {
+        setApiErr(e.message);
+      }
+    },
+    [authToken, loadCoreData]
+  );
+
   const registerPlaceholderItem = useCallback(
     async (sku, name) => {
       try {
@@ -1670,6 +1683,7 @@ function WMSApp() {
             onConvert={convertSupplierToPicking}
             onRegisterItem={registerPlaceholderItem}
             onReset={resetAllOrders}
+            onDeleteDate={deleteOrdersByDate}
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
@@ -2372,7 +2386,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpdateChangedQty, onConvert, onRegisterItem, onReset }) {
+function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpdateChangedQty, onConvert, onRegisterItem, onReset, onDeleteDate }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -2388,6 +2402,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
   const selected = orders.find((o) => o.id === selectedId) || null;
   const [storeFilter, setStoreFilter] = useState("전체");
   const [downloading, setDownloading] = useState(false);
+  const [deletingDate, setDeletingDate] = useState(null); // 삭제 진행 중인 날짜 (버튼 중복 클릭 방지용)
   const storeOptions = useMemo(() => {
     const map = new Map();
     orders.forEach((o) => {
@@ -2906,14 +2921,29 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
                     발주 {g.orderCount}건 · 품목라인 {g.lineCount}개 · 총수량 {g.totalQty.toLocaleString()}개
                   </div>
                 </div>
-                <button
-                  onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_${g.date}.xlsx`, setDownloading)}
-                  disabled={downloading}
-                  className="primary-btn"
-                  style={{ ...primaryBtnStyle, opacity: downloading ? 0.7 : 1 }}
-                >
-                  <Download size={15} /> {downloading ? "생성 중..." : "엑셀로 보기"}
-                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_${g.date}.xlsx`, setDownloading)}
+                    disabled={downloading}
+                    className="primary-btn"
+                    style={{ ...primaryBtnStyle, opacity: downloading ? 0.7 : 1 }}
+                  >
+                    <Download size={15} /> {downloading ? "생성 중..." : "엑셀로 보기"}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm(`${fmtDate(g.date)} 날짜의 발주 ${g.orderCount}건을 삭제합니다. 다른 날짜는 그대로 유지돼요. 계속할까요?`)) return;
+                      setDeletingDate(g.date);
+                      await onDeleteDate(g.date);
+                      setDeletingDate(null);
+                    }}
+                    disabled={deletingDate === g.date}
+                    className="ghost-btn"
+                    style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55", opacity: deletingDate === g.date ? 0.7 : 1 }}
+                  >
+                    <Trash2 size={14} /> {deletingDate === g.date ? "삭제 중..." : "이 날짜 삭제"}
+                  </button>
+                </div>
               </div>
             ))}
           </div>
