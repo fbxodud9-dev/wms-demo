@@ -488,6 +488,22 @@ function supplierPriority(supplier) {
   return idx === -1 ? SUPPLIER_ORDER_LIST.length : idx;
 }
 
+// 원본 발주파일의 공급사명은 "(주)영진베이커리(12.5%)" / "(주)영진베이커리(PB, 11.3%)" 처럼
+// 같은 회사라도 괄호(원료비율·구분 등)가 달라서 서로 다른 문자열로 들어옴.
+// 필터 목록에서는 이런 변형을 하나로 묶기 위해 대표 이름(그룹핑 키)을 뽑아낸다.
+function supplierGroupKey(supplier) {
+  const s = String(supplier || "").trim();
+  if (!s) return "미지정";
+  const idx = SUPPLIER_ORDER_LIST.findIndex((name) => s.includes(name));
+  if (idx !== -1) return SUPPLIER_ORDER_LIST[idx]; // 고정 순서표에 있는 이름이면 그걸 대표명으로
+  // 순서표에 없는 공급사는 괄호(비율·구분 표기)와 법인격 접두어를 떼어 대표명 추정
+  const cleaned = s
+    .replace(/\([^)]*\)/g, "")
+    .replace(/^(주식회사|농업회사법인\s*주식회사|농업회사법인)\s*/, "")
+    .trim();
+  return cleaned || s;
+}
+
 // 상품명 끝의 "1편"/"2편" 또는 숫자만으로 편을 판별. 숫자가 아예 없으면 기본 1편.
 function detectPart(name) {
   const m = String(name || "").match(/(\d)\s*편?\s*$/);
@@ -3813,9 +3829,9 @@ function PickingInspection({ orders }) {
       .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
   }, [orders, activeDate]);
 
-  // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 고정 순서표 순으로)
+  // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 같은 회사는 하나로 묶어서, 고정 순서표 순으로)
   const supplierOptions = useMemo(() => {
-    const set = new Set(products.map((p) => p.supplier || "미지정"));
+    const set = new Set(products.map((p) => supplierGroupKey(p.supplier)));
     return Array.from(set).sort((a, b) => supplierPriority(a) - supplierPriority(b) || a.localeCompare(b));
   }, [products]);
 
@@ -3823,7 +3839,7 @@ function PickingInspection({ orders }) {
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
-      if (supplierFilter !== "all" && (p.supplier || "미지정") !== supplierFilter) return false;
+      if (supplierFilter !== "all" && supplierGroupKey(p.supplier) !== supplierFilter) return false;
       if (q && !p.name.toLowerCase().includes(q) && !String(p.sku).toLowerCase().includes(q)) return false;
       return true;
     });
@@ -3885,7 +3901,7 @@ function PickingInspection({ orders }) {
                     <option value="all">전체 공급사 ({products.length})</option>
                     {supplierOptions.map((s) => (
                       <option key={s} value={s}>
-                        {s} ({products.filter((p) => (p.supplier || "미지정") === s).length})
+                        {s} ({products.filter((p) => supplierGroupKey(p.supplier) === s).length})
                       </option>
                     ))}
                   </select>
