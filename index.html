@@ -2401,7 +2401,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
       qty: findCol(["낱개수량", "발주량", "수량"]),
       packQty: findCol(["입수"]),
       unit: findCol(["단위"]),
-      date: findCol(["납품일자", "발주일자"]),
+      date: findCol(["발주일자", "발주일"]),
       type: findCol(["발주타입", "발주유형"]),
     };
     if (col.sku === -1 || col.qty === -1) {
