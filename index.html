@@ -3704,11 +3704,22 @@ function buildInvoiceRegionsForSupplier(products, supplierKey) {
 }
 
 // 거래명세서 1장(=지역 1곳) 시트. "공급받는자 보관용" + "공급자 보관용" 2부를 위아래로 반복해서 담는다.
+// 원본 실물 거래명세서(저스트그린 .xls)에서 폰트·크기·색상·테두리·칸 너비를 그대로 뽑아와 재현한다.
+const INV_FONT_GULIM = "굴림체";
+const INV_BLUE = { argb: "FF0000FF" };
+const INV_BLACK = { argb: "FF000000" };
+const INV_THIN = { style: "thin", color: INV_BLUE };
+const INV_MED = { style: "medium", color: INV_BLUE };
+// 원본 .xls 컬럼 너비(문자 단위)를 그대로 옮긴 33개 컬럼
+const INVOICE_COL_WIDTHS = [
+  3.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 2.33, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
+];
+
 function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) {
   const info = REGION_ADDRESS_MAP[region.code] || { vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - 나중에 REGION_ADDRESS_MAP에 추가 필요)" };
   const remarkDate = addDaysStr(date, 3); // 비고란 날짜 = 발주일 + 3일 (실제 명세서 원본에서 확인된 고정 간격)
   const ws = workbook.addWorksheet(safeSheetName(`${info.centerName}_${region.code}`, usedNames));
-  ws.columns = [{ width: 13 }, { width: 15 }, { width: 15 }, { width: 10 }, { width: 10 }, { width: 15 }];
+  ws.columns = INVOICE_COL_WIDTHS.map((w) => ({ width: w }));
   ws.pageSetup = {
     orientation: "portrait",
     fitToPage: true,
@@ -3717,91 +3728,139 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
   };
 
-  function headerCell(cell, { bold = true, size = 10.5, align = "center", fill } = {}) {
-    cell.font = { name: XLFONT, size, bold };
-    cell.alignment = { horizontal: align, vertical: "middle", wrapText: true };
-    cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
-    if (fill) cell.fill = XL_GRAY_FILL;
+  // 원본에서 그대로 뽑은 폰트 역할별 스타일: 라벨(굴림체 9pt 파랑) / 좌측값(굴림체 검정) / 우측값(맑은 고딕 검정, 등록번호만 12pt 굵게)
+  const LABEL_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLUE };
+  const LABEL_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: INV_BLUE };
+  const AMOUNT_FONT = { name: INV_FONT_GULIM, size: 12, bold: true, color: INV_BLACK }; // 합계금액(공란) 셀
+  const VALUE_FONT_L = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
+  const VALUE_FONT_L10 = { name: INV_FONT_GULIM, size: 10, bold: false, color: INV_BLACK };
+  const VALUE_FONT_R = { name: XLFONT, size: 10, bold: false, color: INV_BLACK };
+  const VALUE_FONT_R_BOLD12 = { name: XLFONT, size: 12, bold: true, color: INV_BLACK };
+  const ITEM_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
+  const ITEM_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: INV_BLACK };
+
+  function put(row, col, value, font, align, wrap) {
+    const cell = row.getCell(col);
+    if (value !== undefined) cell.value = value;
+    cell.font = font;
+    cell.alignment = { horizontal: align || "center", vertical: "middle", wrapText: wrap !== false };
+    return cell;
   }
 
   function addCopy(copyLabel) {
-    const title = ws.addRow(["", `거 래 명 세 표 (${copyLabel})`, "", "", "", ""]);
-    ws.mergeCells(`B${title.number}:E${title.number}`);
-    title.getCell(2).font = { name: XLFONT, size: 15, bold: true };
-    title.getCell(2).alignment = { horizontal: "center", vertical: "middle" };
-    title.height = 26;
+    const rTitle = ws.addRow([]);
+    rTitle.height = 40;
+    put(rTitle, 2, `거 래 명 세 표 (${copyLabel})`, { name: INV_FONT_GULIM, size: 20, bold: true, color: INV_BLUE }, "center");
+    ws.mergeCells(rTitle.number, 2, rTitle.number, 33);
 
-    // 공급받는자 / 공급자 정보 블록
-    const r1 = ws.addRow(["등록번호", info.vvLabel, "", "등록번호", supplierInfo.regNo, ""]);
-    ws.mergeCells(`B${r1.number}:C${r1.number}`);
-    ws.mergeCells(`E${r1.number}:F${r1.number}`);
-    headerCell(r1.getCell(1), { fill: true });
-    headerCell(r1.getCell(2), { bold: false, align: "left" });
-    headerCell(r1.getCell(4), { fill: true });
-    headerCell(r1.getCell(5), { bold: false, align: "left" });
+    // 정보블록 4줄: 등록번호 / 상호(법인명) / 사업장주소 / 합계금액(VAT포함)·업태·종목
+    const lineDefs = [
+      { label: "등록번호", lv: info.vvLabel, lvFont: VALUE_FONT_L, label2: "등록번호", rv: supplierInfo.regNo, rvFont: VALUE_FONT_R_BOLD12, height: 24 },
+      { label: "상 호\n(법인명)", lv: info.centerName, lvFont: VALUE_FONT_L10, label2: "상  호\n(법인명)", rv: supplierInfo.name, rvFont: VALUE_FONT_R, rvNarrow: true, height: 24 },
+      { label: "사업장\n주  소", lv: info.address, lvFont: VALUE_FONT_L, label2: "사업장\n주  소", rv: supplierInfo.address, rvFont: VALUE_FONT_R, rvAlign: "left", height: 24 },
+      { label: "합계금액\n(VAT포함)", lv: "", lvFont: AMOUNT_FONT, lvAlign: "right", label2: "업 태", rv: supplierInfo.bizType, rvFont: VALUE_FONT_R, rvNarrow: true, height: 22.5, hasBizItem: true },
+    ];
+    const infoRows = lineDefs.map((line, idx) => {
+      const row = ws.addRow([]);
+      row.height = line.height;
+      put(row, 1, idx === 0 ? "공급받는자" : undefined, LABEL_FONT, "center");
+      put(row, 2, line.label, LABEL_FONT, "center");
+      ws.mergeCells(row.number, 2, row.number, 5);
+      put(row, 6, line.lv, line.lvFont, line.lvAlign || "center");
+      ws.mergeCells(row.number, 6, row.number, 15);
+      put(row, 16, idx === 0 ? "공급자" : undefined, LABEL_FONT, "center");
+      put(row, 17, line.label2, LABEL_FONT, "center");
+      ws.mergeCells(row.number, 17, row.number, 20);
+      const rEnd = line.rvNarrow ? 26 : 33;
+      put(row, 21, line.rv, line.rvFont, line.rvAlign || "center");
+      ws.mergeCells(row.number, 21, row.number, rEnd);
+      if (line.hasBizItem) {
+        put(row, 27, "종 목", LABEL_FONT, "center");
+        ws.mergeCells(row.number, 27, row.number, 28);
+        put(row, 29, supplierInfo.bizItem, VALUE_FONT_R, "center");
+        ws.mergeCells(row.number, 29, row.number, 33);
+      }
+      return row;
+    });
+    ws.mergeCells(infoRows[0].number, 1, infoRows[3].number, 1);
+    ws.mergeCells(infoRows[0].number, 16, infoRows[3].number, 16);
 
-    const r2 = ws.addRow(["상호(법인명)", info.centerName, "", "상호(법인명)", supplierInfo.name, ""]);
-    ws.mergeCells(`B${r2.number}:C${r2.number}`);
-    ws.mergeCells(`E${r2.number}:F${r2.number}`);
-    headerCell(r2.getCell(1), { fill: true });
-    headerCell(r2.getCell(2), { bold: false, align: "left" });
-    headerCell(r2.getCell(4), { fill: true });
-    headerCell(r2.getCell(5), { bold: false, align: "left" });
+    // 품목 테이블 헤더: 년 | 월 | 일 | 품목 | 입수 | 수량 | 비고
+    const th = ws.addRow([]);
+    th.height = 20;
+    put(th, 1, "년", LABEL_FONT, "center");
+    put(th, 2, "월", LABEL_FONT, "center");
+    put(th, 3, "일", LABEL_FONT, "center");
+    put(th, 4, "품               목", LABEL_FONT, "center");
+    ws.mergeCells(th.number, 4, th.number, 11);
+    put(th, 12, "입수", LABEL_FONT, "center");
+    ws.mergeCells(th.number, 12, th.number, 16);
+    put(th, 17, "수량", LABEL_FONT, "center");
+    ws.mergeCells(th.number, 17, th.number, 20);
+    put(th, 21, "비고", LABEL_FONT, "center");
+    ws.mergeCells(th.number, 21, th.number, 33);
 
-    const r3 = ws.addRow(["사업장주소", info.address, "", "사업장주소", supplierInfo.address, ""]);
-    r3.height = 30;
-    ws.mergeCells(`B${r3.number}:C${r3.number}`);
-    ws.mergeCells(`E${r3.number}:F${r3.number}`);
-    headerCell(r3.getCell(1), { fill: true });
-    headerCell(r3.getCell(2), { bold: false, align: "left" });
-    headerCell(r3.getCell(4), { fill: true });
-    headerCell(r3.getCell(5), { bold: false, align: "left" });
-
-    const r4 = ws.addRow(["", "", "", "업태 / 종목", `${supplierInfo.bizType} / ${supplierInfo.bizItem}`, ""]);
-    ws.mergeCells(`E${r4.number}:F${r4.number}`);
-    headerCell(r4.getCell(4), { fill: true });
-    headerCell(r4.getCell(5), { bold: false, align: "left" });
-    [1, 2, 3].forEach((c) => (r4.getCell(c).border = undefined));
-
-    // 품목 테이블 헤더
-    const th = ws.addRow(["년월일", "품목", "", "입수", "수량", "비고"]);
-    ws.mergeCells(`B${th.number}:C${th.number}`);
-    [1, 2, 4, 5, 6].forEach((c) => headerCell(th.getCell(c), { fill: true }));
-
-    let bandIndex = 0;
-    region.items.forEach((item, idx) => {
-      const row = ws.addRow([idx === 0 ? date : "", item.name, "", item.packQty || "", item.qty, remarkDate]);
-      ws.mergeCells(`B${row.number}:C${row.number}`);
-      const isGray = bandIndex % 2 === 0;
-      bandIndex++;
-      [1, 2, 4, 5, 6].forEach((c) => {
-        const cell = row.getCell(c);
-        cell.font = { name: XLFONT, size: 10.5 };
-        cell.alignment = { horizontal: c === 2 ? "left" : "center", vertical: "middle" };
-        cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
-        if (isGray) cell.fill = XL_GRAY_FILL;
-      });
-      row.getCell(1).numFmt = "yyyy-mm-dd";
-      row.getCell(6).numFmt = "yyyy-mm-dd";
+    // 품목 행
+    const itemRows = region.items.map((item, idx) => {
+      const hasQty = item.qty > 0;
+      const row = ws.addRow([]);
+      row.height = 18.75;
+      if (idx === 0) {
+        const c = put(row, 1, date, ITEM_FONT, "center");
+        c.numFmt = "yyyy-mm-dd";
+      } else {
+        put(row, 1, undefined, ITEM_FONT, "center");
+      }
+      put(row, 2, undefined, ITEM_FONT, "center");
+      put(row, 3, undefined, ITEM_FONT, "center");
+      put(row, 4, item.name, ITEM_FONT, "center");
+      ws.mergeCells(row.number, 4, row.number, 11);
+      put(row, 12, item.packQty || "", ITEM_FONT, "center");
+      ws.mergeCells(row.number, 12, row.number, 16);
+      put(row, 17, hasQty ? item.qty : "-", ITEM_FONT, "center");
+      ws.mergeCells(row.number, 17, row.number, 20);
+      const rc = put(row, 21, hasQty ? remarkDate : "", ITEM_FONT, "center");
+      if (hasQty) rc.numFmt = "yyyy-mm-dd";
+      ws.mergeCells(row.number, 21, row.number, 33);
+      return row;
     });
 
-    const totalRow = ws.addRow(["총수량", "", "", "", region.totalQty, ""]);
-    ws.mergeCells(`A${totalRow.number}:D${totalRow.number}`);
-    totalRow.getCell(1).font = { name: XLFONT, size: 12, bold: true };
-    totalRow.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
-    totalRow.getCell(1).border = { top: XL_MEDIUM, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
-    totalRow.getCell(5).font = { name: XLFONT, size: 13, bold: true };
-    totalRow.getCell(5).alignment = { horizontal: "center", vertical: "middle" };
-    totalRow.getCell(5).border = { top: XL_MEDIUM, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
+    const spacer = ws.addRow([]);
+    spacer.height = 18.75;
 
-    const footer = ws.addRow([supplierInfo.agent.replace(/\n/g, " "), "", "", info.address, "", ""]);
-    ws.mergeCells(`A${footer.number}:C${footer.number}`);
-    ws.mergeCells(`D${footer.number}:F${footer.number}`);
-    footer.height = 26;
-    footer.getCell(1).font = { name: XLFONT, size: 9.5 };
-    footer.getCell(1).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
-    footer.getCell(4).font = { name: XLFONT, size: 9.5 };
-    footer.getCell(4).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+    // 총수량: 라벨은 년/월/일 자리, 숫자는 수량 칸 자리 (원본과 동일한 정렬)
+    const totalRow = ws.addRow([]);
+    totalRow.height = 18.75;
+    put(totalRow, 1, "총수량", LABEL_FONT_BOLD, "center");
+    ws.mergeCells(totalRow.number, 1, totalRow.number, 3);
+    ws.mergeCells(totalRow.number, 4, totalRow.number, 11);
+    ws.mergeCells(totalRow.number, 12, totalRow.number, 16);
+    put(totalRow, 17, region.totalQty, ITEM_FONT_BOLD, "center");
+    ws.mergeCells(totalRow.number, 17, totalRow.number, 20);
+    ws.mergeCells(totalRow.number, 21, totalRow.number, 33);
+
+    const footer = ws.addRow([]);
+    footer.height = 37.5;
+    put(footer, 1, supplierInfo.agent, LABEL_FONT, "left");
+    ws.mergeCells(footer.number, 1, footer.number, 21);
+    put(footer, 22, info.address, ITEM_FONT, "left");
+    ws.mergeCells(footer.number, 22, footer.number, 33);
+
+    // 테두리: 전체 파란색 그리드(얇게) + 바깥 테두리·구획선은 굵게(원본과 동일)
+    const mediumTopRows = new Set([rTitle.number, th.number, footer.number]);
+    const mediumBottomRows = new Set([footer.number, infoRows[3].number, totalRow.number]);
+    for (let r = rTitle.number; r <= footer.number; r++) {
+      const row = ws.getRow(r);
+      for (let c = 1; c <= 33; c++) {
+        const cell = row.getCell(c);
+        cell.border = {
+          top: mediumTopRows.has(r) ? INV_MED : INV_THIN,
+          bottom: mediumBottomRows.has(r) ? INV_MED : INV_THIN,
+          left: c === 1 ? INV_MED : INV_THIN,
+          right: c === 33 ? INV_MED : INV_THIN,
+        };
+      }
+    }
 
     ws.addRow([]);
     ws.addRow([]);
@@ -3810,6 +3869,8 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
   addCopy("공급받는자 보관용");
   addCopy("공급자 보관용");
 }
+
+
 
 async function downloadSupplierInvoiceExcel(products, supplierKey, date, filename, setBusy) {
   if (setBusy) setBusy(true);
