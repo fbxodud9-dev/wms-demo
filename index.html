@@ -3894,6 +3894,16 @@ function PickingInspection({ orders }) {
     const bySku = {};
     // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
     const ordered = [...orders].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+
+    // 지역코드 -> 정식 매장명(발주파일에 실제로 찍혀온 이름). 이 상품엔 발주가 0건이라도
+    // 다른 상품이 같은 지역으로 나갔다면 그 이름을 그대로 재사용한다.
+    const regionLabelMap = {};
+    orders.forEach((o) => {
+      const regionKey = o.storeCode || o.customer;
+      if (!regionKey || regionLabelMap[regionKey]) return;
+      regionLabelMap[regionKey] = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+    });
+
     ordered.forEach((o) => {
       if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
       if (activeDate && o.createdAt !== activeDate) return; // 다른 날짜 발주는 제외
@@ -3921,6 +3931,19 @@ function PickingInspection({ orders }) {
     // 1편이 전부 먼저, 2편이 전부 나중에 오도록 다시 묶음 (그룹 안에서는 업로드 순서 유지)
     return Object.values(bySku)
       .map((p) => {
+        // 오피킹 방지 고정 지역표(A/B구역 37곳)는 이 상품에 발주가 없어도 항상 0으로 표시
+        REGION_ORDER_TABLE.forEach((r) => {
+          if (p.regions[r.code]) return;
+          p.regions[r.code] = {
+            key: r.code,
+            label: regionLabelMap[r.code] || `${r.code} ${r.name}`,
+            shortName: r.name,
+            zone: r.zone,
+            order: REGION_ORDER_MAP[r.code].order,
+            checkpoint: !!r.checkpoint,
+            qty: 0,
+          };
+        });
         const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
         const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
         return { ...p, regionRows, totalQty, part: detectPart(p.name) };
