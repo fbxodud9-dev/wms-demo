@@ -484,6 +484,61 @@ const SUPPLIER_ORDER_LIST = [
 ];
 // GS 발주파일마다 "입수"가 다르게 찍혀 들어오는 상품들 (gs_입수_조사 자료 기준).
 // 파일에 뭐라고 찍혀오든 여기 있는 SKU는 실제(더원 피킹지) 입수량으로 강제 고정한다.
+// GS 화주사별 관할센터 주소록 (저스트그린 거래명세서 원본 기준, 35곳).
+// VV92(신제주)는 원본 샘플에 없어서 빠져있음 - 나중에 실제 거래명세서 받으면 추가.
+const REGION_ADDRESS_MAP = {
+  "VV16": { vvLabel: "VV16 (주)지에스리테일원주일배", centerName: "원주센터", address: "강원도 원주시 문막읍 원문로 2570" },
+  "VV69": { vvLabel: "VV69 ㈜지에스리테일강릉일배센터", centerName: "강릉센터", address: "강원 강릉시 회산로 171-117" },
+  "VV57": { vvLabel: "VV57 (주)지에스리테일김해일배", centerName: "김해센터", address: "경상남도 김해시 상동로 680-77" },
+  "VV58": { vvLabel: "VV58 (주)지에스리테일김해2일배", centerName: "김해2센터", address: "경상남도 김해시 상동로 680-77" },
+  "VV04": { vvLabel: "VV04 (주)지에스리테일공주일배", centerName: "공주센터", address: "충청남도 공주시 월미동 월미농공단지길 55" },
+  "VV75": { vvLabel: "VV75 (주)지에스리테일공주2일배", centerName: "공주2센터", address: "충청남도 공주시 월미동 월미농공단지길 55" },
+  "VV34": { vvLabel: "VV34 (주)지에스리테일청주일배", centerName: "청주센터", address: "충청북도 청주시 서원구 청남로 801" },
+  "VV25": { vvLabel: "VV25 (주)지에스리테일진주일배", centerName: "진주센터", address: "경상남도 진주시 정촌면 화개천로 40" },
+  "VV20": { vvLabel: "VV20 (주)지에스리테일(해인CVS)", centerName: "해인센터", address: "경상남도 김해시 주촌면 서부로 1293번길 29" },
+  "VV95": { vvLabel: "VV95 (주)지에스리테일신광주저온", centerName: "신광주센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층" },
+  "VV96": { vvLabel: "VV96 (주)지에스리테일신광주2저", centerName: "신광주2센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층" },
+  "VV65": { vvLabel: "VV65 ㈜지에스리테일익산일배", centerName: "익산센터", address: "전북특별자치도 익산시 왕궁면 광암리 6001-1" },
+  "VV83": { vvLabel: "VV83 지에스리테일경산저온", centerName: "경산센터", address: "경상북도 경산시 진량읍 일연로 689" },
+  "VV84": { vvLabel: "VV84 ㈜지에스리테일경산2저온", centerName: "경산2센터", address: "경상북도 경산시 진량읍 일연로 689" },
+  "VV97": { vvLabel: "VV97 (주)지에스리테일경산3저온", centerName: "경산3센터", address: "경상북도 경산시 진량읍 일연로 689" },
+  "VV03": { vvLabel: "VV03 (주)지에스리테일(아신A)", centerName: "아신센터", address: "경기도 용인시 기흥구 하갈로 15번길 34" },
+  "VV90": { vvLabel: "VV90 (주)지에스리테일포천저온", centerName: "포천센터", address: "경기도 포천시 설운동 477 지하 2층" },
+  "VV91": { vvLabel: "VV91 (주)지에스리테일포천2저온", centerName: "포천2센터", address: "경기도 포천시 설운동 477 지하 2층" },
+  "VV98": { vvLabel: "VV98 (주)지에스리테일고촌저온", centerName: "고촌센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상 3층" },
+  "VV99": { vvLabel: "VV99 (주)지에스리테일고촌2저온", centerName: "고촌2센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상 3층" },
+  "VV63": { vvLabel: "VV63 ㈜지에스리테일고양일배센터", centerName: "고양센터", address: "경기 고양시 일산동구 사리현로 101-11" },
+  "VV64": { vvLabel: "VV64 ㈜지에스리테일고양일배2", centerName: "고양2센터", address: "경기 고양시 일산동구 사리현로 101-11" },
+  "VV81": { vvLabel: "VV81 (주)지에스리테일고양저온3", centerName: "고양3센터", address: "경기 고양시 일산동구 사리현로 101-11" },
+  "VV62": { vvLabel: "VV62 (주)지에스리테일김포2일배", centerName: "김포2센터", address: "경기도 김포시 고촌읍 아라육로57번길 108" },
+  "VV70": { vvLabel: "VV70 ㈜지에스리테일김포3일배", centerName: "김포3센터", address: "경기도 김포시 고촌읍 아라육로57번길 108" },
+  "VV66": { vvLabel: "VV66 지에스리테일인천도화일배", centerName: "도화센터", address: "인천광역시 미추홀구 염전로 144번길 25" },
+  "VV67": { vvLabel: "VV67 지에스리테일인천도화2일배", centerName: "도화2센터", address: "인천광역시 미추홀구 염전로 144번길 25" },
+  "VV17": { vvLabel: "VV17 (주)지에스리테일발안일배", centerName: "발안센터", address: "경기도 화성시 팔탄면 온천로 118" },
+  "VV71": { vvLabel: "VV71 (주)지에스리테일발안2일배", centerName: "발안2센터", address: "경기도 화성시 팔탄면 온천로 118" },
+  "VV53": { vvLabel: "VV53 (주)지에스리테일송파일배", centerName: "송파센터", address: "서울특별시 송파구 송파대로 55" },
+  "VV55": { vvLabel: "VV55 (주)지에스리테일송파2일배", centerName: "송파2센터", address: "서울특별시 송파구 송파대로 55" },
+  "VV93": { vvLabel: "VV93 (주)지에스리테일곤지암센터", centerName: "곤지암센터", address: "경기도 곤지암읍 신대길 134-14 A동 1층" },
+  "VV94": { vvLabel: "VV94 (주)지에스리테일곤지암2센", centerName: "곤지암2센터", address: "경기도 곤지암읍 신대길 134-14 A동 1층" },
+  "VV85": { vvLabel: "VV85 지에스리테일신오산1저온", centerName: "신오산1센터", address: "경기도 오산시 수목원로88번길33, 4층" },
+  "VV86": { vvLabel: "VV86 지에스리테일신오산2저온", centerName: "신오산2센터", address: "경기도 오산시 수목원로88번길33, 4층" },
+  "VV87": { vvLabel: "VV87 지에스리테일신오산3저온", centerName: "신오산3센터", address: "경기도 오산시 수목원로88번길33, 4층" },
+};
+
+// 거래명세서용 공급자(화주사) 고정 정보. 저스트그린 실제 명세서 기준.
+// supplierGroupKey()로 정규화한 이름을 키로 씀 (필터 드롭다운과 동일 기준).
+const SUPPLIER_INVOICE_INFO = {
+  "저스트그린": {
+    regNo: "142-81-31150",
+    name: "저스트그린",
+    ceo: "박종일",
+    address: "경기도 안성시 공도읍 원승두길 169-25",
+    bizType: "도소매",
+    bizItem: "제조업",
+    agent: "3자물류 (더원물류)\n담당자 박병선이사  010-4448-1456",
+  },
+};
+
 const PACK_QTY_OVERRIDES = {
   "2700038882248": 40, // 오븐에구운치킨)데리야끼1편
   "2700038882255": 40, // 오븐에구운치킨)데리야끼2편
@@ -3618,6 +3673,169 @@ async function downloadOrderInfoExcel(ordersForDate, dateLabel, filename, setBus
   }
 }
 
+/* ================= 거래명세서(공급사별) 생성 - 저스트그린 실물 양식 기준 ================= */
+
+function addDaysStr(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// buildProductsForDate() 결과(상품→지역별 수량)에서 특정 공급사만 골라
+// "지역별로 어떤 상품을 얼마나 보냈는지"로 뒤집는다 (상품 기준 → 지역 기준).
+function buildInvoiceRegionsForSupplier(products, supplierKey) {
+  const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
+  if (supplierProducts.length === 0) return [];
+
+  const byRegion = {}; // code -> { code, order, items: [{name, packQty, qty}], totalQty }
+  supplierProducts.forEach((p) => {
+    p.regionRows.forEach((r) => {
+      if (!REGION_ORDER_MAP[r.key]) return; // 고정 지역표에 없는 코드는 거래명세서 대상 아님
+      if (!byRegion[r.key]) byRegion[r.key] = { code: r.key, order: r.order, items: [], totalQty: 0 };
+      byRegion[r.key].items.push({ name: p.name, packQty: p.packQty, qty: r.qty });
+      byRegion[r.key].totalQty += r.qty;
+    });
+  });
+
+  // 실제로 뭐라도 나간(총수량 > 0) 지역만 거래명세서를 발행한다 (원본 샘플도 신제주처럼 0인 곳은 시트 자체가 없었음)
+  return Object.values(byRegion)
+    .filter((r) => r.totalQty > 0)
+    .sort((a, b) => a.order - b.order);
+}
+
+// 거래명세서 1장(=지역 1곳) 시트. "공급받는자 보관용" + "공급자 보관용" 2부를 위아래로 반복해서 담는다.
+function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) {
+  const info = REGION_ADDRESS_MAP[region.code] || { vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - 나중에 REGION_ADDRESS_MAP에 추가 필요)" };
+  const remarkDate = addDaysStr(date, 3); // 비고란 날짜 = 발주일 + 3일 (실제 명세서 원본에서 확인된 고정 간격)
+  const ws = workbook.addWorksheet(safeSheetName(`${info.centerName}_${region.code}`, usedNames));
+  ws.columns = [{ width: 13 }, { width: 15 }, { width: 15 }, { width: 10 }, { width: 10 }, { width: 15 }];
+  ws.pageSetup = {
+    orientation: "portrait",
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+  };
+
+  function headerCell(cell, { bold = true, size = 10.5, align = "center", fill } = {}) {
+    cell.font = { name: XLFONT, size, bold };
+    cell.alignment = { horizontal: align, vertical: "middle", wrapText: true };
+    cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+    if (fill) cell.fill = XL_GRAY_FILL;
+  }
+
+  function addCopy(copyLabel) {
+    const title = ws.addRow(["", `거 래 명 세 표 (${copyLabel})`, "", "", "", ""]);
+    ws.mergeCells(`B${title.number}:E${title.number}`);
+    title.getCell(2).font = { name: XLFONT, size: 15, bold: true };
+    title.getCell(2).alignment = { horizontal: "center", vertical: "middle" };
+    title.height = 26;
+
+    // 공급받는자 / 공급자 정보 블록
+    const r1 = ws.addRow(["등록번호", info.vvLabel, "", "등록번호", supplierInfo.regNo, ""]);
+    ws.mergeCells(`B${r1.number}:C${r1.number}`);
+    ws.mergeCells(`E${r1.number}:F${r1.number}`);
+    headerCell(r1.getCell(1), { fill: true });
+    headerCell(r1.getCell(2), { bold: false, align: "left" });
+    headerCell(r1.getCell(4), { fill: true });
+    headerCell(r1.getCell(5), { bold: false, align: "left" });
+
+    const r2 = ws.addRow(["상호(법인명)", info.centerName, "", "상호(법인명)", supplierInfo.name, ""]);
+    ws.mergeCells(`B${r2.number}:C${r2.number}`);
+    ws.mergeCells(`E${r2.number}:F${r2.number}`);
+    headerCell(r2.getCell(1), { fill: true });
+    headerCell(r2.getCell(2), { bold: false, align: "left" });
+    headerCell(r2.getCell(4), { fill: true });
+    headerCell(r2.getCell(5), { bold: false, align: "left" });
+
+    const r3 = ws.addRow(["사업장주소", info.address, "", "사업장주소", supplierInfo.address, ""]);
+    r3.height = 30;
+    ws.mergeCells(`B${r3.number}:C${r3.number}`);
+    ws.mergeCells(`E${r3.number}:F${r3.number}`);
+    headerCell(r3.getCell(1), { fill: true });
+    headerCell(r3.getCell(2), { bold: false, align: "left" });
+    headerCell(r3.getCell(4), { fill: true });
+    headerCell(r3.getCell(5), { bold: false, align: "left" });
+
+    const r4 = ws.addRow(["", "", "", "업태 / 종목", `${supplierInfo.bizType} / ${supplierInfo.bizItem}`, ""]);
+    ws.mergeCells(`E${r4.number}:F${r4.number}`);
+    headerCell(r4.getCell(4), { fill: true });
+    headerCell(r4.getCell(5), { bold: false, align: "left" });
+    [1, 2, 3].forEach((c) => (r4.getCell(c).border = undefined));
+
+    // 품목 테이블 헤더
+    const th = ws.addRow(["년월일", "품목", "", "입수", "수량", "비고"]);
+    ws.mergeCells(`B${th.number}:C${th.number}`);
+    [1, 2, 4, 5, 6].forEach((c) => headerCell(th.getCell(c), { fill: true }));
+
+    let bandIndex = 0;
+    region.items.forEach((item, idx) => {
+      const row = ws.addRow([idx === 0 ? date : "", item.name, "", item.packQty || "", item.qty, remarkDate]);
+      ws.mergeCells(`B${row.number}:C${row.number}`);
+      const isGray = bandIndex % 2 === 0;
+      bandIndex++;
+      [1, 2, 4, 5, 6].forEach((c) => {
+        const cell = row.getCell(c);
+        cell.font = { name: XLFONT, size: 10.5 };
+        cell.alignment = { horizontal: c === 2 ? "left" : "center", vertical: "middle" };
+        cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+        if (isGray) cell.fill = XL_GRAY_FILL;
+      });
+      row.getCell(1).numFmt = "yyyy-mm-dd";
+      row.getCell(6).numFmt = "yyyy-mm-dd";
+    });
+
+    const totalRow = ws.addRow(["총수량", "", "", "", region.totalQty, ""]);
+    ws.mergeCells(`A${totalRow.number}:D${totalRow.number}`);
+    totalRow.getCell(1).font = { name: XLFONT, size: 12, bold: true };
+    totalRow.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+    totalRow.getCell(1).border = { top: XL_MEDIUM, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
+    totalRow.getCell(5).font = { name: XLFONT, size: 13, bold: true };
+    totalRow.getCell(5).alignment = { horizontal: "center", vertical: "middle" };
+    totalRow.getCell(5).border = { top: XL_MEDIUM, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
+
+    const footer = ws.addRow([supplierInfo.agent.replace(/\n/g, " "), "", "", info.address, "", ""]);
+    ws.mergeCells(`A${footer.number}:C${footer.number}`);
+    ws.mergeCells(`D${footer.number}:F${footer.number}`);
+    footer.height = 26;
+    footer.getCell(1).font = { name: XLFONT, size: 9.5 };
+    footer.getCell(1).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+    footer.getCell(4).font = { name: XLFONT, size: 9.5 };
+    footer.getCell(4).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+
+    ws.addRow([]);
+    ws.addRow([]);
+  }
+
+  addCopy("공급받는자 보관용");
+  addCopy("공급자 보관용");
+}
+
+async function downloadSupplierInvoiceExcel(products, supplierKey, date, filename, setBusy) {
+  if (setBusy) setBusy(true);
+  try {
+    const info = SUPPLIER_INVOICE_INFO[supplierKey];
+    if (!info) throw new Error(`"${supplierKey}"의 거래명세서용 사업자 정보가 아직 등록되지 않았어요. (SUPPLIER_INVOICE_INFO에 추가 필요)`);
+    const regions = buildInvoiceRegionsForSupplier(products, supplierKey);
+    if (regions.length === 0) throw new Error(`${date}에 "${supplierKey}" 발주가 없어서 거래명세서를 만들 수 없어요.`);
+    const workbook = new ExcelJS.Workbook();
+    const usedNames = new Set();
+    regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames));
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (setBusy) setBusy(false);
+  }
+}
+
 /* ================= 품목별 검수표 (상품 → 지역별 수량 breakdown, 고정 순서/구역 기준) ================= */
 // 화주사 기준표의 A/B 구역 그대로 사용 (임의 반분 없음). 기준표에 없는 지역은 "미지정"으로 맨 뒤에 붙음
 function buildTableRowsForProduct(product) {
@@ -3858,6 +4076,69 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
   );
 }
 
+// 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 집계 (특정 날짜 하나만).
+// 피킹지시서 출력과 거래명세서 생성이 공통으로 쓰는 핵심 집계 함수.
+function buildProductsForDate(orders, activeDate) {
+  const bySku = {};
+  // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
+  const ordered = [...orders].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+
+  // 지역코드 -> 정식 매장명(발주파일에 실제로 찍혀온 이름). 이 상품엔 발주가 0건이라도
+  // 다른 상품이 같은 지역으로 나갔다면 그 이름을 그대로 재사용한다.
+  const regionLabelMap = {};
+  orders.forEach((o) => {
+    const regionKey = o.storeCode || o.customer;
+    if (!regionKey || regionLabelMap[regionKey]) return;
+    regionLabelMap[regionKey] = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+  });
+
+  ordered.forEach((o) => {
+    if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
+    if (activeDate && o.createdAt !== activeDate) return; // 다른 날짜 발주는 제외
+    const regionKey = o.storeCode || o.customer;
+    const ref = REGION_ORDER_MAP[regionKey];
+    const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+    o.lines.forEach((l) => {
+      if (l.allocatedQty <= 0) return;
+      if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
+      if (!bySku[l.sku].regions[regionKey]) {
+        bySku[l.sku].regions[regionKey] = {
+          key: regionKey,
+          label: regionLabel,
+          shortName: ref ? ref.shortName : null,
+          zone: ref ? ref.zone : "미지정",
+          order: ref ? ref.order : 9999,
+          checkpoint: ref ? ref.checkpoint : false,
+          qty: 0,
+        };
+      }
+      bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
+    });
+  });
+  // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서)를 기본으로 하되
+  // 1편이 전부 먼저, 2편이 전부 나중에 오도록 다시 묶음 (그룹 안에서는 업로드 순서 유지)
+  return Object.values(bySku)
+    .map((p) => {
+      // 오피킹 방지 고정 지역표(A/B구역 37곳)는 이 상품에 발주가 없어도 항상 0으로 표시
+      REGION_ORDER_TABLE.forEach((r) => {
+        if (p.regions[r.code]) return;
+        p.regions[r.code] = {
+          key: r.code,
+          label: regionLabelMap[r.code] || `${r.code} ${r.name}`,
+          shortName: r.name,
+          zone: r.zone,
+          order: REGION_ORDER_MAP[r.code].order,
+          checkpoint: !!r.checkpoint,
+          qty: 0,
+        };
+      });
+      const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+      const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
+      return { ...p, regionRows, totalQty, part: detectPart(p.name) };
+    })
+    .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
+}
+
 function PickingInspection({ orders }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [exporting, setExporting] = useState(false);
@@ -3889,67 +4170,8 @@ function PickingInspection({ orders }) {
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
-  // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 다시 집계 (선택한 날짜만)
-  const products = useMemo(() => {
-    const bySku = {};
-    // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
-    const ordered = [...orders].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate]);
 
-    // 지역코드 -> 정식 매장명(발주파일에 실제로 찍혀온 이름). 이 상품엔 발주가 0건이라도
-    // 다른 상품이 같은 지역으로 나갔다면 그 이름을 그대로 재사용한다.
-    const regionLabelMap = {};
-    orders.forEach((o) => {
-      const regionKey = o.storeCode || o.customer;
-      if (!regionKey || regionLabelMap[regionKey]) return;
-      regionLabelMap[regionKey] = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
-    });
-
-    ordered.forEach((o) => {
-      if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
-      if (activeDate && o.createdAt !== activeDate) return; // 다른 날짜 발주는 제외
-      const regionKey = o.storeCode || o.customer;
-      const ref = REGION_ORDER_MAP[regionKey];
-      const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
-      o.lines.forEach((l) => {
-        if (l.allocatedQty <= 0) return;
-        if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
-        if (!bySku[l.sku].regions[regionKey]) {
-          bySku[l.sku].regions[regionKey] = {
-            key: regionKey,
-            label: regionLabel,
-            shortName: ref ? ref.shortName : null,
-            zone: ref ? ref.zone : "미지정",
-            order: ref ? ref.order : 9999,
-            checkpoint: ref ? ref.checkpoint : false,
-            qty: 0,
-          };
-        }
-        bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
-      });
-    });
-    // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서)를 기본으로 하되
-    // 1편이 전부 먼저, 2편이 전부 나중에 오도록 다시 묶음 (그룹 안에서는 업로드 순서 유지)
-    return Object.values(bySku)
-      .map((p) => {
-        // 오피킹 방지 고정 지역표(A/B구역 37곳)는 이 상품에 발주가 없어도 항상 0으로 표시
-        REGION_ORDER_TABLE.forEach((r) => {
-          if (p.regions[r.code]) return;
-          p.regions[r.code] = {
-            key: r.code,
-            label: regionLabelMap[r.code] || `${r.code} ${r.name}`,
-            shortName: r.name,
-            zone: r.zone,
-            order: REGION_ORDER_MAP[r.code].order,
-            checkpoint: !!r.checkpoint,
-            qty: 0,
-          };
-        });
-        const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-        const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
-        return { ...p, regionRows, totalQty, part: detectPart(p.name) };
-      })
-      .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
-  }, [orders, activeDate]);
 
   // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 같은 회사는 하나로 묶어서, 고정 순서표 순으로)
   const supplierOptions = useMemo(() => {
@@ -4145,9 +4367,95 @@ function InvoiceView({ orders }) {
   const filtered = invoiced.filter((o) => !query || o.orderNo.toLowerCase().includes(query.toLowerCase()) || o.customer.includes(query));
   const selected = invoiced.find((o) => o.id === selectedId) || null;
 
+  // 공급사별 거래명세서 일괄 생성 (사업자 정보가 SUPPLIER_INVOICE_INFO에 등록된 공급사만 가능 - 현재는 저스트그린)
+  const dateOptions = useMemo(() => {
+    const set = new Set(orders.map((o) => o.createdAt));
+    return Array.from(set).sort((a, b) => (a < b ? 1 : -1));
+  }, [orders]);
+  const [invoiceDate, setInvoiceDate] = useState(null);
+  const activeInvoiceDate = invoiceDate && dateOptions.includes(invoiceDate) ? invoiceDate : dateOptions[0] || null;
+  const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate]);
+  const invoiceSupplierOptions = useMemo(() => {
+    const set = new Set(invoiceProducts.map((p) => supplierGroupKey(p.supplier)));
+    return Array.from(set)
+      .filter((s) => SUPPLIER_INVOICE_INFO[s])
+      .sort((a, b) => supplierPriority(a) - supplierPriority(b));
+  }, [invoiceProducts]);
+  const [invoiceSupplier, setInvoiceSupplier] = useState(null);
+  const activeInvoiceSupplier = invoiceSupplierOptions.includes(invoiceSupplier) ? invoiceSupplier : invoiceSupplierOptions[0] || null;
+  const [invoiceBusy, setInvoiceBusy] = useState(false);
+  const [invoiceErr, setInvoiceErr] = useState("");
+  const invoiceRegions = useMemo(
+    () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier) : []),
+    [invoiceProducts, activeInvoiceSupplier]
+  );
+
+  async function handleGenerateInvoice() {
+    if (!activeInvoiceDate || !activeInvoiceSupplier) return;
+    setInvoiceErr("");
+    try {
+      await downloadSupplierInvoiceExcel(
+        invoiceProducts,
+        activeInvoiceSupplier,
+        activeInvoiceDate,
+        `거래명세서_${activeInvoiceSupplier}_${activeInvoiceDate}.xlsx`,
+        setInvoiceBusy
+      );
+    } catch (e) {
+      setInvoiceErr(e.message);
+    }
+  }
+
   return (
     <div>
       <PageHeader title="거래명세서" sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)" />
+
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
+        <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
+          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 자동으로 만들어요. 총수량은 피킹지시서와 항상 일치합니다.
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <Field label="날짜">
+            <select style={inputStyle} value={activeInvoiceDate || ""} onChange={(e) => setInvoiceDate(e.target.value)}>
+              {dateOptions.length === 0 && <option value="">발주 없음</option>}
+              {dateOptions.map((d) => (
+                <option key={d} value={d}>
+                  {fmtDate(d)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="공급사">
+            <select style={inputStyle} value={activeInvoiceSupplier || ""} onChange={(e) => setInvoiceSupplier(e.target.value)}>
+              {invoiceSupplierOptions.length === 0 && <option value="">해당 없음</option>}
+              {invoiceSupplierOptions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <button
+            onClick={handleGenerateInvoice}
+            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegions.length === 0}
+            className="primary-btn"
+            style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegions.length === 0 ? 0.6 : 1 }}
+          >
+            <Download size={15} /> {invoiceBusy ? "생성 중..." : `거래명세서 생성 (${invoiceRegions.length}개 지역)`}
+          </button>
+        </div>
+        {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
+        {!invoiceErr && activeInvoiceSupplier && invoiceRegions.length === 0 && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>이 날짜엔 {activeInvoiceSupplier} 발주가 없어요.</div>
+        )}
+        {!invoiceErr && invoiceSupplierOptions.length === 0 && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>
+            이 날짜엔 사업자 정보가 등록된 공급사(현재는 저스트그린만) 발주가 없어요.
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div style={{ flex: "1 1 320px" }}>
           <div style={{ position: "relative", marginBottom: 12 }}>
