@@ -3711,7 +3711,7 @@ const INV_RED = { argb: "FFFF0000" }; // 공급자 보관용(2부) 테마 색 - 
 const INV_BLACK = { argb: "FF000000" };
 // 원본 .xls 컬럼 너비(문자 단위)를 그대로 옮긴 33개 컬럼
 const INVOICE_COL_WIDTHS = [
-  3.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 2.33, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
+  5.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 5.0, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
 ];
 
 function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) {
@@ -3768,11 +3768,13 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
       const row = ws.addRow([]);
       row.height = line.height;
       put(row, 1, idx === 0 ? "공급받는자" : undefined, LABEL_FONT, "center", false);
+      if (idx === 0) row.getCell(1).alignment = { horizontal: "center", vertical: "middle", textRotation: "vertical" };
       put(row, 2, line.label, LABEL_FONT, "center", true);
       ws.mergeCells(row.number, 2, row.number, 5);
       put(row, 6, line.lv, line.lvFont, line.lvAlign || "center", !!line.wrapValue);
       ws.mergeCells(row.number, 6, row.number, 15);
       put(row, 16, idx === 0 ? "공급자" : undefined, LABEL_FONT, "center", false);
+      if (idx === 0) row.getCell(16).alignment = { horizontal: "center", vertical: "middle", textRotation: "vertical" };
       put(row, 17, line.label2, LABEL_FONT, "center", true);
       ws.mergeCells(row.number, 17, row.number, 20);
       const rEnd = line.rvNarrow ? 26 : 33;
