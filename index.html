@@ -3683,15 +3683,17 @@ function addDaysStr(dateStr, days) {
 
 // buildProductsForDate() 결과(상품→지역별 수량)에서 특정 공급사만 골라
 // "지역별로 어떤 상품을 얼마나 보냈는지"로 뒤집는다 (상품 기준 → 지역 기준).
-function buildInvoiceRegionsForSupplier(products, supplierKey) {
-  const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
+// partFilter: 1 | 2 | undefined(전체) - 발주파일 업로드 때와 동일한 1편/2편 구분(detectPart) 기준으로 나눔
+function buildInvoiceRegionsForSupplier(products, supplierKey, partFilter) {
+  const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey && (!partFilter || p.part === partFilter));
   if (supplierProducts.length === 0) return [];
 
-  const byRegion = {}; // code -> { code, order, items: [{name, packQty, qty}], totalQty }
+  const byRegion = {}; // code -> { code, order, shortName, items: [{name, packQty, qty}], totalQty }
   supplierProducts.forEach((p) => {
     p.regionRows.forEach((r) => {
-      if (!REGION_ORDER_MAP[r.key]) return; // 고정 지역표에 없는 코드는 거래명세서 대상 아님
-      if (!byRegion[r.key]) byRegion[r.key] = { code: r.key, order: r.order, items: [], totalQty: 0 };
+      const ref = REGION_ORDER_MAP[r.key];
+      if (!ref) return; // 고정 지역표에 없는 코드는 거래명세서 대상 아님
+      if (!byRegion[r.key]) byRegion[r.key] = { code: r.key, order: r.order, shortName: ref.shortName, items: [], totalQty: 0 };
       byRegion[r.key].items.push({ name: p.name, packQty: p.packQty, qty: r.qty });
       byRegion[r.key].totalQty += r.qty;
     });
@@ -3714,10 +3716,11 @@ const INVOICE_COL_WIDTHS = [
   5.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 5.0, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
 ];
 
-function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) {
+function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, part) {
   const info = REGION_ADDRESS_MAP[region.code] || { vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - 나중에 REGION_ADDRESS_MAP에 추가 필요)" };
   const remarkDate = addDaysStr(date, 3); // 비고란 날짜 = 발주일 + 3일 (실제 명세서 원본에서 확인된 고정 간격)
-  const ws = workbook.addWorksheet(safeSheetName(`${info.centerName}_${region.code}`, usedNames));
+  const shortName = region.shortName || info.centerName;
+  const ws = workbook.addWorksheet(safeSheetName(`${shortName}(${part}편)`, usedNames));
   ws.columns = INVOICE_COL_WIDTHS.map((w) => ({ width: w }));
   ws.pageSetup = {
     orientation: "portrait",
@@ -3880,26 +3883,32 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
 
 
 
-async function downloadSupplierInvoiceExcel(products, supplierKey, date, filename, setBusy) {
+// 발주파일 업로드 때처럼 1편/2편을 완전히 별도 파일로 나눠서 내려받는다 ("1편 저스트그린 거래명세서", "2편 저스트그린 거래명세서")
+async function downloadSupplierInvoiceExcel(products, supplierKey, date, setBusy) {
   if (setBusy) setBusy(true);
   try {
     const info = SUPPLIER_INVOICE_INFO[supplierKey];
     if (!info) throw new Error(`"${supplierKey}"의 거래명세서용 사업자 정보가 아직 등록되지 않았어요. (SUPPLIER_INVOICE_INFO에 추가 필요)`);
-    const regions = buildInvoiceRegionsForSupplier(products, supplierKey);
-    if (regions.length === 0) throw new Error(`${date}에 "${supplierKey}" 발주가 없어서 거래명세서를 만들 수 없어요.`);
-    const workbook = new ExcelJS.Workbook();
-    const usedNames = new Set();
-    regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames));
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    let anyGenerated = false;
+    for (const part of [1, 2]) {
+      const regions = buildInvoiceRegionsForSupplier(products, supplierKey, part);
+      if (regions.length === 0) continue; // 이 편은 이 날짜에 발주가 없어서 건너뜀
+      anyGenerated = true;
+      const workbook = new ExcelJS.Workbook();
+      const usedNames = new Set();
+      regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames, part));
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${part}편_${supplierKey}_거래명세서_${date}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    if (!anyGenerated) throw new Error(`${date}에 "${supplierKey}" 발주가 없어서 거래명세서를 만들 수 없어요.`);
   } finally {
     if (setBusy) setBusy(false);
   }
@@ -4454,22 +4463,21 @@ function InvoiceView({ orders }) {
   const activeInvoiceSupplier = invoiceSupplierOptions.includes(invoiceSupplier) ? invoiceSupplier : invoiceSupplierOptions[0] || null;
   const [invoiceBusy, setInvoiceBusy] = useState(false);
   const [invoiceErr, setInvoiceErr] = useState("");
-  const invoiceRegions = useMemo(
-    () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier) : []),
+  const invoiceRegionsPart1 = useMemo(
+    () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier, 1) : []),
     [invoiceProducts, activeInvoiceSupplier]
   );
+  const invoiceRegionsPart2 = useMemo(
+    () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier, 2) : []),
+    [invoiceProducts, activeInvoiceSupplier]
+  );
+  const invoiceRegionsTotal = invoiceRegionsPart1.length + invoiceRegionsPart2.length;
 
   async function handleGenerateInvoice() {
     if (!activeInvoiceDate || !activeInvoiceSupplier) return;
     setInvoiceErr("");
     try {
-      await downloadSupplierInvoiceExcel(
-        invoiceProducts,
-        activeInvoiceSupplier,
-        activeInvoiceDate,
-        `거래명세서_${activeInvoiceSupplier}_${activeInvoiceDate}.xlsx`,
-        setInvoiceBusy
-      );
+      await downloadSupplierInvoiceExcel(invoiceProducts, activeInvoiceSupplier, activeInvoiceDate, setInvoiceBusy);
     } catch (e) {
       setInvoiceErr(e.message);
     }
@@ -4482,7 +4490,7 @@ function InvoiceView({ orders }) {
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
-          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 자동으로 만들어요. 총수량은 피킹지시서와 항상 일치합니다.
+          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 발주파일처럼 1편·2편을 완전히 다른 파일로 나눠서 내려받습니다. 총수량은 피킹지시서와 항상 일치합니다.
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="날짜">
@@ -4507,15 +4515,15 @@ function InvoiceView({ orders }) {
           </Field>
           <button
             onClick={handleGenerateInvoice}
-            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegions.length === 0}
+            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegionsTotal === 0}
             className="primary-btn"
-            style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegions.length === 0 ? 0.6 : 1 }}
+            style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsTotal === 0 ? 0.6 : 1 }}
           >
-            <Download size={15} /> {invoiceBusy ? "생성 중..." : `거래명세서 생성 (${invoiceRegions.length}개 지역)`}
+            <Download size={15} /> {invoiceBusy ? "생성 중..." : `거래명세서 생성 (1편 ${invoiceRegionsPart1.length}곳 · 2편 ${invoiceRegionsPart2.length}곳)`}
           </button>
         </div>
         {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
-        {!invoiceErr && activeInvoiceSupplier && invoiceRegions.length === 0 && (
+        {!invoiceErr && activeInvoiceSupplier && invoiceRegionsTotal === 0 && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>이 날짜엔 {activeInvoiceSupplier} 발주가 없어요.</div>
         )}
         {!invoiceErr && invoiceSupplierOptions.length === 0 && (
