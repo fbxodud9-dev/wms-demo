@@ -3883,7 +3883,34 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
 
 
 
-// 발주파일 업로드 때처럼 1편/2편을 완전히 별도 파일로 나눠서 내려받는다 ("1편 저스트그린 거래명세서", "2편 저스트그린 거래명세서")
+// 1편 또는 2편 하나만 골라서 거래명세서 파일 하나를 내려받는다. 그 편에 발주가 없으면 false를 반환(조용히 스킵용).
+async function downloadSupplierInvoicePart(products, supplierKey, date, part, setBusy) {
+  if (setBusy) setBusy(true);
+  try {
+    const info = SUPPLIER_INVOICE_INFO[supplierKey];
+    if (!info) throw new Error(`"${supplierKey}"의 거래명세서용 사업자 정보가 아직 등록되지 않았어요. (SUPPLIER_INVOICE_INFO에 추가 필요)`);
+    const regions = buildInvoiceRegionsForSupplier(products, supplierKey, part);
+    if (regions.length === 0) return false;
+    const workbook = new ExcelJS.Workbook();
+    const usedNames = new Set();
+    regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames, part));
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${part}편_${supplierKey}_거래명세서_${date}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  } finally {
+    if (setBusy) setBusy(false);
+  }
+}
+
+// 발주파일 업로드 때처럼 1편/2편을 완전히 별도 파일로 나눠서 한 번에 둘 다 내려받는다 ("1편 저스트그린 거래명세서", "2편 저스트그린 거래명세서")
 async function downloadSupplierInvoiceExcel(products, supplierKey, date, setBusy) {
   if (setBusy) setBusy(true);
   try {
@@ -4483,6 +4510,16 @@ function InvoiceView({ orders }) {
     }
   }
 
+  async function handleGenerateInvoicePart(part) {
+    if (!activeInvoiceDate || !activeInvoiceSupplier) return;
+    setInvoiceErr("");
+    try {
+      await downloadSupplierInvoicePart(invoiceProducts, activeInvoiceSupplier, activeInvoiceDate, part, setInvoiceBusy);
+    } catch (e) {
+      setInvoiceErr(e.message);
+    }
+  }
+
   return (
     <div>
       <PageHeader title="거래명세서" sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)" />
@@ -4519,7 +4556,23 @@ function InvoiceView({ orders }) {
             className="primary-btn"
             style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsTotal === 0 ? 0.6 : 1 }}
           >
-            <Download size={15} /> {invoiceBusy ? "생성 중..." : `거래명세서 생성 (1편 ${invoiceRegionsPart1.length}곳 · 2편 ${invoiceRegionsPart2.length}곳)`}
+            <Download size={15} /> {invoiceBusy ? "생성 중..." : "1편+2편 한번에"}
+          </button>
+          <button
+            onClick={() => handleGenerateInvoicePart(1)}
+            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPart1.length === 0}
+            className="ghost-btn"
+            style={{ ...smallBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPart1.length === 0 ? 0.5 : 1 }}
+          >
+            <Download size={14} /> 1편만 ({invoiceRegionsPart1.length}곳)
+          </button>
+          <button
+            onClick={() => handleGenerateInvoicePart(2)}
+            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPart2.length === 0}
+            className="ghost-btn"
+            style={{ ...smallBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPart2.length === 0 ? 0.5 : 1 }}
+          >
+            <Download size={14} /> 2편만 ({invoiceRegionsPart2.length}곳)
           </button>
         </div>
         {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
