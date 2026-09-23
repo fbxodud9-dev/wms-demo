@@ -3706,10 +3706,9 @@ function buildInvoiceRegionsForSupplier(products, supplierKey) {
 // 거래명세서 1장(=지역 1곳) 시트. "공급받는자 보관용" + "공급자 보관용" 2부를 위아래로 반복해서 담는다.
 // 원본 실물 거래명세서(저스트그린 .xls)에서 폰트·크기·색상·테두리·칸 너비를 그대로 뽑아와 재현한다.
 const INV_FONT_GULIM = "굴림체";
-const INV_BLUE = { argb: "FF0000FF" };
+const INV_BLUE = { argb: "FF0000FF" }; // 공급받는자 보관용(1부) 테마 색
+const INV_RED = { argb: "FFFF0000" }; // 공급자 보관용(2부) 테마 색 - 실물 원본은 2부가 통째로 빨간색
 const INV_BLACK = { argb: "FF000000" };
-const INV_THIN = { style: "thin", color: INV_BLUE };
-const INV_MED = { style: "medium", color: INV_BLUE };
 // 원본 .xls 컬럼 너비(문자 단위)를 그대로 옮긴 33개 컬럼
 const INVOICE_COL_WIDTHS = [
   3.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 2.33, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
@@ -3728,9 +3727,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
   };
 
-  // 원본에서 그대로 뽑은 폰트 역할별 스타일: 라벨(굴림체 9pt 파랑) / 좌측값(굴림체 검정) / 우측값(맑은 고딕 검정, 등록번호만 12pt 굵게)
-  const LABEL_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLUE };
-  const LABEL_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: INV_BLUE };
+  // 값(검정) 폰트는 두 부(공급받는자/공급자) 공통 - 테마색(파랑/빨강)만 부별로 달라짐
   const AMOUNT_FONT = { name: INV_FONT_GULIM, size: 12, bold: true, color: INV_BLACK }; // 합계금액(공란) 셀
   const VALUE_FONT_L = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
   const VALUE_FONT_L10 = { name: INV_FONT_GULIM, size: 10, bold: false, color: INV_BLACK };
@@ -3743,41 +3740,48 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     const cell = row.getCell(col);
     if (value !== undefined) cell.value = value;
     cell.font = font;
-    cell.alignment = { horizontal: align || "center", vertical: "middle", wrapText: wrap !== false };
+    cell.alignment = { horizontal: align || "center", vertical: "middle", wrapText: !!wrap };
     return cell;
   }
 
-  function addCopy(copyLabel) {
+  // copyLabel: "공급받는자 보관용" | "공급자 보관용" / theme: INV_BLUE | INV_RED (실물처럼 1부=파랑, 2부=빨강 통째로 다름)
+  function addCopy(copyLabel, theme) {
+    const THIN = { style: "thin", color: theme };
+    const MED = { style: "medium", color: theme };
+    const LABEL_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: theme };
+    const LABEL_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: theme };
+
     const rTitle = ws.addRow([]);
     rTitle.height = 40;
-    put(rTitle, 2, `거 래 명 세 표 (${copyLabel})`, { name: INV_FONT_GULIM, size: 20, bold: true, color: INV_BLUE }, "center");
+    put(rTitle, 2, `거 래 명 세 표 (${copyLabel})`, { name: INV_FONT_GULIM, size: 20, bold: true, color: theme }, "center");
     ws.mergeCells(rTitle.number, 2, rTitle.number, 33);
 
     // 정보블록 4줄: 등록번호 / 상호(법인명) / 사업장주소 / 합계금액(VAT포함)·업태·종목
+    // 라벨 텍스트에 있는 줄바꿈(\n)만 wrap 필요 - 나머지 값 칸은 wrap 끔(칸 높이가 줄바꿈으로 흔들려서 날짜가 밀리는 문제 방지)
     const lineDefs = [
       { label: "등록번호", lv: info.vvLabel, lvFont: VALUE_FONT_L, label2: "등록번호", rv: supplierInfo.regNo, rvFont: VALUE_FONT_R_BOLD12, height: 24 },
       { label: "상 호\n(법인명)", lv: info.centerName, lvFont: VALUE_FONT_L10, label2: "상  호\n(법인명)", rv: supplierInfo.name, rvFont: VALUE_FONT_R, rvNarrow: true, height: 24 },
-      { label: "사업장\n주  소", lv: info.address, lvFont: VALUE_FONT_L, label2: "사업장\n주  소", rv: supplierInfo.address, rvFont: VALUE_FONT_R, rvAlign: "left", height: 24 },
+      { label: "사업장\n주  소", lv: info.address, lvFont: VALUE_FONT_L, label2: "사업장\n주  소", rv: supplierInfo.address, rvFont: VALUE_FONT_R, rvAlign: "left", height: 24, wrapValue: true },
       { label: "합계금액\n(VAT포함)", lv: "", lvFont: AMOUNT_FONT, lvAlign: "right", label2: "업 태", rv: supplierInfo.bizType, rvFont: VALUE_FONT_R, rvNarrow: true, height: 22.5, hasBizItem: true },
     ];
     const infoRows = lineDefs.map((line, idx) => {
       const row = ws.addRow([]);
       row.height = line.height;
-      put(row, 1, idx === 0 ? "공급받는자" : undefined, LABEL_FONT, "center");
-      put(row, 2, line.label, LABEL_FONT, "center");
+      put(row, 1, idx === 0 ? "공급받는자" : undefined, LABEL_FONT, "center", false);
+      put(row, 2, line.label, LABEL_FONT, "center", true);
       ws.mergeCells(row.number, 2, row.number, 5);
-      put(row, 6, line.lv, line.lvFont, line.lvAlign || "center");
+      put(row, 6, line.lv, line.lvFont, line.lvAlign || "center", !!line.wrapValue);
       ws.mergeCells(row.number, 6, row.number, 15);
-      put(row, 16, idx === 0 ? "공급자" : undefined, LABEL_FONT, "center");
-      put(row, 17, line.label2, LABEL_FONT, "center");
+      put(row, 16, idx === 0 ? "공급자" : undefined, LABEL_FONT, "center", false);
+      put(row, 17, line.label2, LABEL_FONT, "center", true);
       ws.mergeCells(row.number, 17, row.number, 20);
       const rEnd = line.rvNarrow ? 26 : 33;
-      put(row, 21, line.rv, line.rvFont, line.rvAlign || "center");
+      put(row, 21, line.rv, line.rvFont, line.rvAlign || "center", !!line.wrapValue);
       ws.mergeCells(row.number, 21, row.number, rEnd);
       if (line.hasBizItem) {
-        put(row, 27, "종 목", LABEL_FONT, "center");
+        put(row, 27, "종 목", LABEL_FONT, "center", false);
         ws.mergeCells(row.number, 27, row.number, 28);
-        put(row, 29, supplierInfo.bizItem, VALUE_FONT_R, "center");
+        put(row, 29, supplierInfo.bizItem, VALUE_FONT_R, "center", false);
         ws.mergeCells(row.number, 29, row.number, 33);
       }
       return row;
@@ -3788,38 +3792,38 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     // 품목 테이블 헤더: 년 | 월 | 일 | 품목 | 입수 | 수량 | 비고
     const th = ws.addRow([]);
     th.height = 20;
-    put(th, 1, "년", LABEL_FONT, "center");
-    put(th, 2, "월", LABEL_FONT, "center");
-    put(th, 3, "일", LABEL_FONT, "center");
-    put(th, 4, "품               목", LABEL_FONT, "center");
+    put(th, 1, "년", LABEL_FONT, "center", false);
+    put(th, 2, "월", LABEL_FONT, "center", false);
+    put(th, 3, "일", LABEL_FONT, "center", false);
+    put(th, 4, "품               목", LABEL_FONT, "center", false);
     ws.mergeCells(th.number, 4, th.number, 11);
-    put(th, 12, "입수", LABEL_FONT, "center");
+    put(th, 12, "입수", LABEL_FONT, "center", false);
     ws.mergeCells(th.number, 12, th.number, 16);
-    put(th, 17, "수량", LABEL_FONT, "center");
+    put(th, 17, "수량", LABEL_FONT, "center", false);
     ws.mergeCells(th.number, 17, th.number, 20);
-    put(th, 21, "비고", LABEL_FONT, "center");
+    put(th, 21, "비고", LABEL_FONT, "center", false);
     ws.mergeCells(th.number, 21, th.number, 33);
 
-    // 품목 행
+    // 품목 행 - 날짜/수량/입수는 줄바꿈 없이(wrap:false) 한 줄로 고정해서 행 높이가 흔들리지 않게 함
     const itemRows = region.items.map((item, idx) => {
       const hasQty = item.qty > 0;
       const row = ws.addRow([]);
       row.height = 18.75;
       if (idx === 0) {
-        const c = put(row, 1, date, ITEM_FONT, "center");
+        const c = put(row, 1, date, ITEM_FONT, "center", false);
         c.numFmt = "yyyy-mm-dd";
       } else {
-        put(row, 1, undefined, ITEM_FONT, "center");
+        put(row, 1, undefined, ITEM_FONT, "center", false);
       }
-      put(row, 2, undefined, ITEM_FONT, "center");
-      put(row, 3, undefined, ITEM_FONT, "center");
-      put(row, 4, item.name, ITEM_FONT, "center");
+      put(row, 2, undefined, ITEM_FONT, "center", false);
+      put(row, 3, undefined, ITEM_FONT, "center", false);
+      put(row, 4, item.name, ITEM_FONT, "center", false);
       ws.mergeCells(row.number, 4, row.number, 11);
-      put(row, 12, item.packQty || "", ITEM_FONT, "center");
+      put(row, 12, item.packQty || "", ITEM_FONT, "center", false);
       ws.mergeCells(row.number, 12, row.number, 16);
-      put(row, 17, hasQty ? item.qty : "-", ITEM_FONT, "center");
+      put(row, 17, hasQty ? item.qty : "-", ITEM_FONT, "center", false);
       ws.mergeCells(row.number, 17, row.number, 20);
-      const rc = put(row, 21, hasQty ? remarkDate : "", ITEM_FONT, "center");
+      const rc = put(row, 21, hasQty ? remarkDate : "", ITEM_FONT, "center", false);
       if (hasQty) rc.numFmt = "yyyy-mm-dd";
       ws.mergeCells(row.number, 21, row.number, 33);
       return row;
@@ -3831,22 +3835,22 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     // 총수량: 라벨은 년/월/일 자리, 숫자는 수량 칸 자리 (원본과 동일한 정렬)
     const totalRow = ws.addRow([]);
     totalRow.height = 18.75;
-    put(totalRow, 1, "총수량", LABEL_FONT_BOLD, "center");
+    put(totalRow, 1, "총수량", LABEL_FONT_BOLD, "center", false);
     ws.mergeCells(totalRow.number, 1, totalRow.number, 3);
     ws.mergeCells(totalRow.number, 4, totalRow.number, 11);
     ws.mergeCells(totalRow.number, 12, totalRow.number, 16);
-    put(totalRow, 17, region.totalQty, ITEM_FONT_BOLD, "center");
+    put(totalRow, 17, region.totalQty, ITEM_FONT_BOLD, "center", false);
     ws.mergeCells(totalRow.number, 17, totalRow.number, 20);
     ws.mergeCells(totalRow.number, 21, totalRow.number, 33);
 
     const footer = ws.addRow([]);
     footer.height = 37.5;
-    put(footer, 1, supplierInfo.agent, LABEL_FONT, "left");
+    put(footer, 1, supplierInfo.agent, LABEL_FONT, "left", true);
     ws.mergeCells(footer.number, 1, footer.number, 21);
-    put(footer, 22, info.address, ITEM_FONT, "left");
+    put(footer, 22, info.address, ITEM_FONT, "left", true);
     ws.mergeCells(footer.number, 22, footer.number, 33);
 
-    // 테두리: 전체 파란색 그리드(얇게) + 바깥 테두리·구획선은 굵게(원본과 동일)
+    // 테두리: 이 부(1부/2부) 전체를 테마색(파랑/빨강)으로 - 바깥 테두리·구획선은 굵게, 나머지는 얇게
     const mediumTopRows = new Set([rTitle.number, th.number, footer.number]);
     const mediumBottomRows = new Set([footer.number, infoRows[3].number, totalRow.number]);
     for (let r = rTitle.number; r <= footer.number; r++) {
@@ -3854,10 +3858,10 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
       for (let c = 1; c <= 33; c++) {
         const cell = row.getCell(c);
         cell.border = {
-          top: mediumTopRows.has(r) ? INV_MED : INV_THIN,
-          bottom: mediumBottomRows.has(r) ? INV_MED : INV_THIN,
-          left: c === 1 ? INV_MED : INV_THIN,
-          right: c === 33 ? INV_MED : INV_THIN,
+          top: mediumTopRows.has(r) ? MED : THIN,
+          bottom: mediumBottomRows.has(r) ? MED : THIN,
+          left: c === 1 ? MED : THIN,
+          right: c === 33 ? MED : THIN,
         };
       }
     }
@@ -3866,9 +3870,10 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames) 
     ws.addRow([]);
   }
 
-  addCopy("공급받는자 보관용");
-  addCopy("공급자 보관용");
+  addCopy("공급받는자 보관용", INV_BLUE);
+  addCopy("공급자 보관용", INV_RED);
 }
+
 
 
 
