@@ -3332,7 +3332,7 @@ const XL_MEDIUM = { style: "medium", color: { argb: "FF000000" } };
 const XL_GRAY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
 
 // 실제 피킹지시서 디자인(테두리·음영·폰트 크기)을 그대로 적용해 1개 품목 시트를 만듦
-function addStyledInspectionSheet(workbook, product, usedNames) {
+function addStyledInspectionSheet(workbook, product, usedNames, date) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
   const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
@@ -3364,7 +3364,7 @@ function addStyledInspectionSheet(workbook, product, usedNames) {
   ["A", "B", "C", "D", "E", "F"].forEach((col) => (ws.getCell(`${col}1`).border = { bottom: XL_MEDIUM }));
 
   // 2행: 날짜 | 공급자명(병합) | 박스 | 낱개
-  const r2 = ws.addRow([todayStr(), product.supplier || "", "", "", "", "", "박스", "낱개"]);
+  const r2 = ws.addRow([date || todayStr(), product.supplier || "", "", "", "", "", "박스", "낱개"]);
   r2.height = 24.75;
   ws.mergeCells("B2:F2");
   const a2 = ws.getCell("A2");
@@ -3488,12 +3488,12 @@ function addStyledInspectionSheet(workbook, product, usedNames) {
   });
 }
 
-async function downloadStyledInspectionExcel(products, filename, setBusy) {
+async function downloadStyledInspectionExcel(products, filename, setBusy, date) {
   if (setBusy) setBusy(true);
   try {
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
-    products.forEach((p) => addStyledInspectionSheet(workbook, p, usedNames));
+    products.forEach((p) => addStyledInspectionSheet(workbook, p, usedNames, date));
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -3739,7 +3739,7 @@ function buildFullInspectionData(product) {
 }
 
 // 엑셀 파일과 동일한 디자인의 인쇄 전용 표 (화면에는 안 보이고, 인쇄/PDF에서만 나타남)
-function InspectionPrintSheet({ product, pageBreak }) {
+function InspectionPrintSheet({ product, pageBreak, date }) {
   const data = useMemo(() => buildFullInspectionData(product), [product]);
   const pack = product.packQty || 0;
   const THIN = "1px solid #000";
@@ -3783,7 +3783,7 @@ function InspectionPrintSheet({ product, pageBreak }) {
             ))}
           </tr>
           <tr>
-            <td style={cellStyle(0, { align: "left", bold: true, size: 13, topMed: true })}>{todayStr()}</td>
+            <td style={cellStyle(0, { align: "left", bold: true, size: 13, topMed: true })}>{date || todayStr()}</td>
             <td colSpan={4} style={{ ...cellStyle(2, { bold: true, size: 13, topMed: true }), borderLeft: THIN, borderRight: MED }}>
               {product.supplier || ""}
             </td>
@@ -4002,7 +4002,8 @@ function PickingInspection({ orders }) {
                       downloadStyledInspectionExcel(
                         filteredProducts,
                         `피킹지시서_${activeDate}${supplierFilter !== "all" ? `_${supplierFilter.replace(/[\\/:*?"<>|]/g, "")}` : ""}.xlsx`,
-                        setExporting
+                        setExporting,
+                        activeDate
                       )
                     }
                     disabled={exporting || filteredProducts.length === 0}
@@ -4107,7 +4108,7 @@ function PickingInspection({ orders }) {
                         🚧 출력 (공사중)
                       </button>
                       <button
-                        onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting)}
+                        onClick={() => downloadStyledInspectionExcel([selected], `${selected.name}_${activeDate}.xlsx`, setExporting, activeDate)}
                         disabled={exporting}
                         className="ghost-btn"
                         style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }}
@@ -4125,8 +4126,8 @@ function PickingInspection({ orders }) {
             createPortal(
               <div className="print-portal">
                 {printMode === "all"
-                  ? products.map((p, idx) => <InspectionPrintSheet key={p.sku} product={p} pageBreak={idx < products.length - 1} />)
-                  : selected && <InspectionPrintSheet product={selected} />}
+                  ? products.map((p, idx) => <InspectionPrintSheet key={p.sku} product={p} pageBreak={idx < products.length - 1} date={activeDate} />)
+                  : selected && <InspectionPrintSheet product={selected} date={activeDate} />}
               </div>,
               document.body
             )}
