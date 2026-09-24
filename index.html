@@ -3676,9 +3676,13 @@ async function downloadOrderInfoExcel(ordersForDate, dateLabel, filename, setBus
 /* ================= 거래명세서(공급사별) 생성 - 저스트그린 실물 양식 기준 ================= */
 
 function addDaysStr(dateStr, days) {
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  // 로컬시간으로 Date를 만들고 toISOString()(UTC)으로 뽑으면, 한국(UTC+9)처럼 UTC보다 앞선 시간대에서
+  // 자정 근처 계산 시 하루가 밀리는 버그가 있었음 (서버가 UTC라 테스트 때는 안 보였음).
+  // Date.UTC로 순수 UTC 값만 다뤄서 브라우저의 시간대와 무관하게 항상 같은 결과가 나오도록 수정.
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
 }
 
 // buildProductsForDate() 결과(상품→지역별 수량)에서 특정 공급사만 골라
