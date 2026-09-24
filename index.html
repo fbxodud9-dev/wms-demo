@@ -3684,8 +3684,89 @@ function addDaysStr(dateStr, days) {
 // buildProductsForDate() 결과(상품→지역별 수량)에서 특정 공급사만 골라
 // "지역별로 어떤 상품을 얼마나 보냈는지"로 뒤집는다 (상품 기준 → 지역 기준).
 // partFilter: 1 | 2 | undefined(전체) - 발주파일 업로드 때와 동일한 1편/2편 구분(detectPart) 기준으로 나눔
+// GS편의점 DC(유통기한이 상품마다 제각각인 취급) 상품 목록. 이 목록에 해당하면 1편/2편이 아니라
+// 별도 "DC 거래명세서"로 빠진다. 원본 리스트가 괄호가 안 닫힌 채로 잘려있는 경우가 있어서
+// 정확히 일치가 아니라 "앞부분이 이 이름으로 시작하면" DC로 판정한다(startsWith).
+const DC_PRODUCT_PREFIXES = [
+  "고단백저당)도넛케이크(다크초코",
+  "고단백저당)도넛케이크(헤이즐넛",
+  "고단백저당)카스테라(초코",
+  "고단백저당)카스테라(플레인",
+  "고단백저당)쿠키(다크초코아몬드",
+  "고단백저당)쿠키(말차마카다미아",
+  "달빛한상)매콤순대곱창200G",
+  "대광)두바이초코스틱55G",
+  "대광)두바이크런치콘",
+  "대광)미니파베초콜릿(밀크맛)60G",
+  "대광)벽돌모양초콜릿75G",
+  "대광)에그타르트",
+  "대광)연유크림슈",
+  "대광)옛날맛순대500G",
+  "대광)초코폭탄시리얼",
+  "대광)커피콩빵",
+  "대광)파베초콜릿100G",
+  "대광)황치즈카다이프초콜릿90G",
+  "생초코파이",
+  "즉석피자)파마산치즈(증정용)",
+  "즉석피자)핫소스4G(증정용)",
+  "프리미엄두바이초콜릿(냉장)",
+  "골든)전통추어탕300G",
+  "대상푸드)26년순살갈비탕300G",
+  "대상푸드)26년스지도가니탕300G",
+  "흥선)쫄깃한매콤편육150G",
+  "락컴퍼니)HOT한미역국탕면",
+  "락컴퍼니)HOT한미역국탕밥243G",
+  "락컴퍼니)비빔파스타254G",
+  "락컴퍼니)카레당면203G",
+  "심으뜸)곤약비빔면201G",
+  "서울우유)옥수수크림찰떡",
+  "아워홈)오리지널바베큐폭립450G",
+  "아워홈)우렁강된장양념100G",
+  "아워홈)전통된장찌개양념120G",
+  "삼진)1953어묵순살바80G(매운맛)",
+  "삼진)1953어묵순살바80G(야채맛)",
+  "삼진)1953어묵순살바80G(오징어)",
+  "삼진)국민어묵탕",
+  "새우어묵바",
+  "오징어어묵바",
+  "브라더)두바이솜사탕초콜릿65G",
+  "리얼)천냥숙주나물300G",
+  "리얼)천냥콩나물300G",
+  "리얼)땡초점보어묵바130G",
+  "효성)땡초어묵바80G",
+  "효성)떡볶이맛두부바100G",
+  "효성)치즈어묵바80G",
+  "효성)프로틴두부어육바80G",
+  "두끼)치즈즉석라볶이633G",
+  "맛요일)스팸치즈부대찌개298G",
+  "맛요일)3900소고기미역국밥480G",
+  "맛요일)3900치즈미역국468G",
+  "맛요일)간장불고기덮밥366G",
+  "맛요일)대파육개장480G",
+  "맛요일)떠먹는얼큰국물파스타",
+  "맛요일)스팸참기름김치덮밥345G",
+  "오뚜기마요)참치마요간장계란밥",
+  "노포식당)김치찌개406G",
+  "노포식당)된장찌개420G",
+  "서청미역)소고기미역국480G",
+  "리얼)쫄깃한모짜렐라치즈35G",
+  "리얼)쫄깃한스트링치즈4입",
+
+];
+function isDcProduct(name) {
+  const n = String(name || "").replace(/\n/g, "").trim();
+  return DC_PRODUCT_PREFIXES.some((p) => n.startsWith(p));
+}
+
+// partFilter: 1 | 2 | "DC" | undefined(전체)
+// "DC" = DC_PRODUCT_PREFIXES에 걸리는(유통기한 제각각) 상품만. 1/2는 DC 상품을 제외한 나머지를 detectPart 기준으로 나눔.
 function buildInvoiceRegionsForSupplier(products, supplierKey, partFilter) {
-  const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey && (!partFilter || p.part === partFilter));
+  const supplierProducts = products.filter((p) => {
+    if (supplierGroupKey(p.supplier) !== supplierKey) return false;
+    if (partFilter === "DC") return isDcProduct(p.name);
+    if (isDcProduct(p.name)) return false; // DC 상품은 1편/2편에서 빠지고 DC 거래명세서로만 감
+    return !partFilter || p.part === partFilter;
+  });
   if (supplierProducts.length === 0) return [];
 
   const byRegion = {}; // code -> { code, order, shortName, items: [{name, packQty, qty}], totalQty }
@@ -3718,10 +3799,12 @@ const INVOICE_COL_WIDTHS = [
 
 function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, part) {
   const info = REGION_ADDRESS_MAP[region.code] || { vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - 나중에 REGION_ADDRESS_MAP에 추가 필요)" };
-  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일 (실제 출고 스케줄 기준)
-  const remarkDate = addDaysStr(invoiceDate, 3); // 비고(소비기한) = 년월일 + 3일 - 잠정 규칙, 실측 자료 받으면 교체 예정
+  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일 (실제 출고 스케줄 기준). DC는 당일 그대로.
+  // DC는 상품마다 유통기한이 달라서 아직 일괄 규칙을 못 정함 - 실제 유통기한 자료 받으면 상품별로 채울 예정. 그 전까진 비고 공란.
+  const remarkDate = part === "DC" ? "" : addDaysStr(invoiceDate, 3); // 비고(소비기한) = 년월일 + 3일 - 잠정 규칙, 실측 자료 받으면 교체 예정
   const shortName = region.shortName || info.centerName;
-  const ws = workbook.addWorksheet(safeSheetName(`${shortName}(${part}편)`, usedNames));
+  const partLabel = part === "DC" ? "DC" : `${part}편`;
+  const ws = workbook.addWorksheet(safeSheetName(`${shortName}(${partLabel})`, usedNames));
   ws.columns = INVOICE_COL_WIDTHS.map((w) => ({ width: w }));
   ws.pageSetup = {
     orientation: "portrait",
@@ -3831,7 +3914,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
       put(row, 17, hasQty ? item.qty : "-", ITEM_FONT, "center", false);
       ws.mergeCells(row.number, 17, row.number, 20);
       const rc = put(row, 21, hasQty ? remarkDate : "", ITEM_FONT, "center", false);
-      if (hasQty) rc.numFmt = "yyyy-mm-dd";
+      if (hasQty && remarkDate) rc.numFmt = "yyyy-mm-dd";
       ws.mergeCells(row.number, 21, row.number, 33);
       return row;
     });
@@ -3900,7 +3983,8 @@ async function downloadSupplierInvoicePart(products, supplierKey, date, part, se
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${part}편_${supplierKey}_거래명세서_${date}.xlsx`;
+    const partLabel = part === "DC" ? "DC" : `${part}편`;
+    a.download = `${partLabel}_${supplierKey}_거래명세서_${date}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -4468,7 +4552,11 @@ function InvoiceView({ orders }) {
     () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier, 2) : []),
     [invoiceProducts, activeInvoiceSupplier]
   );
-  const invoiceRegionsTotal = invoiceRegionsPart1.length + invoiceRegionsPart2.length;
+  const invoiceRegionsPartDC = useMemo(
+    () => (activeInvoiceSupplier ? buildInvoiceRegionsForSupplier(invoiceProducts, activeInvoiceSupplier, "DC") : []),
+    [invoiceProducts, activeInvoiceSupplier]
+  );
+  const invoiceRegionsTotal = invoiceRegionsPart1.length + invoiceRegionsPart2.length + invoiceRegionsPartDC.length;
 
   async function handleGenerateInvoicePart(part) {
     if (!activeInvoiceDate || !activeInvoiceSupplier) return;
@@ -4487,7 +4575,7 @@ function InvoiceView({ orders }) {
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
-          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일, 2편은 익일 날짜로 나갑니다. 총수량은 피킹지시서와 항상 일치합니다.
+          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일, 2편은 익일 날짜로 나갑니다. 유통기한이 상품마다 다른 DC 취급 상품은 1편/2편에서 빠지고 DC 거래명세서로 따로 나가요(비고 날짜는 실제 유통기한 자료 받으면 채울 예정). 총수량은 피킹지시서와 항상 일치합니다.
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="날짜">
@@ -4525,6 +4613,14 @@ function InvoiceView({ orders }) {
             style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPart2.length === 0 ? 0.6 : 1 }}
           >
             <Download size={15} /> {invoiceBusy ? "생성 중..." : `2편 거래명세서 (${invoiceRegionsPart2.length}곳)`}
+          </button>
+          <button
+            onClick={() => handleGenerateInvoicePart("DC")}
+            disabled={invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPartDC.length === 0}
+            className="primary-btn"
+            style={{ ...primaryBtnStyle, opacity: invoiceBusy || !activeInvoiceSupplier || invoiceRegionsPartDC.length === 0 ? 0.6 : 1 }}
+          >
+            <Download size={15} /> {invoiceBusy ? "생성 중..." : `DC 거래명세서 (${invoiceRegionsPartDC.length}곳)`}
           </button>
         </div>
         {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
