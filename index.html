@@ -2055,7 +2055,7 @@ function WMSApp() {
             </button>
           </div>
         )}
-        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} />}
+        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
         {tab === "inbound" && <Inbound items={itemsView} onSubmit={applyInbound} />}
@@ -2102,13 +2102,419 @@ function WMSApp() {
   );
 }
 
+/* ---------- 물동량 (대시보드) ---------- */
+// 매일 받는 "금일 물량" 표(채널별 1편/2편 수량)를 그대로 옮긴 구조. GS 1편/2편/냉장·당착은 주문 데이터에서 자동 집계하고,
+// 나머지 채널(이마트·세븐·CU·냉동 등)은 아직 시스템에 주문이 없어서 화면에서 직접 입력한다(날짜별로 서버에 저장).
+const VOLUME_ROW_DEFS = [
+  // [key, 화면 라벨, 채널 id, 수기입력 시 표시하는 전체 이름]
+  ["emart_1", "1편", "emart", "이마트 1편"],
+  ["emart_2", "2편", "emart", "이마트 2편"],
+  ["seven_1", "1편/당착", "seven", "세븐 1편/당착"],
+  ["seven_2", "2편", "seven", "세븐 2편"],
+  ["cu_1", "1편", "cu", "CU(BGF) 1편"],
+  ["cu_2", "2편", "cu", "CU(BGF) 2편"],
+  ["gs_frozen", "GS 냉동(EA)", "frozen", "GS 냉동(EA)"],
+  ["e24_frozen", "E24 냉동(EA)", "frozen", "E24 냉동(EA)"],
+  ["seven_frozen", "세븐일레븐 냉동(EA)", "frozen", "세븐일레븐 냉동(EA)"],
+  ["bgf_frozen", "BGF 냉동", "frozen", "BGF 냉동"],
+  ["gs_1", "1편", "gs", "GS 1편"],
+  ["gs_cold", "냉장/당착", "gs", "GS 냉장/당착"],
+  ["gs_2", "2편", "gs", "GS 2편"],
+  ["gs_super", "GS슈퍼", "gs_super", "GS슈퍼"],
+  ["korail", "코레일", "korail", "코레일"],
+  ["emart_deli", "낱개", "deli", "이마트델리WET(낱개)"],
+  ["nobrand_box", "박스", "nobrand", "(노브랜드_냉동)_박스"],
+];
+const VOLUME_CHANNELS = [
+  { id: "emart", name: "이마트", color: "#F2A93B", group: "other" },
+  { id: "seven", name: "세븐", color: "#C1562F", group: "other" },
+  { id: "cu", name: "CU(BGF)", color: "#7B5EA7", group: "other" },
+  { id: "frozen", name: "냉동 (타 채널)", color: "#4A90B8", group: "other" },
+  { id: "gs", name: "GS", color: "#1E8A6E", group: "gs" },
+  { id: "gs_super", name: "GS슈퍼", color: "#2B3239", group: "gs" },
+  { id: "korail", name: "코레일", color: "#8A9A5B", group: "gs" },
+  { id: "deli", name: "이마트델리 WET", color: "#D08C9E", group: "gs" },
+  { id: "nobrand", name: "노브랜드 냉동박스", color: "#9C978A", group: "gs" },
+];
+const VOLUME_GROUPS = [
+  { id: "other", label: "타 채널 소계" },
+  { id: "gs", label: "GS 계열 소계" },
+];
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2"]; // 주문 데이터에서 자동 집계되는 칸
+
+function localDateStr(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function shiftDateStr(str, days) {
+  const [y, m, d] = str.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+function weekdayKo(str) {
+  const [y, m, d] = str.split("-").map(Number);
+  return ["일", "월", "화", "수", "목", "금", "토"][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+const fmtNum = (n) => Number(n || 0).toLocaleString();
+
+// GS 자동 집계: 피킹지시서와 같은 기준(할당 수량). DC 상품은 "냉장/당착", 나머지는 상품명 끝의 1편/2편으로 구분
+function computeGsAuto(orders, date) {
+  const auto = { gs_1: 0, gs_cold: 0, gs_2: 0 };
+  buildProductsForDate(orders, date).forEach((p) => {
+    const k = isDcProduct(p.name) ? "gs_cold" : p.part === 2 ? "gs_2" : "gs_1";
+    auto[k] += p.totalQty;
+  });
+  return auto;
+}
+
+// saved: 그 날짜에 직접 입력해 저장한 값({key: 숫자}). GS 3칸은 입력이 없으면 주문 데이터 자동값을 쓴다.
+function computeVolumeDay(auto, saved) {
+  const rows = {};
+  VOLUME_ROW_DEFS.forEach(([key]) => {
+    const s = saved ? saved[key] : undefined;
+    const entered = s !== undefined && s !== null && s !== "";
+    const isAuto = VOLUME_AUTO_KEYS.includes(key);
+    rows[key] = { value: entered ? Number(s) : isAuto ? auto[key] : 0, entered, fromOrders: isAuto && !entered, autoValue: isAuto ? auto[key] : null };
+  });
+  const channels = VOLUME_CHANNELS.map((ch) => {
+    const parts = VOLUME_ROW_DEFS.filter((d) => d[2] === ch.id).map((d) => ({ key: d[0], label: d[1], value: rows[d[0]].value }));
+    return { ...ch, parts, total: parts.reduce((a, p) => a + p.value, 0) };
+  });
+  const groups = VOLUME_GROUPS.map((g) => ({ ...g, total: channels.filter((c) => c.group === g.id).reduce((a, c) => a + c.total, 0) }));
+  return { rows, channels, groups, total: groups.reduce((a, g) => a + g.total, 0) };
+}
+
+const VOLUME_LS_KEY = "wms-volumes";
+function readLocalVolumes() {
+  try {
+    return JSON.parse(localStorage.getItem(VOLUME_LS_KEY) || "{}") || {};
+  } catch (e) {
+    return {};
+  }
+}
+function writeLocalVolume(date, data) {
+  try {
+    const all = readLocalVolumes();
+    all[date] = data;
+    localStorage.setItem(VOLUME_LS_KEY, JSON.stringify(all));
+  } catch (e) {
+    /* 저장 공간이 막힌 브라우저면 무시 */
+  }
+}
+
+function DeltaBadge({ diff, pct, size = 12.5 }) {
+  if (diff === null) return null;
+  const up = diff > 0;
+  const flat = diff === 0;
+  const color = flat ? T.inkSoft : up ? T.teal : T.clay;
+  return (
+    <span style={{ fontSize: size, fontWeight: 700, color, fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap" }}>
+      {flat ? "±0" : `${up ? "▲" : "▼"} ${fmtNum(Math.abs(diff))}`}
+      {pct !== null && !flat ? ` (${up ? "+" : "-"}${Math.abs(pct).toFixed(1)}%)` : ""}
+    </span>
+  );
+}
+
+function VolumePanel({ variant, date, day, prevDay, onEdit }) {
+  const primary = variant === "today";
+  const hasData = day.total > 0;
+  const diff = prevDay ? day.total - prevDay.total : null;
+  const pct = prevDay && prevDay.total > 0 ? ((day.total - prevDay.total) / prevDay.total) * 100 : null;
+  const chDiff = (id) => {
+    if (!prevDay) return null;
+    const a = day.channels.find((c) => c.id === id).total;
+    const b = prevDay.channels.find((c) => c.id === id).total;
+    return a - b;
+  };
+  return (
+    <div style={{ background: T.surface, border: `1px solid ${primary ? T.steel : T.border}`, borderRadius: 10, overflow: "hidden", boxShadow: primary ? "0 2px 10px rgba(43,50,57,0.08)" : "none" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: primary ? "14px 20px" : "11px 20px", background: primary ? T.steel : "#ECEAE2", color: primary ? "#fff" : T.ink }}>
+        <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 9px", borderRadius: 999, background: primary ? T.amber : "#fff", color: primary ? T.steel : T.inkSoft }}>{primary ? "금일" : "전일"}</span>
+        <span style={{ fontSize: primary ? 16 : 14, fontWeight: 700 }}>물동량</span>
+        <span style={{ fontSize: 13, opacity: 0.8 }}>
+          {fmtDate(date)} ({weekdayKo(date)})
+        </span>
+        <button
+          onClick={onEdit}
+          className="ghost-btn"
+          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, border: `1px solid ${primary ? "rgba(255,255,255,0.35)" : T.border}`, background: primary ? "transparent" : "#fff", color: primary ? "#fff" : T.ink, borderRadius: 6, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          <Pencil size={13} /> 입력·수정
+        </button>
+      </div>
+
+      <div style={{ padding: primary ? 20 : 16 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 24, flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 12.5, color: T.inkSoft, fontWeight: 500, marginBottom: 4 }}>총합계</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: primary ? 40 : 28, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: hasData ? T.ink : T.borderStrong, lineHeight: 1.1 }}>{fmtNum(day.total)}</span>
+              {primary && prevDay && <DeltaBadge diff={diff} pct={pct} />}
+              {primary && prevDay && <span style={{ fontSize: 11.5, color: T.inkSoft }}>전일 대비</span>}
+            </div>
+          </div>
+          {day.groups.map((g) => (
+            <div key={g.id} style={{ borderLeft: `3px solid ${g.id === "gs" ? T.teal : T.borderStrong}`, paddingLeft: 12 }}>
+              <div style={{ fontSize: 12, color: T.inkSoft, fontWeight: 500, marginBottom: 2 }}>{g.label}</div>
+              <div style={{ fontSize: primary ? 22 : 18, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(g.total)}</div>
+            </div>
+          ))}
+        </div>
+
+        {hasData ? (
+          <div style={{ display: "flex", height: primary ? 12 : 9, borderRadius: 999, overflow: "hidden", background: "#EEECE3", marginBottom: 16 }}>
+            {day.channels
+              .filter((c) => c.total > 0)
+              .map((c) => (
+                <div key={c.id} title={`${c.name} ${fmtNum(c.total)} (${((c.total / day.total) * 100).toFixed(1)}%)`} style={{ width: `${(c.total / day.total) * 100}%`, background: c.color, minWidth: 3 }} />
+              ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12.5, color: T.inkSoft, background: "#F7F6F1", border: `1px dashed ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 16 }}>
+            이 날짜에 집계된 물동량이 없어요. GS는 주문 파일을 올리면 자동으로 채워지고, 다른 채널은 “입력·수정”에서 숫자를 넣어주세요.
+          </div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${primary ? 210 : 180}px, 1fr))`, gap: 10 }}>
+          {day.channels.map((c) => {
+            const share = day.total > 0 ? (c.total / day.total) * 100 : 0;
+            const d = chDiff(c.id);
+            const active = c.total > 0;
+            const partText = c.parts.filter((p) => p.value > 0 && c.parts.length > 1).map((p) => `${p.label} ${fmtNum(p.value)}`);
+            return (
+              <div key={c.id} style={{ border: `1px solid ${T.border}`, borderLeft: `4px solid ${active ? c.color : T.border}`, borderRadius: 8, padding: primary ? "12px 14px" : "9px 12px", background: active ? "#fff" : "#FAF9F5" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: active ? T.ink : T.inkSoft }}>{c.name}</span>
+                  {active && <span style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{share.toFixed(1)}%</span>}
+                </div>
+                <div style={{ fontSize: primary ? 22 : 18, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: active ? T.ink : T.borderStrong, margin: "3px 0 2px" }}>{active ? fmtNum(c.total) : "-"}</div>
+                <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 6, minHeight: 16 }}>
+                  <span style={{ display: "flex", flexWrap: "wrap", gap: "1px 10px", fontSize: 11.5, color: T.inkSoft }}>
+                    {partText.map((t) => (
+                      <span key={t} style={{ whiteSpace: "nowrap" }}>
+                        {t}
+                      </span>
+                    ))}
+                  </span>
+                  {primary && d !== null && (d !== 0 || active) && <DeltaBadge diff={d} pct={null} size={11} />}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
+  const [form, setForm] = useState(() => {
+    const f = {};
+    VOLUME_ROW_DEFS.forEach(([key]) => {
+      f[key] = saved && saved[key] !== undefined && saved[key] !== null ? String(saved[key]) : "";
+    });
+    return f;
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const parse = (s) => {
+    const t = String(s).replace(/,/g, "").trim();
+    if (t === "") return null;
+    const n = Number(t);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : NaN;
+  };
+  const data = {};
+  let invalid = false;
+  VOLUME_ROW_DEFS.forEach(([key]) => {
+    const v = parse(form[key]);
+    if (Number.isNaN(v)) invalid = true;
+    else if (v !== null) data[key] = v;
+  });
+  const preview = computeVolumeDay(auto, data);
+
+  async function submit() {
+    if (invalid) return setErr("숫자만 입력해주세요 (0 이상).");
+    setBusy(true);
+    setErr("");
+    try {
+      await onSave(date, data);
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return createPortal(
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 12, width: "100%", maxWidth: 520, maxHeight: "92vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>물동량 입력</div>
+            <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 2 }}>
+              {fmtDate(date)} ({weekdayKo(date)}) · 받은 물량 표의 숫자를 그대로 넣으세요
+            </div>
+          </div>
+          <button onClick={onClose} style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: T.inkSoft }}>
+            <X size={18} />
+          </button>
+        </div>
+        <div style={{ overflowY: "auto", padding: "6px 20px 14px" }}>
+          {VOLUME_GROUPS.map((g) => (
+            <div key={g.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 700, color: T.inkSoft, margin: "14px 0 6px", paddingBottom: 6, borderBottom: `1px solid ${T.border}` }}>
+                <span>{g.label}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: T.ink }}>{fmtNum(preview.groups.find((x) => x.id === g.id).total)}</span>
+              </div>
+              {VOLUME_ROW_DEFS.filter((d) => VOLUME_CHANNELS.find((c) => c.id === d[2]).group === g.id).map(([key, , , full]) => {
+                const isAuto = VOLUME_AUTO_KEYS.includes(key);
+                return (
+                  <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                    <div style={{ flex: 1, fontSize: 13.5 }}>
+                      {full}
+                      {isAuto && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>주문 자동</span>}
+                    </div>
+                    <input
+                      inputMode="numeric"
+                      value={form[key]}
+                      onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                      placeholder={isAuto ? fmtNum(auto[key]) : "-"}
+                      style={{ ...inputStyle, width: 130, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", padding: "7px 10px" }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
+            “주문 자동” 칸은 비워두면 주문 파일 기준 수량(회색 숫자)이 쓰이고, 숫자를 넣으면 그 값이 우선해요. 비워둔 다른 칸은 0으로 봅니다.
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: T.inkSoft }}>총합계</div>
+            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(preview.total)}</div>
+            {err && <div style={{ fontSize: 12, color: T.danger, fontWeight: 600 }}>{err}</div>}
+          </div>
+          <button onClick={onClose} style={smallBtnStyle}>
+            취소
+          </button>
+          <button onClick={submit} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function VolumeDashboard({ orders, authToken }) {
+  const today = localDateStr();
+  const [baseDate, setBaseDate] = useState(today);
+  const [savedMap, setSavedMap] = useState({});
+  const [notice, setNotice] = useState("");
+  const [editingDate, setEditingDate] = useState(null);
+
+  // 기준일 앞 3주치 저장값을 한 번에 불러온다 (전일 = 기준일 이전에 주문/입력이 있는 가장 가까운 날)
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    const from = shiftDateStr(baseDate, -21);
+    (async () => {
+      try {
+        const res = await apiFetch(`/volumes?from=${from}&to=${baseDate}`, authToken);
+        if (cancelled) return;
+        const map = {};
+        (res.volumes || []).forEach((v) => {
+          map[v.date] = v.data || {};
+        });
+        setSavedMap(map);
+        setNotice("");
+      } catch (e) {
+        if (cancelled) return;
+        setSavedMap(readLocalVolumes());
+        setNotice(`서버에서 물동량을 불러오지 못해 이 브라우저에 저장된 값을 보여줘요 (${e.message})`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, baseDate]);
+
+  const orderDates = useMemo(() => new Set(orders.map((o) => o.createdAt)), [orders]);
+  const prevDate = useMemo(() => {
+    for (let i = 1; i <= 21; i++) {
+      const d = shiftDateStr(baseDate, -i);
+      if (orderDates.has(d) || (savedMap[d] && Object.keys(savedMap[d]).length)) return d;
+    }
+    return shiftDateStr(baseDate, -1);
+  }, [baseDate, orderDates, savedMap]);
+
+  const autoToday = useMemo(() => computeGsAuto(orders, baseDate), [orders, baseDate]);
+  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate), [orders, prevDate]);
+  const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
+  const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
+
+  async function handleSave(date, data) {
+    try {
+      const res = await apiFetch(`/volumes/${date}`, authToken, { method: "PUT", body: { data } });
+      setSavedMap((m) => ({ ...m, [date]: res.volume.data || {} }));
+      setNotice("");
+    } catch (e) {
+      writeLocalVolume(date, data);
+      setSavedMap((m) => ({ ...m, [date]: data }));
+      setNotice(`서버에 저장하지 못해 이 브라우저에만 저장했어요 (${e.message})`);
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 30 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>채널별 물동량</div>
+        <input type="date" value={baseDate} max={today} onChange={(e) => e.target.value && setBaseDate(e.target.value)} style={{ ...inputStyle, padding: "6px 9px", fontSize: 13 }} />
+        {baseDate !== today && (
+          <button onClick={() => setBaseDate(today)} style={smallBtnStyle}>
+            오늘로
+          </button>
+        )}
+        <span style={{ fontSize: 12, color: T.inkSoft }}>전일 = {fmtDate(prevDate)} ({weekdayKo(prevDate)}), 기준일 앞에서 가장 가까운 주문·입력이 있는 날</span>
+      </div>
+      {notice && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "#FFF6E5", border: `1px solid ${T.amber}`, borderRadius: 6, padding: "9px 12px", marginBottom: 12, fontSize: 12.5, color: T.amberDeep, fontWeight: 600 }}>
+          <AlertTriangle size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          {notice}
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <VolumePanel variant="today" date={baseDate} day={dayToday} prevDay={dayPrev} onEdit={() => setEditingDate(baseDate)} />
+        <VolumePanel variant="prev" date={prevDate} day={dayPrev} prevDay={null} onEdit={() => setEditingDate(prevDate)} />
+      </div>
+      {editingDate && (
+        <VolumeEditModal
+          key={editingDate}
+          date={editingDate}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate)}
+          saved={savedMap[editingDate]}
+          onSave={handleSave}
+          onClose={() => setEditingDate(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 /* ---------- dashboard ---------- */
-function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo }) {
+function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, authToken }) {
   const inCount = todayTx.filter((t) => t.type === "IN").length;
   const outCount = todayTx.filter((t) => t.type === "OUT").length;
   return (
     <div>
-      <PageHeader title="대시보드" sub={`오늘, ${fmtDate(todayStr())}`} />
+      <PageHeader title="대시보드" sub={`오늘, ${fmtDate(localDateStr())}`} />
+      <VolumeDashboard orders={orders || []} authToken={authToken} />
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>재고 · 입출고</div>
       <div style={{ display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" }}>
         <Metric label="총 품목 수" value={items.length} sub="등록된 SKU" />
         <Metric label="총 재고 수량" value={totalQty.toLocaleString()} sub="전체 로케이션 합산" />
