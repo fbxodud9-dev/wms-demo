@@ -1552,6 +1552,22 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  // 발주파일의 상품코드와 다르게 등록돼 있던 상품마스터 코드를 발주파일 기준으로 한 번에 교체
+  // pairs: [[기존 마스터 코드, 발주파일 상품코드]]. 그 코드를 쓰던 발주 라인·입출고 이력도 서버에서 같이 바뀜.
+  const rekeyItems = useCallback(
+    async (pairs) => {
+      if (!pairs || pairs.length === 0) return { renamed: 0, conflicts: 0 };
+      try {
+        const res = await apiFetch("/items/rekey", authToken, { method: "POST", body: { pairs: pairs.map(([from, to]) => ({ from, to })) } });
+        return { renamed: res.renamed || 0, conflicts: (res.results || []).filter((r) => r.status === "conflict").length };
+      } catch (e) {
+        setApiErr(e.message);
+        return { renamed: 0, conflicts: 0, failed: true };
+      }
+    },
+    [authToken]
+  );
+
   // 발주파일 업로드 시 미등록 품목을 한 번에 등록 (품목 개수만큼 반복 호출하지 않음)
   const registerItemsBulk = useCallback(
     async (skuNamePairs) => {
@@ -1735,6 +1751,7 @@ function WMSApp() {
         if (fields.boxQty !== undefined) body.box_qty = fields.boxQty;
         if (fields.cbm !== undefined) body.cbm = fields.cbm;
         if (fields.qty !== undefined) body.qty = fields.qty;
+        if (fields.newSku !== undefined && String(fields.newSku).trim() && String(fields.newSku).trim() !== sku) body.newSku = String(fields.newSku).trim();
         await apiFetch(`/items/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body });
         await loadCoreData();
       } catch (e) {
@@ -2069,6 +2086,7 @@ function WMSApp() {
             onAdd={addOrder}
             onAddBulk={addOrdersBulk}
             onRegisterItemsBulk={registerItemsBulk}
+            onRekeyItems={rekeyItems}
             onUpdateChangedQty={updateChangedQty}
             onConvert={convertSupplierToPicking}
             onRegisterItem={registerPlaceholderItem}
@@ -2516,7 +2534,7 @@ function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, authT
       <VolumeDashboard orders={orders || []} authToken={authToken} />
       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>재고 · 입출고</div>
       <div style={{ display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" }}>
-        <Metric label="총 품목 수" value={items.length} sub="등록된 SKU" />
+        <Metric label="총 품목 수" value={items.length} sub="등록된 상품코드" />
         <Metric label="총 재고 수량" value={totalQty.toLocaleString()} sub="전체 로케이션 합산" />
         <Metric label="재고 부족 품목" value={lowStock.length} sub="안전재고 미달" accent={lowStock.length ? T.danger : T.ink} />
         <Metric label="오늘 입출고" value={`${inCount + outCount}건`} sub={`입고 ${inCount} · 출고 ${outCount}`} />
@@ -2661,7 +2679,7 @@ function Inventory({ items }) {
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ position: "relative", flex: "1 1 260px" }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
-          <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명, SKU, 로케이션 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명, 상품코드, 로케이션 검색" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <select style={{ ...inputStyle, width: 150 }} value={cat} onChange={(e) => setCat(e.target.value)}>
           <option>전체</option>
@@ -2675,7 +2693,7 @@ function Inventory({ items }) {
         <table>
           <thead>
             <tr>
-              <th>SKU</th>
+              <th>상품코드</th>
               <th>품목명</th>
               <th>카테고리</th>
               <th>로케이션</th>
@@ -3067,7 +3085,7 @@ function ThreeDView({ items }) {
             <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
             <input
               style={{ ...inputStyle, width: "100%", paddingLeft: 32 }}
-              placeholder="품목명 또는 SKU로 위치 찾기"
+              placeholder="품목명 또는 상품코드로 위치 찾기"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -3182,7 +3200,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpdateChangedQty, onConvert, onRegisterItem, onReset, onDeleteDate }) {
+function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRekeyItems, onUpdateChangedQty, onConvert, onRegisterItem, onReset, onDeleteDate }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -3313,7 +3331,20 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
     };
 
     const groups = {};
-    const unmatchedMap = new Map(); // sku -> name (자동 등록용)
+    const unmatchedMap = new Map(); // 상품코드 -> 품목명 (자동 등록용)
+    const rekeyMap = new Map(); // 기존 마스터 코드 -> 발주파일 상품코드 (이름으로만 맞은 품목)
+    // 파일 안의 상품코드 목록과, 품목명 하나에 상품코드가 딱 하나인지 미리 확인 (모호하면 코드를 바꾸지 않음)
+    const fileCodes = new Set();
+    const nameToCodes = new Map();
+    dataRows.forEach((r) => {
+      const c = String(r[col.sku] ?? "").trim();
+      if (!c) return;
+      fileCodes.add(c);
+      const nm = String((col.name !== -1 && r[col.name]) || "").trim();
+      if (!nm) return;
+      if (!nameToCodes.has(nm)) nameToCodes.set(nm, new Set());
+      nameToCodes.get(nm).add(c);
+    });
     dataRows.forEach((r) => {
       const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
       const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
@@ -3345,7 +3376,13 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
       const unit = (col.unit !== -1 && r[col.unit]) || "EA";
       const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
       const packQtyFixed = PACK_QTY_OVERRIDES[sku]; // 이 상품이면 파일 값 무시하고 고정값 사용
-      const matched = items.find((i) => i.sku === sku || i.name === name);
+      // 상품코드가 기준: 코드로 먼저 찾고, 없으면 품목명으로 찾되 그때는 마스터 코드를 발주파일 상품코드로 바꾼다
+      const byCode = items.find((i) => i.sku === sku);
+      const byName = byCode ? null : items.find((i) => i.name === name);
+      const matched = byCode || byName;
+      if (byName && byName.sku !== sku && !fileCodes.has(byName.sku) && (nameToCodes.get(String(name).trim()) || new Set([sku])).size === 1) {
+        rekeyMap.set(byName.sku, sku);
+      }
       if (!matched && !unmatchedMap.has(sku)) unmatchedMap.set(sku, name);
       groups[key].lines.push({
         sku,
@@ -3363,7 +3400,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
 
     const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
     if (newOrders.length === 0) throw new Error(`${file.name}: 유효한 발주 라인을 찾지 못했습니다.`);
-    return { newOrders, unmatchedMap };
+    return { newOrders, unmatchedMap, rekeyMap };
   }
 
   async function handleFiles(fileList) {
@@ -3373,12 +3410,18 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
     setUploading(true);
     const allNewOrders = [];
     const allUnmatched = new Map();
+    const allRekey = new Map();
+    const rekeyAmbiguous = new Set();
     const fileErrors = [];
     try {
       for (const file of files) {
         try {
-          const { newOrders, unmatchedMap } = await parseOneFile(file);
+          const { newOrders, unmatchedMap, rekeyMap } = await parseOneFile(file);
           allNewOrders.push(...newOrders);
+          rekeyMap.forEach((to, from) => {
+            if (allRekey.has(from) && allRekey.get(from) !== to) rekeyAmbiguous.add(from); // 파일마다 다른 코드를 말하면 바꾸지 않음
+            else allRekey.set(from, to);
+          });
           unmatchedMap.forEach((name, sku) => {
             if (!allUnmatched.has(sku)) allUnmatched.set(sku, name);
           });
@@ -3387,6 +3430,13 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
         }
       }
 
+      // 발주파일의 상품코드와 다르게 등록돼 있던 상품마스터 코드부터 발주파일 기준으로 교체
+      rekeyAmbiguous.forEach((from) => allRekey.delete(from));
+      let rekeyResult = { renamed: 0, conflicts: 0 };
+      if (onRekeyItems && allRekey.size > 0) {
+        rekeyResult = await onRekeyItems(Array.from(allRekey.entries()));
+        // 새 코드로 이미 등록돼 있어서 못 바꾼 품목은 '미등록'으로 다시 등록하지 않게 제외 (중복 방지)
+      }
       const unmatchedList = Array.from(allUnmatched.entries());
       if (onRegisterItemsBulk) {
         await onRegisterItemsBulk(unmatchedList);
@@ -3414,7 +3464,9 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
         setUploadMsg(
           `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length - skippedCount}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
             (skippedCount > 0 ? ` (이미 등록된 발주번호 ${skippedCount}건은 건너뛰었습니다.)` : "") +
-            (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "")
+            (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "") +
+            (rekeyResult.renamed > 0 ? ` (상품마스터의 상품코드 ${rekeyResult.renamed}건을 발주파일의 상품코드로 바꿨습니다.)` : "") +
+            (rekeyResult.conflicts > 0 ? ` (상품코드 ${rekeyResult.conflicts}건은 같은 코드의 다른 품목이 이미 있어 바꾸지 못했습니다. 상품마스터에서 확인해주세요.)` : "")
         );
       }
       if (fileErrors.length > 0) {
@@ -3512,7 +3564,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onUpd
             <table>
               <thead>
                 <tr>
-                  <th>SKU</th>
+                  <th>상품코드</th>
                   <th>품목명</th>
                   <th>주문수량</th>
                   <th>박스/낱개 환산</th>
@@ -3791,7 +3843,7 @@ function Allocation({ items, orders, onAllocate }) {
                     <thead>
                       <tr>
                         <th>품목명</th>
-                        <th>SKU</th>
+                        <th>상품코드</th>
                         <th>요청수량</th>
                         <th>현재재고(참고용)</th>
                         <th>할당예정수량</th>
@@ -3862,7 +3914,7 @@ function AllocationList({ orders, onCancel }) {
               <th></th>
               <th>발주번호</th>
               <th>발주처</th>
-              <th>SKU</th>
+              <th>상품코드</th>
               <th>품목명</th>
               <th>할당수량</th>
               <th>할당상태</th>
@@ -3932,7 +3984,7 @@ function Replenishment({ items, onToggle }) {
           <thead>
             <tr>
               <th>품목명</th>
-              <th>SKU</th>
+              <th>상품코드</th>
               <th>온도구역</th>
               <th>현재고 / 안전재고</th>
               <th>로케이션</th>
@@ -4358,7 +4410,7 @@ async function downloadOrderInfoExcel(ordersForDate, dateLabel, filename, setBus
     wsLines.columns = [
       { header: "발주번호", key: "orderNo", width: 16 },
       { header: "납품처(지역)", key: "customer", width: 28 },
-      { header: "SKU", key: "sku", width: 18 },
+      { header: "상품코드", key: "sku", width: 18 },
       { header: "품목명", key: "name", width: 28 },
       { header: "수량", key: "qty", width: 10 },
       { header: "단위", key: "unit", width: 8 },
@@ -5688,7 +5740,7 @@ function InvoiceView({ orders }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>SKU</th>
+                      <th>상품코드</th>
                       <th>품목명</th>
                       <th>수량</th>
                       <th>로케이션</th>
@@ -5998,16 +6050,21 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
   function openEdit(item) {
     setMode("edit");
     setSelectedSku(item.sku);
-    setForm({ tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm, qty: item.qty });
+    setForm({ newSku: item.sku, tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm, qty: item.qty });
   }
   function save() {
     if (!selected || !form) return;
+    const code = String(form.newSku ?? selected.sku).trim();
+    if (!code) return window.alert("상품코드는 비워둘 수 없어요.");
+    if (code !== selected.sku && items.some((i) => i.sku === code)) return window.alert("이미 다른 품목이 사용 중인 상품코드예요.");
+    if (code !== selected.sku && !window.confirm(`상품코드를 ${selected.sku} → ${code} 로 바꿀까요?\n(이 코드로 들어온 기존 발주·입출고 이력도 같이 바뀝니다)`)) return;
     onSave(selected.sku, form);
+    if (code !== selected.sku) setSelectedSku(code);
   }
   function submitCreate() {
     setCreateErr("");
-    if (!createForm.sku.trim() || !createForm.name.trim()) return setCreateErr("SKU와 품목명은 필수입니다.");
-    if (items.some((i) => i.sku === createForm.sku.trim())) return setCreateErr("이미 존재하는 SKU입니다.");
+    if (!createForm.sku.trim() || !createForm.name.trim()) return setCreateErr("상품코드와 품목명은 필수입니다.");
+    if (items.some((i) => i.sku === createForm.sku.trim())) return setCreateErr("이미 존재하는 상품코드입니다.");
     onCreate({ ...createForm, sku: createForm.sku.trim(), location: createForm.location.trim() || "미배정" });
     setCreateForm({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0 });
   }
@@ -6020,7 +6077,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <div style={{ position: "relative", flex: 1 }}>
               <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
-              <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명 또는 SKU 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명 또는 상품코드 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             <button onClick={() => setMode("create")} className="primary-btn" style={primaryBtnStyle}>
               <Plus size={14} /> 새 품목 추가
@@ -6030,7 +6087,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
             <table>
               <thead>
                 <tr>
-                  <th>SKU</th>
+                  <th>상품코드</th>
                   <th>품목명</th>
                   <th>온도구역</th>
                   <th>작업유형</th>
@@ -6083,8 +6140,8 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
             {mode === "create" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>새 품목 추가</div>
-                <Field label="SKU (바코드/품목코드)">
-                  <input style={inputStyle} value={createForm.sku} onChange={(e) => setCreateForm({ ...createForm, sku: e.target.value })} placeholder="예: 8809494071723" />
+                <Field label="상품코드 (발주파일의 상품코드)">
+                  <input style={inputStyle} value={createForm.sku} onChange={(e) => setCreateForm({ ...createForm, sku: e.target.value })} placeholder="예: 2700038849500" />
                 </Field>
                 <Field label="품목명">
                   <input style={inputStyle} value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} placeholder="품목명을 입력하세요" />
@@ -6140,7 +6197,9 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{selected.name}</div>
-                <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{selected.sku}</div>
+                <Field label="상품코드 (발주파일의 상품코드와 같아야 해요)">
+                  <input style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} value={form.newSku ?? selected.sku} onChange={(e) => setForm({ ...form, newSku: e.target.value })} />
+                </Field>
                 <Field label="온도구역">
                   <select style={inputStyle} value={form.tempZone} onChange={(e) => setForm({ ...form, tempZone: e.target.value })}>
                     {TEMP_ZONES.map((z) => (
@@ -6381,8 +6440,8 @@ function Inbound({ items, onSubmit }) {
       onSubmit({ sku: selected.sku, name: selected.name, category: selected.category, location: location || selected.location, unit: selected.unit, qty: q, date, memo });
       setToast(`${selected.name} ${q}${selected.unit} 입고 처리되었습니다.`);
     } else {
-      if (!newItem.sku || !newItem.name || !newItem.location) return setErr("SKU, 품목명, 로케이션을 모두 입력해주세요.");
-      if (items.some((i) => i.sku === newItem.sku)) return setErr("이미 존재하는 SKU입니다.");
+      if (!newItem.sku || !newItem.name || !newItem.location) return setErr("상품코드, 품목명, 로케이션을 모두 입력해주세요.");
+      if (items.some((i) => i.sku === newItem.sku)) return setErr("이미 존재하는 상품코드입니다.");
       onSubmit({ ...newItem, safety: Number(newItem.safety) || 10, qty: q, date, memo });
       setToast(`${newItem.name} 신규 등록 및 입고 처리되었습니다.`);
       setNewItem({ sku: "", name: "", category: CATEGORIES[0], location: "", unit: "개", safety: "" });
@@ -6411,8 +6470,8 @@ function Inbound({ items, onSubmit }) {
         ) : (
           <>
             <div style={{ display: "flex", gap: 12 }}>
-              <Field label="SKU">
-                <input style={inputStyle} value={newItem.sku} onChange={(e) => setNewItem({ ...newItem, sku: e.target.value })} placeholder="예: ELEC-1003" />
+              <Field label="상품코드">
+                <input style={inputStyle} value={newItem.sku} onChange={(e) => setNewItem({ ...newItem, sku: e.target.value })} placeholder="예: 2700038849500" />
               </Field>
               <Field label="카테고리">
                 <select style={inputStyle} value={newItem.category} onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}>
@@ -6596,7 +6655,7 @@ function HistoryView({ tx }) {
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ position: "relative", flex: "1 1 260px" }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
-          <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명, SKU 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="품목명, 상품코드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <select style={{ ...inputStyle, width: 130 }} value={type} onChange={(e) => setType(e.target.value)}>
           <option>전체</option>
@@ -6610,7 +6669,7 @@ function HistoryView({ tx }) {
           <thead>
             <tr>
               <th>구분</th>
-              <th>SKU</th>
+              <th>상품코드</th>
               <th>품목명</th>
               <th>수량</th>
               <th>로케이션</th>
