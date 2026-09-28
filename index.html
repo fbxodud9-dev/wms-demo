@@ -4023,78 +4023,132 @@ function addDaysStr(dateStr, days) {
 // buildProductsForDate() 결과(상품→지역별 수량)에서 특정 공급사만 골라
 // "지역별로 어떤 상품을 얼마나 보냈는지"로 뒤집는다 (상품 기준 → 지역 기준).
 // partFilter: 1 | 2 | undefined(전체) - 발주파일 업로드 때와 동일한 1편/2편 구분(detectPart) 기준으로 나눔
-// GS편의점 DC(유통기한이 상품마다 제각각인 취급) 상품 목록. 이 목록에 해당하면 1편/2편이 아니라
-// 별도 "DC 거래명세서"로 빠진다. 원본 리스트가 괄호가 안 닫힌 채로 잘려있는 경우가 있어서
+// GS편의점 DC 상품(유통기한이 상품마다 제각각) - 공급사(=DC 거래명세서를 발행하는 곳)별 목록. "GS편의점DC.xlsx" 기준.
+// key = 거래명세서 화면의 공급사 이름(사업자 정보가 SUPPLIER_INVOICE_INFO에 있으면 그 이름과 맞춤: 대광 → 대광푸드).
+// 이 목록에 해당하면 1편/2편이 아니라 별도 "DC 거래명세서"로 빠진다. 원본 리스트가 괄호가 안 닫힌 채로 잘려있는 경우가 있어서
 // 정확히 일치가 아니라 "앞부분이 이 이름으로 시작하면" DC로 판정한다(startsWith).
-const DC_PRODUCT_PREFIXES = [
-  "고단백저당)도넛케이크(다크초코",
-  "고단백저당)도넛케이크(헤이즐넛",
-  "고단백저당)카스테라(초코",
-  "고단백저당)카스테라(플레인",
-  "고단백저당)쿠키(다크초코아몬드",
-  "고단백저당)쿠키(말차마카다미아",
-  "달빛한상)매콤순대곱창200G",
-  "대광)두바이초코스틱55G",
-  "대광)두바이크런치콘",
-  "대광)미니파베초콜릿(밀크맛)60G",
-  "대광)벽돌모양초콜릿75G",
-  "대광)에그타르트",
-  "대광)연유크림슈",
-  "대광)옛날맛순대500G",
-  "대광)초코폭탄시리얼",
-  "대광)커피콩빵",
-  "대광)파베초콜릿100G",
-  "대광)황치즈카다이프초콜릿90G",
-  "생초코파이",
-  "즉석피자)파마산치즈(증정용)",
-  "즉석피자)핫소스4G(증정용)",
-  "프리미엄두바이초콜릿(냉장)",
-  "골든)전통추어탕300G",
-  "대상푸드)26년순살갈비탕300G",
-  "대상푸드)26년스지도가니탕300G",
-  "흥선)쫄깃한매콤편육150G",
-  "락컴퍼니)HOT한미역국탕면",
-  "락컴퍼니)HOT한미역국탕밥243G",
-  "락컴퍼니)비빔파스타254G",
-  "락컴퍼니)카레당면203G",
-  "심으뜸)곤약비빔면201G",
-  "서울우유)옥수수크림찰떡",
-  "아워홈)오리지널바베큐폭립450G",
-  "아워홈)우렁강된장양념100G",
-  "아워홈)전통된장찌개양념120G",
-  "삼진)1953어묵순살바80G(매운맛)",
-  "삼진)1953어묵순살바80G(야채맛)",
-  "삼진)1953어묵순살바80G(오징어)",
-  "삼진)국민어묵탕",
-  "새우어묵바",
-  "오징어어묵바",
-  "브라더)두바이솜사탕초콜릿65G",
-  "리얼)천냥숙주나물300G",
-  "리얼)천냥콩나물300G",
-  "리얼)땡초점보어묵바130G",
-  "효성)땡초어묵바80G",
-  "효성)떡볶이맛두부바100G",
-  "효성)치즈어묵바80G",
-  "효성)프로틴두부어육바80G",
-  "두끼)치즈즉석라볶이633G",
-  "맛요일)스팸치즈부대찌개298G",
-  "맛요일)3900소고기미역국밥480G",
-  "맛요일)3900치즈미역국468G",
-  "맛요일)간장불고기덮밥366G",
-  "맛요일)대파육개장480G",
-  "맛요일)떠먹는얼큰국물파스타",
-  "맛요일)스팸참기름김치덮밥345G",
-  "오뚜기마요)참치마요간장계란밥",
-  "노포식당)김치찌개406G",
-  "노포식당)된장찌개420G",
-  "서청미역)소고기미역국480G",
-  "리얼)쫄깃한모짜렐라치즈35G",
-  "리얼)쫄깃한스트링치즈4입",
-
+const DC_VENDOR_GROUPS = [
+  { key: "조인앤조인", label: "조인앤조인", prefixes: [
+    "고단백저당)도넛케이크(다크초코",
+    "고단백저당)도넛케이크(헤이즐넛",
+    "고단백저당)카스테라(초코",
+    "고단백저당)카스테라(플레인",
+    "고단백저당)쿠키(다크초코아몬드",
+    "고단백저당)쿠키(말차마카다미아",
+  ] },
+  { key: "대광푸드", label: "대광", prefixes: [
+    "달빛한상)매콤순대곱창200G",
+    "대광)두바이초코스틱55G",
+    "대광)두바이크런치콘",
+    "대광)미니파베초콜릿(밀크맛)60G",
+    "대광)벽돌모양초콜릿75G",
+    "대광)에그타르트",
+    "대광)연유크림슈",
+    "대광)옛날맛순대500G",
+    "대광)초코폭탄시리얼",
+    "대광)커피콩빵",
+    "대광)파베초콜릿100G",
+    "대광)황치즈카다이프초콜릿90G",
+    "생초코파이",
+    "즉석피자)파마산치즈(증정용)",
+    "즉석피자)핫소스4G(증정용)",
+    "프리미엄두바이초콜릿(냉장)",
+  ] },
+  { key: "골든", label: "골든", prefixes: [
+    "골든)전통추어탕300G",
+    "대상푸드)26년순살갈비탕300G",
+    "대상푸드)26년스지도가니탕300G",
+  ] },
+  { key: "흥선", label: "흥선", prefixes: [
+    "흥선)쫄깃한매콤편육150G",
+  ] },
+  { key: "뚠뚠", label: "뚠뚠", prefixes: [
+    "락컴퍼니)HOT한미역국탕면",
+    "락컴퍼니)HOT한미역국탕밥243G",
+    "락컴퍼니)비빔파스타254G",
+    "락컴퍼니)카레당면203G",
+    "심으뜸)곤약비빔면201G",
+  ] },
+  { key: "유라가", label: "유라가", prefixes: [
+    "서울우유)옥수수크림찰떡",
+  ] },
+  { key: "아워홈", label: "아워홈", prefixes: [
+    "아워홈)오리지널바베큐폭립450G",
+    "아워홈)우렁강된장양념100G",
+    "아워홈)전통된장찌개양념120G",
+  ] },
+  { key: "삼진어묵", label: "삼진어묵", prefixes: [
+    "삼진)1953어묵순살바80G(매운맛)",
+    "삼진)1953어묵순살바80G(야채맛)",
+    "삼진)1953어묵순살바80G(오징어)",
+    "삼진)국민어묵탕",
+  ] },
+  { key: "우리집", label: "우리집", prefixes: [
+    "새우어묵바",
+    "오징어어묵바",
+  ] },
+  { key: "브라더스팩토리", label: "브라더스팩토리", prefixes: [
+    "브라더)두바이솜사탕초콜릿65G",
+  ] },
+  { key: "싱싱한", label: "싱싱한", prefixes: [
+    "리얼)천냥숙주나물300G",
+    "리얼)천냥콩나물300G",
+  ] },
+  { key: "효성", label: "효성", prefixes: [
+    "리얼)땡초점보어묵바130G",
+    "효성)땡초어묵바80G",
+    "효성)떡볶이맛두부바100G",
+    "효성)치즈어묵바80G",
+    "효성)프로틴두부어육바80G",
+  ] },
+  { key: "참맛나라", label: "참맛나라", prefixes: [
+    "두끼)치즈즉석라볶이633G",
+    "맛요일)스팸치즈부대찌개298G",
+  ] },
+  { key: "맛요일", label: "맛요일", prefixes: [
+    "맛요일)3900소고기미역국밥480G",
+    "맛요일)3900치즈미역국468G",
+    "맛요일)간장불고기덮밥366G",
+    "맛요일)대파육개장480G",
+    "맛요일)떠먹는얼큰국물파스타",
+    "맛요일)스팸참기름김치덮밥345G",
+    "오뚜기마요)참치마요간장계란밥",
+  ] },
+  { key: "h2 글로벌", label: "h2 글로벌", prefixes: [
+    "노포식당)김치찌개406G",
+    "노포식당)된장찌개420G",
+    "서청미역)소고기미역국480G",
+  ] },
+  { key: "데어리젠", label: "데어리젠", prefixes: [
+    "리얼)쫄깃한모짜렐라치즈35G",
+    "리얼)쫄깃한스트링치즈4입",
+  ] },
 ];
+const DC_PRODUCT_PREFIXES = DC_VENDOR_GROUPS.flatMap((g) => g.prefixes);
 function isDcProduct(name) {
   const n = String(name || "").replace(/\n/g, "").trim();
   return DC_PRODUCT_PREFIXES.some((p) => n.startsWith(p));
+}
+
+// DC 상품이 속한 DC 공급사(거래명세서 공급사 키)와, 파일 안에서의 순서(정렬용). DC가 아니면 null / -1
+function dcGroupOf(name) {
+  const n = String(name || "").replace(/\n/g, "").trim();
+  for (const g of DC_VENDOR_GROUPS) {
+    const idx = g.prefixes.findIndex((p) => n.startsWith(p));
+    if (idx !== -1) return { group: g, idx };
+  }
+  return null;
+}
+function dcVendorKey(name) {
+  const r = dcGroupOf(name);
+  return r ? r.group.key : null;
+}
+
+// 사업자 정보가 아직 없는 공급사(대부분의 DC 공급사)는 상호에 이름만 넣고 나머지는 공란으로 발행
+function getInvoiceInfo(key) {
+  if (SUPPLIER_INVOICE_INFO[key]) return SUPPLIER_INVOICE_INFO[key];
+  const g = DC_VENDOR_GROUPS.find((x) => x.key === key);
+  return { regNo: "", name: g ? g.label : key, ceo: "", address: "", bizType: "", bizItem: "", agent: "" };
 }
 
 // ===== 거래명세서 데이터: 공급사 + 편(1/2/DC) 기준으로 "지역별 명세서"에 들어갈 내용 만들기 =====
@@ -4121,13 +4175,22 @@ const INVOICE_KNOWN_PACK = {
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
   const byName = new Map();
-  supplierProducts.forEach((p) => {
-    if (!byName.has(p.name)) byName.set(p.name, p);
-  });
   let names;
   if (part === "DC") {
-    names = supplierProducts.filter((p) => isDcProduct(p.name)).map((p) => p.name);
+    // DC는 주문 파일의 공급사가 아니라 "GS편의점DC" 목록의 DC 공급사 기준. 그날 주문된 상품만, 목록 순서대로(같은 목록 안에선 업로드 순서)
+    const dcProducts = products
+      .map((p, i) => ({ p, i, r: dcGroupOf(p.name) }))
+      .filter((x) => x.r && x.r.group.key === supplierKey)
+      .sort((a, b) => a.r.idx - b.r.idx || a.i - b.i)
+      .map((x) => x.p);
+    dcProducts.forEach((p) => {
+      if (!byName.has(p.name)) byName.set(p.name, p);
+    });
+    names = Array.from(byName.keys());
   } else {
+    supplierProducts.forEach((p) => {
+      if (!byName.has(p.name)) byName.set(p.name, p);
+    });
     const cat = SUPPLIER_INVOICE_CATALOG[supplierKey];
     names = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n));
   }
@@ -4437,8 +4500,7 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
 async function downloadSupplierInvoicePart(products, supplierKey, date, part, setBusy) {
   if (setBusy) setBusy(true);
   try {
-    const info = SUPPLIER_INVOICE_INFO[supplierKey];
-    if (!info) throw new Error(`"${supplierKey}"의 거래명세서용 사업자 정보가 아직 등록되지 않았어요. (SUPPLIER_INVOICE_INFO에 추가 필요)`);
+    const info = getInvoiceInfo(supplierKey); // 사업자 정보가 없으면 상호만 넣고 나머지는 공란
     const data = buildInvoiceDataForSupplier(products, supplierKey, part);
     if (data.regions.length === 0) return false;
     const workbook = new ExcelJS.Workbook();
@@ -5002,10 +5064,15 @@ function InvoiceView({ orders }) {
   const activeInvoiceDate = invoiceDate && dateOptions.includes(invoiceDate) ? invoiceDate : dateOptions[0] || null;
   const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate]);
   const invoiceSupplierOptions = useMemo(() => {
-    const set = new Set(invoiceProducts.map((p) => supplierGroupKey(p.supplier)));
-    return Array.from(set)
-      .filter((s) => SUPPLIER_INVOICE_INFO[s])
-      .sort((a, b) => supplierPriority(a) - supplierPriority(b));
+    // 사업자 정보가 등록된 공급사 + 그날 주문된 DC 상품의 DC 공급사(정보 없으면 공란으로 발행)
+    const set = new Set();
+    invoiceProducts.forEach((p) => {
+      const k = supplierGroupKey(p.supplier);
+      if (SUPPLIER_INVOICE_INFO[k]) set.add(k);
+      const dcKey = dcVendorKey(p.name);
+      if (dcKey) set.add(dcKey);
+    });
+    return Array.from(set).sort((a, b) => supplierPriority(a) - supplierPriority(b) || a.localeCompare(b, "ko"));
   }, [invoiceProducts]);
   const [invoiceSupplier, setInvoiceSupplier] = useState(null);
   const activeInvoiceSupplier = invoiceSupplierOptions.includes(invoiceSupplier) ? invoiceSupplier : invoiceSupplierOptions[0] || null;
@@ -5047,7 +5114,7 @@ function InvoiceView({ orders }) {
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
-          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일, 2편은 익일 날짜로 나갑니다. 유통기한이 상품마다 다른 DC 취급 상품은 1편/2편에서 빠지고 DC 거래명세서로 따로 나가요(비고 날짜는 실제 유통기한 자료 받으면 채울 예정). 총수량은 피킹지시서와 항상 일치합니다.
+          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일, 2편은 익일 날짜로 나갑니다. 유통기한이 상품마다 다른 DC 취급 상품은 1편/2편에서 빠지고 DC 공급사별 DC 거래명세서로 따로 나가요(사업자 정보·비고 날짜는 자료가 없으면 공란). 총수량은 피킹지시서와 항상 일치합니다.
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="날짜">
@@ -5107,7 +5174,7 @@ function InvoiceView({ orders }) {
         )}
         {!invoiceErr && invoiceSupplierOptions.length === 0 && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>
-            이 날짜엔 사업자 정보가 등록된 공급사(현재는 저스트그린만) 발주가 없어요.
+            이 날짜엔 거래명세서를 만들 수 있는 공급사 발주가 없어요.
           </div>
         )}
       </div>
