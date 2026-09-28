@@ -484,46 +484,210 @@ const SUPPLIER_ORDER_LIST = [
 ];
 // GS 발주파일마다 "입수"가 다르게 찍혀 들어오는 상품들 (gs_입수_조사 자료 기준).
 // 파일에 뭐라고 찍혀오든 여기 있는 SKU는 실제(더원 피킹지) 입수량으로 강제 고정한다.
-// GS 화주사별 관할센터 주소록 (저스트그린 거래명세서 원본 기준, 35곳).
-// VV92(신제주)는 원본 샘플에 없어서 빠져있음 - 나중에 실제 거래명세서 받으면 추가.
+// GS 관할센터 37곳 정보 - 영진베이커리 실물 거래명세서(0928) 기준. VV코드 → 정식 라벨/센터명/주소/시트이름.
+// (원본 오타 보정: 익산 주소 앞에 붙어있던 "익산센터 " 제거)
 const REGION_ADDRESS_MAP = {
-  "VV16": { vvLabel: "VV16 (주)지에스리테일원주일배", centerName: "원주센터", address: "강원도 원주시 문막읍 원문로 2570" },
-  "VV69": { vvLabel: "VV69 ㈜지에스리테일강릉일배센터", centerName: "강릉센터", address: "강원 강릉시 회산로 171-117" },
-  "VV57": { vvLabel: "VV57 (주)지에스리테일김해일배", centerName: "김해센터", address: "경상남도 김해시 상동로 680-77" },
-  "VV58": { vvLabel: "VV58 (주)지에스리테일김해2일배", centerName: "김해2센터", address: "경상남도 김해시 상동로 680-77" },
-  "VV04": { vvLabel: "VV04 (주)지에스리테일공주일배", centerName: "공주센터", address: "충청남도 공주시 월미동 월미농공단지길 55" },
-  "VV75": { vvLabel: "VV75 (주)지에스리테일공주2일배", centerName: "공주2센터", address: "충청남도 공주시 월미동 월미농공단지길 55" },
-  "VV34": { vvLabel: "VV34 (주)지에스리테일청주일배", centerName: "청주센터", address: "충청북도 청주시 서원구 청남로 801" },
-  "VV25": { vvLabel: "VV25 (주)지에스리테일진주일배", centerName: "진주센터", address: "경상남도 진주시 정촌면 화개천로 40" },
-  "VV20": { vvLabel: "VV20 (주)지에스리테일(해인CVS)", centerName: "해인센터", address: "경상남도 김해시 주촌면 서부로 1293번길 29" },
-  "VV95": { vvLabel: "VV95 (주)지에스리테일신광주저온", centerName: "신광주센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층" },
-  "VV96": { vvLabel: "VV96 (주)지에스리테일신광주2저", centerName: "신광주2센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층" },
-  "VV65": { vvLabel: "VV65 ㈜지에스리테일익산일배", centerName: "익산센터", address: "전북특별자치도 익산시 왕궁면 광암리 6001-1" },
-  "VV83": { vvLabel: "VV83 지에스리테일경산저온", centerName: "경산센터", address: "경상북도 경산시 진량읍 일연로 689" },
-  "VV84": { vvLabel: "VV84 ㈜지에스리테일경산2저온", centerName: "경산2센터", address: "경상북도 경산시 진량읍 일연로 689" },
-  "VV97": { vvLabel: "VV97 (주)지에스리테일경산3저온", centerName: "경산3센터", address: "경상북도 경산시 진량읍 일연로 689" },
-  "VV03": { vvLabel: "VV03 (주)지에스리테일(아신A)", centerName: "아신센터", address: "경기도 용인시 기흥구 하갈로 15번길 34" },
-  "VV90": { vvLabel: "VV90 (주)지에스리테일포천저온", centerName: "포천센터", address: "경기도 포천시 설운동 477 지하 2층" },
-  "VV91": { vvLabel: "VV91 (주)지에스리테일포천2저온", centerName: "포천2센터", address: "경기도 포천시 설운동 477 지하 2층" },
-  "VV98": { vvLabel: "VV98 (주)지에스리테일고촌저온", centerName: "고촌센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상 3층" },
-  "VV99": { vvLabel: "VV99 (주)지에스리테일고촌2저온", centerName: "고촌2센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상 3층" },
-  "VV63": { vvLabel: "VV63 ㈜지에스리테일고양일배센터", centerName: "고양센터", address: "경기 고양시 일산동구 사리현로 101-11" },
-  "VV64": { vvLabel: "VV64 ㈜지에스리테일고양일배2", centerName: "고양2센터", address: "경기 고양시 일산동구 사리현로 101-11" },
-  "VV81": { vvLabel: "VV81 (주)지에스리테일고양저온3", centerName: "고양3센터", address: "경기 고양시 일산동구 사리현로 101-11" },
-  "VV62": { vvLabel: "VV62 (주)지에스리테일김포2일배", centerName: "김포2센터", address: "경기도 김포시 고촌읍 아라육로57번길 108" },
-  "VV70": { vvLabel: "VV70 ㈜지에스리테일김포3일배", centerName: "김포3센터", address: "경기도 김포시 고촌읍 아라육로57번길 108" },
-  "VV66": { vvLabel: "VV66 지에스리테일인천도화일배", centerName: "도화센터", address: "인천광역시 미추홀구 염전로 144번길 25" },
-  "VV67": { vvLabel: "VV67 지에스리테일인천도화2일배", centerName: "도화2센터", address: "인천광역시 미추홀구 염전로 144번길 25" },
-  "VV17": { vvLabel: "VV17 (주)지에스리테일발안일배", centerName: "발안센터", address: "경기도 화성시 팔탄면 온천로 118" },
-  "VV71": { vvLabel: "VV71 (주)지에스리테일발안2일배", centerName: "발안2센터", address: "경기도 화성시 팔탄면 온천로 118" },
-  "VV53": { vvLabel: "VV53 (주)지에스리테일송파일배", centerName: "송파센터", address: "서울특별시 송파구 송파대로 55" },
-  "VV55": { vvLabel: "VV55 (주)지에스리테일송파2일배", centerName: "송파2센터", address: "서울특별시 송파구 송파대로 55" },
-  "VV93": { vvLabel: "VV93 (주)지에스리테일곤지암센터", centerName: "곤지암센터", address: "경기도 곤지암읍 신대길 134-14 A동 1층" },
-  "VV94": { vvLabel: "VV94 (주)지에스리테일곤지암2센", centerName: "곤지암2센터", address: "경기도 곤지암읍 신대길 134-14 A동 1층" },
-  "VV85": { vvLabel: "VV85 지에스리테일신오산1저온", centerName: "신오산1센터", address: "경기도 오산시 수목원로88번길33, 4층" },
-  "VV86": { vvLabel: "VV86 지에스리테일신오산2저온", centerName: "신오산2센터", address: "경기도 오산시 수목원로88번길33, 4층" },
-  "VV87": { vvLabel: "VV87 지에스리테일신오산3저온", centerName: "신오산3센터", address: "경기도 오산시 수목원로88번길33, 4층" },
+  "VV92": { vvLabel: "VV92 (주)지에스리테일신제주저온", centerName: "신제주센터", address: "제주특별자치도 제주시 애월읍 신상로 195", sheetName: "신제주" },
+  "VV93": { vvLabel: "VV93 (주)지에스리테일곤지암센터", centerName: "곤지암센터", address: "경기도 곤지암읍 신대길 134-14\nA동 1층", sheetName: "곤지암" },
+  "VV94": { vvLabel: "VV94 (주)지에스리테일곤지암2센", centerName: "곤지암2센터", address: "경기도 곤지암읍 신대길 134-14\nA동 1층", sheetName: "곤지암2" },
+  "VV16": { vvLabel: "VV16 (주)지에스리테일원주일배", centerName: "원주센터", address: "강원도 원주시 문막읍 원문로 2570", sheetName: "원주" },
+  "VV69": { vvLabel: "VV69 ㈜지에스리테일강릉일배센터", centerName: "강릉센터", address: "강원 강릉시 회산로 171-117", sheetName: "강릉" },
+  "VV57": { vvLabel: "VV57 (주)지에스리테일김해일배", centerName: "김해센터", address: "경상남도 김해시 상동로 680-77", sheetName: "김해" },
+  "VV58": { vvLabel: "VV58 (주)지에스리테일김해2일배", centerName: "김해2센터", address: "경상남도 김해시 상동로 680-77", sheetName: "김해2" },
+  "VV04": { vvLabel: "VV04 (주)지에스리테일공주일배", centerName: "공주센터", address: "충청남도 공주시 월미동\n월미농공단지길 55", sheetName: "공주" },
+  "VV75": { vvLabel: "VV75 (주)지에스리테일공주2일배", centerName: "공주2센터", address: "충청남도 공주시 월미동\n월미농공단지길 55", sheetName: "공주2" },
+  "VV34": { vvLabel: "VV34 (주)지에스리테일청주일배", centerName: "청주센터", address: "충청북도 청주시 서원구 청남로 801", sheetName: "청주" },
+  "VV25": { vvLabel: "VV25 (주)지에스리테일진주일배", centerName: "진주센터", address: "경상남도 진주시 정촌면 화개천로 40", sheetName: "진주" },
+  "VV20": { vvLabel: "VV20 (주)지에스리테일(해인CVS)", centerName: "해인센터", address: "경상남도 김해시 주촌면\n서부로 1293번길 29", sheetName: "해인" },
+  "VV95": { vvLabel: "VV95 (주)지에스리테일신광주저온", centerName: "신광주센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층", sheetName: "신광주" },
+  "VV96": { vvLabel: "VV96 (주)지에스리테일신광주2저", centerName: "신광주2센터", address: "광주광역시 광산구 평동산단7번로 1,지하2층", sheetName: "신광주2" },
+  "VV65": { vvLabel: "VV65 ㈜지에스리테일익산일배", centerName: "익산센터", address: "전북특별자치도 익산시 왕궁면 광암리 6001-1", sheetName: "익산" },
+  "VV83": { vvLabel: "VV83 지에스리테일경산저온", centerName: "경산센터", address: "경상북도 경산시 진량읍 일연로 689", sheetName: "경산" },
+  "VV84": { vvLabel: "VV84 ㈜지에스리테일경산2저온", centerName: "경산2센터", address: "경상북도 경산시 진량읍 일연로 689", sheetName: "경산2" },
+  "VV97": { vvLabel: "VV97 (주)지에스리테일경산3저온", centerName: "경산3센터", address: "경상북도 경산시 진량읍 일연로 689", sheetName: "경산3" },
+  "VV03": { vvLabel: "VV03 (주)지에스리테일(아신A)", centerName: "아신센터", address: "경기도 용인시 기흥구 하갈로\n15번길 34", sheetName: "아신" },
+  "VV90": { vvLabel: "VV90 (주)지에스리테일포천저온", centerName: "포천센터", address: "경기도 포천시 설운동 477 지하 2층", sheetName: "포천" },
+  "VV91": { vvLabel: "VV91 (주)지에스리테일포천2저온", centerName: "포천2센터", address: "경기도 포천시 설운동 477 지하 2층", sheetName: "포천2" },
+  "VV98": { vvLabel: "VV98 (주)지에스리테일고촌저온", centerName: "고촌센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상3층", sheetName: "고촌" },
+  "VV99": { vvLabel: "VV99 (주)지에스리테일고촌2저온", centerName: "고촌2센터", address: "경기도 김포시 고촌읍 아라육로 230번길 16, 지상3층", sheetName: "고촌2" },
+  "VV63": { vvLabel: "VV63 ㈜지에스리테일고양일배센터", centerName: "고양1센터", address: "경기 고양시 일산동구\n 사리현로 101-11", sheetName: "고양1" },
+  "VV64": { vvLabel: "VV64 ㈜지에스리테일고양일배2", centerName: "고양2센터", address: "경기 고양시 일산동구\n 사리현로 101-11", sheetName: "고양2" },
+  "VV81": { vvLabel: "VV81 (주)지에스리테일고양저온3", centerName: "고양3센터", address: "경기 고양시 일산동구\n 사리현로 101-11", sheetName: "고양3" },
+  "VV62": { vvLabel: "VV62 (주)지에스리테일김포2일배", centerName: "김포2센터", address: "경기도 김포시 고촌읍 \n아라육로57번길 108", sheetName: "김포2" },
+  "VV70": { vvLabel: "VV70 ㈜지에스리테일김포3일배", centerName: "김포3센터", address: "경기도 김포시 고촌읍 아라육로57번길 108", sheetName: "김포3" },
+  "VV66": { vvLabel: "VV66 지에스리테일인천도화일배", centerName: "도화센터", address: "인천광역시 미추홀구 염전로 \n144번길 25", sheetName: "도화" },
+  "VV67": { vvLabel: "VV67 지에스리테일인천도화2일배", centerName: "도화2센터", address: "인천광역시 미추홀구 염전로 \n144번길 25", sheetName: "도화2" },
+  "VV17": { vvLabel: "VV17 (주)지에스리테일발안일배", centerName: "발안센터", address: "경기도 화성시 팔탄면 온천로 118", sheetName: "발안" },
+  "VV71": { vvLabel: "VV71 (주)지에스리테일발안2일배", centerName: "발안2센터", address: "경기도 화성시 팔탄면 온천로 118", sheetName: "발안2" },
+  "VV53": { vvLabel: "VV53 (주)지에스리테일송파일배", centerName: "송파센터", address: "서울특별시 송파구 송파대로 55", sheetName: "송파" },
+  "VV55": { vvLabel: "VV55 (주)지에스리테일송파2일배", centerName: "송파2센터", address: "서울특별시 송파구 송파대로 55", sheetName: "송파2" },
+  "VV85": { vvLabel: "VV85 지에스리테일신오산1저온", centerName: "신오산1센터", address: "경기도 오산시 수목원로88번길33,\n4층", sheetName: "신오산1" },
+  "VV86": { vvLabel: "VV86 지에스리테일신오산2저온", centerName: "신오산2센터", address: "경기도 오산시 수목원로88번길33,\n4층", sheetName: "신오산2" },
+  "VV87": { vvLabel: "VV87 지에스리테일신오산3저온", centerName: "신오산3센터", address: "경기도 오산시 수목원로88번길33,\n4층", sheetName: "신오산3" },
 };
+
+// 거래명세서 엑셀 시트 탭 순서(실물 파일 순서)와 "N편발주량" 요약표 행 순서
+const INVOICE_SHEET_ORDER = ["VV92", "VV93", "VV94", "VV16", "VV69", "VV57", "VV58", "VV04", "VV75", "VV34", "VV25", "VV20", "VV95", "VV96", "VV65", "VV83", "VV84", "VV97", "VV03", "VV90", "VV91", "VV98", "VV99", "VV63", "VV64", "VV81", "VV62", "VV70", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV85", "VV86", "VV87"];
+const INVOICE_PIVOT_ORDER = ["VV16", "VV69", "VV57", "VV58", "VV25", "VV20", "VV92", "VV95", "VV96", "VV83", "VV84", "VV97", "VV34", "VV04", "VV75", "VV65", "VV03", "VV63", "VV64", "VV81", "VV62", "VV70", "VV98", "VV99", "VV90", "VV91", "VV85", "VV86", "VV87", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV93", "VV94"];
+
+// 실물 거래명세서에서 뽑은 "눈에 보이는 선" 규격 (. 없음 / t 얇게 / M 굵게). 1부(파랑)·2부(빨강) 각각.
+// H: 행과 행 사이 가로선(33칸=B~AH), V: 각 행의 세로선(34칸=왼쪽 끝~오른쪽 끝)
+const INVOICE_EDGE_SPEC = {"blue": {"H": {"top": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", "titleMid": ".................................", "titleInfo": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", "info": [".................................", ".tttttttttttttt.ttttttttttttttttt", ".................................", ".tttttttttttttt.ttttttttttttttttt", ".................................", ".tttttttttttttt.ttttttttttttttttt", "................................."], "infoHeader": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", "thin": "ttttttttttttttttttttttttttttttttt", "totalFoot": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", "footMid": ".................................", "bottom": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM"}, "V": {"title": ["M................................M", "M................................M"], "info": ["Mt...t.........Mt...t............M", "Mt...t.........Mt...t............M", "Mt...t.........Mt...t.....t.t....M", "Mt...t.........Mt...t.....t.t....M", "Mt...t.........Mt...t............M", "Mt...t.........Mt...t............M", "Mt...t.........Mt...t.....t.t....M", "Mt...t.........Mt...t.....t.t....M"], "header": "Mttt.......t....t...t............M", "itemFirst": "M..t.......t....t...t............M", "item": "Mttt.......t....t...t............M", "total": "M..t.......t....t...t............M", "foot": ["M....................t...........M", "M....................t...........M"]}}, "red": {"H": {"top": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", "titleMid": ".................................", "titleInfo": "ttttttttttttttttttttttttttttttttt", "info": [".................................", ".tttttttttttttt.ttttttttttttttttt", ".................................", ".tttttttttttttt.ttttttttttttttttt", ".................................", ".tttttttttttttt.ttttttttttttttttt", "................................."], "infoHeader": "ttttttttttttttttttttttttttttttttt", "thin": "ttttttttttttttttttttttttttttttttt", "totalFoot": "ttttttttttttttttttttttttttttttttt", "footMid": ".................................", "bottom": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM"}, "V": {"title": ["M................................M", "M................................M"], "info": ["Mt...t.........tt...t............M", "Mt...t.........tt...t............M", "Mt...t.........tt...t.....t.t....M", "Mt...t.........tt...t.....t.t....M", "Mt...t.........tt...t............M", "Mt...t.........tt...t............M", "Mt...t.........tt...t.....t.t....M", "Mt...t.........tt...t.....t.t....M"], "header": "Mttt.......t....t...t............M", "itemFirst": "M..t.......t....t...t............M", "item": "Mttt.......t....t...t............M", "total": "M..t.......t....t...t............M", "foot": ["M....................t...........M", "M....................t...........M"]}}};
+
+// 공급사별 거래명세서에 실리는 상품 목록(=소비기한 자료에 있는 상품)과 순서. 여기 없는 상품은 1·2편 명세서에 안 찍힘.
+const SUPPLIER_INVOICE_CATALOG = {
+ "영진베이커리": {
+  "1": [
+   "오든든)대만식햄치즈샌드1편",
+   "오든든)더블햄샌드1편",
+   "오든든)치즈포테이토피타브레드1",
+   "오든든)페퍼로니피자피타브레드1",
+   "오든든)햄치즈에그피타브레드1편"
+  ],
+  "2": [
+   "오든든)대만식햄치즈샌드2편",
+   "오든든)더블햄샌드2편",
+   "오든든)치즈포테이토피타브레드2",
+   "오든든)페퍼로니피자피타브레드2",
+   "오든든)햄치즈에그피타브레드2편"
+  ]
+ },
+ "저스트그린": {
+  "1": [],
+  "2": [
+   "든든두부샐러드2편",
+   "듬뿍)스모크치킨샐러드2편",
+   "듬뿍)케이준치킨샐러드2편",
+   "에너지샐러드2편",
+   "리치샐러드2편",
+   "케이준에그샐러드2편",
+   "트리플무스샐러드2편",
+   "한컵)불고기도토리면샐러드2편",
+   "한컵)치킨카펠리니샐러드2편",
+   "한컵)치폴레불고기샐러드2편"
+  ]
+ },
+ "태항": {
+  "1": [
+   "미국식통모짜치즈스틱(칠리)1편",
+   "쌈세트)돼지왕구이1편",
+   "한판)제주흑돼지불백1편",
+   "한판)제주흑돼지제육볶음1편",
+   "예약)한판)제주흑돼지제육"
+  ],
+  "2": [
+   "미국식통모짜치즈스틱(칠리)2편",
+   "쌈세트)돼지왕구이2편",
+   "한판)제주흑돼지불백2편",
+   "한판)제주흑돼지제육볶음2편"
+  ]
+ },
+ "은성파머스": {
+  "1": [
+   "아삭)NEW통밀햄치즈샌드1편",
+   "아삭)NEW햄에그마요샌드1편",
+   "아삭)베이컨토마토치즈샌드1편",
+   "아삭)햄맛살샌드위치1편",
+   "최유강)매콤치킨샐러드1편"
+  ],
+  "2": [
+   "아삭)NEW통밀햄치즈샌드2편",
+   "아삭)NEW햄에그마요샌드2편",
+   "아삭)베이컨토마토치즈샌드2편",
+   "아삭)햄맛살샌드위치2편",
+   "최유강)매콤치킨샐러드2편"
+  ]
+ },
+ "은성": {
+  "1": [
+   "고단백)NEW치킨&에그샐러드1편",
+   "고단백)N통계란&닭가슴살샐러드1",
+   "고단백)훈제오리샐러드1편",
+   "닭가슴살&리코타샐러드1편",
+   "닭가슴살냉채샐러드1편",
+   "비프고구마샐러드1편",
+   "빅블랙페퍼닭가슴살샐러드",
+   "빅치킨텐더샐러드1편",
+   "빅훈제오리샐러드1편",
+   "혜자)NEW통계란&케이준샐1",
+   "혜자)꽃맛살&포테이토샐러드",
+   "혜자)랍스터&에그마요샐1",
+   "혜자)로스트치킨샐러드1편",
+   "혜자)블랙페퍼닭가슴살샐1",
+   "예약)신선샐러드(3팩)"
+  ],
+  "2": [
+   "고단백)NEW치킨&에그샐러드2편",
+   "고단백)N통계란&닭가슴살샐러드2",
+   "고단백)훈제오리샐러드2편",
+   "닭가슴살&리코타샐러드2편",
+   "닭가슴살냉채샐러드2편",
+   "비프고구마샐러드2편",
+   "빅치킨텐더샐러드2편",
+   "빅훈제오리샐러드2편",
+   "혜자)NEW통계란&케이준샐2",
+   "혜자)랍스터&에그마요샐2",
+   "혜자)로스트치킨샐러드2편",
+   "혜자)블랙페퍼닭가슴살샐2"
+  ]
+ },
+ "네이처앤휴먼지피": {
+  "1": [
+   "버터허브닭목살구이세트1편",
+   "숯불직화삼겹구이세트1편",
+   "오븐에구운치킨)데리야끼1편",
+   "오븐에구운치킨)현미베이크1편",
+   "예약)직화삼겹구이세트"
+  ],
+  "2": [
+   "버터허브닭목살구이세트2편",
+   "숯불직화삼겹구이세트2편",
+   "오븐에구운치킨)데리야끼2편",
+   "오븐에구운치킨)현미베이크2편"
+  ]
+ },
+ "탭스": {
+  "1": [
+   "바삭)계란명란마요1편",
+   "바삭)날치알참치마요1편",
+   "바삭)크랩명란마요1편",
+   "크랩유부&계란김밥세트1편",
+   "혜자)알찬유부초밥(6입)1편",
+   "혜자)토핑유부(명란&크랩마요)1",
+   "혜자)토핑유부(제육&콘참치)1",
+   "혜자)토핑유부(햄에그&불고기)1"
+  ],
+  "2": [
+   "바삭)계란명란마요2편",
+   "바삭)날치알참치마요2편",
+   "바삭)크랩명란마요2편",
+   "크랩유부&계란김밥세트2편",
+   "혜자)알찬유부초밥(6입)2편",
+   "혜자)토핑유부(명란&크랩마요)2",
+   "혜자)토핑유부(제육&콘참치)2",
+   "혜자)토핑유부(햄에그&불고기)2"
+  ]
+ },
+ "대광푸드": {
+  "1": [
+   "굿데이)NEW햄듬뿍크림치즈샌드1",
+   "굿데이)신라명과콘&햄듬뿍샌드1",
+   "굿데이)페스츄리햄샌드1편",
+   "저스트)새우롱버거1편",
+   "저스트)올더치즈더블버거1편"
+  ],
+  "2": [
+   "굿데이)NEW햄듬뿍크림치즈샌드2",
+   "굿데이)신라명과콘&햄듬뿍샌드2",
+   "굿데이)페스츄리햄샌드2편",
+   "저스트)새우롱버거2편",
+   "저스트)올더치즈더블버거2편"
+  ]
+ }
+};
+
+// 3자물류(더원물류) 담당자 - 모든 공급사 명세서 하단에 동일하게 들어감 (영진 실물 명세서 확인)
+const THREE_PL_AGENT = "3자물류 (더원물류)\n담당자 박병선이사  010-4448-1456";
 
 // 거래명세서용 공급자(화주사) 고정 정보. 저스트그린 실제 명세서 기준.
 // supplierGroupKey()로 정규화한 이름을 키로 씀 (필터 드롭다운과 동일 기준).
@@ -3933,228 +4097,354 @@ function isDcProduct(name) {
   return DC_PRODUCT_PREFIXES.some((p) => n.startsWith(p));
 }
 
-// partFilter: 1 | 2 | "DC" | undefined(전체)
-// "DC" = DC_PRODUCT_PREFIXES에 걸리는(유통기한 제각각) 상품만. 1/2는 DC 상품을 제외한 나머지를 detectPart 기준으로 나눔.
-function buildInvoiceRegionsForSupplier(products, supplierKey, partFilter) {
-  const supplierProducts = products.filter((p) => {
-    if (supplierGroupKey(p.supplier) !== supplierKey) return false;
-    if (partFilter === "DC") return isDcProduct(p.name);
-    if (isDcProduct(p.name)) return false; // DC 상품은 1편/2편에서 빠지고 DC 거래명세서로만 감
-    return !partFilter || p.part === partFilter;
-  });
-  if (supplierProducts.length === 0) return [];
-
-  const byRegion = {}; // code -> { code, order, shortName, items: [{name, packQty, qty}], totalQty }
-  supplierProducts.forEach((p) => {
-    p.regionRows.forEach((r) => {
-      const ref = REGION_ORDER_MAP[r.key];
-      if (!ref) return; // 고정 지역표에 없는 코드는 거래명세서 대상 아님
-      if (!byRegion[r.key]) byRegion[r.key] = { code: r.key, order: r.order, shortName: ref.shortName, items: [], totalQty: 0 };
-      byRegion[r.key].items.push({ name: p.name, packQty: p.packQty, qty: r.qty });
-      byRegion[r.key].totalQty += r.qty;
-    });
-  });
-
-  // 실제로 뭐라도 나간(총수량 > 0) 지역만 거래명세서를 발행한다 (원본 샘플도 신제주처럼 0인 곳은 시트 자체가 없었음)
-  return Object.values(byRegion)
-    .filter((r) => r.totalQty > 0)
-    .sort((a, b) => a.order - b.order);
+// ===== 거래명세서 데이터: 공급사 + 편(1/2/DC) 기준으로 "지역별 명세서"에 들어갈 내용 만들기 =====
+// 1편/2편 명세서에 실리는 상품은 "소비기한 자료"(SUPPLIER_INVOICE_CATALOG)에 있는 상품만, 그 자료의 순서대로.
+// (예: 영진베이커리는 PB 상품(서울우유 등)이 같이 주문돼도 명세서에는 오든든 10종만 나감)
+// DC는 DC_PRODUCT_PREFIXES에 걸리는 상품만, 업로드 순서대로.
+function getInvoiceSkippedProducts(products, supplierKey) {
+  const cat = SUPPLIER_INVOICE_CATALOG[supplierKey] || {};
+  const known = new Set([...(cat["1"] || []), ...(cat["2"] || [])]);
+  return products
+    .filter((p) => supplierGroupKey(p.supplier) === supplierKey && !isDcProduct(p.name) && !known.has(p.name))
+    .map((p) => p.name);
 }
 
-// 거래명세서 1장(=지역 1곳) 시트. "공급받는자 보관용" + "공급자 보관용" 2부를 위아래로 반복해서 담는다.
-// 원본 실물 거래명세서(저스트그린 .xls)에서 폰트·크기·색상·테두리·칸 너비를 그대로 뽑아와 재현한다.
-const INV_FONT_GULIM = "굴림체";
-const INV_BLUE = { argb: "FF0000FF" }; // 공급받는자 보관용(1부) 테마 색
-const INV_RED = { argb: "FFFF0000" }; // 공급자 보관용(2부) 테마 색 - 실물 원본은 2부가 통째로 빨간색
-const INV_BLACK = { argb: "FF000000" };
-// 원본 .xls 컬럼 너비(문자 단위)를 그대로 옮긴 33개 컬럼
-const INVOICE_COL_WIDTHS = [
-  5.0, 3.0, 3.0, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 5.78, 1.44, 1.44, 1.44, 1.44, 5.0, 2.33, 2.33, 2.33, 1.66, 1.66, 1.66, 1.66, 1.66, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 2.33, 3.11,
-];
+// 그날 발주가 한 건도 없어서 주문 데이터에서 입수를 못 읽는 상품용 (실물 명세서에 적혀있던 입수)
+const INVOICE_KNOWN_PACK = {
+  "오든든)대만식햄치즈샌드1편": 60, "오든든)더블햄샌드1편": 60, "오든든)치즈포테이토피타브레드1": 36, "오든든)페퍼로니피자피타브레드1": 36, "오든든)햄치즈에그피타브레드1편": 36,
+  "오든든)대만식햄치즈샌드2편": 60, "오든든)더블햄샌드2편": 60, "오든든)치즈포테이토피타브레드2": 36, "오든든)페퍼로니피자피타브레드2": 36, "오든든)햄치즈에그피타브레드2편": 36,
+  "든든두부샐러드2편": 25, "듬뿍)스모크치킨샐러드2편": 30, "듬뿍)케이준치킨샐러드2편": 30, "에너지샐러드2편": 25, "리치샐러드2편": 25,
+  "케이준에그샐러드2편": 25, "트리플무스샐러드2편": 25, "한컵)불고기도토리면샐러드2편": 24, "한컵)치킨카펠리니샐러드2편": 24, "한컵)치폴레불고기샐러드2편": 24,
+};
+
+// part: 1 | 2 | "DC"
+function buildInvoiceDataForSupplier(products, supplierKey, part) {
+  const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
+  const byName = new Map();
+  supplierProducts.forEach((p) => {
+    if (!byName.has(p.name)) byName.set(p.name, p);
+  });
+  let names;
+  if (part === "DC") {
+    names = supplierProducts.filter((p) => isDcProduct(p.name)).map((p) => p.name);
+  } else {
+    const cat = SUPPLIER_INVOICE_CATALOG[supplierKey];
+    names = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n));
+  }
+  const items = names.map((name) => {
+    const p = byName.get(name) || null;
+    return { name, packQty: (p && p.packQty) || INVOICE_KNOWN_PACK[name] || "", product: p };
+  });
+  const qtyOf = (it, code) => {
+    const rr = it.product ? it.product.regionRows.find((r) => r.key === code) : null;
+    return rr ? rr.qty : 0;
+  };
+  const regions = [];
+  INVOICE_SHEET_ORDER.forEach((code) => {
+    if (!REGION_ORDER_MAP[code]) return;
+    const rowItems = items.map((it) => ({ name: it.name, packQty: it.packQty, qty: qtyOf(it, code) }));
+    const totalQty = rowItems.reduce((a, r) => a + r.qty, 0);
+    // 실제로 뭐라도 나간(총수량 > 0) 지역만 명세서 발행
+    if (totalQty > 0) regions.push({ code, shortName: REGION_ORDER_MAP[code].shortName, items: rowItems, totalQty });
+  });
+  return { items, regions, qtyOf };
+}
+
+// partFilter: 1 | 2 | "DC"
+function buildInvoiceRegionsForSupplier(products, supplierKey, partFilter) {
+  return buildInvoiceDataForSupplier(products, supplierKey, partFilter).regions;
+}
+
+// ===== 거래명세서 엑셀 (영진베이커리 실물 명세서 0928 파일 기준: 병합·칸 너비·행 높이·글꼴·테두리 그대로) =====
+const INV_FONT = "굴림체";
+const INV_COLOR = { blue: { argb: "FF0000FF" }, red: { argb: "FFFF0000" }, black: { argb: "FF000000" } };
+const INV_WHITE_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFFFF" } };
+const INV_NF_ACCT = '_-* #,##0_-;\\-* #,##0_-;_-* "-"_-;_-@_-';
+const INV_NF_AMOUNT = "#,##0_ ;[Red]\\-#,##0\\ ";
+// 실물 파일의 열 너비를 픽셀로 환산한 값 (A~AJ, 그 뒤 열은 21px).
+// 실물은 기본 글꼴이 돋움 11pt(숫자 1칸 = 9px)라 '2.33' 같은 숫자가 21px인데, 이 파일은 Calibri 11pt(숫자 1칸 = 7px) 기준으로 저장되므로
+// 그냥 숫자를 옮기면 칸이 22%쯤 좁아져 글자가 잘린다 → 픽셀을 7로 나눈 값으로 넣어야 화면에서 똑같은 크기가 된다.
+const INV_COL_PX = [21, 27, 27, 27, 21, 21, 21, 21, 21, 21, 21, 52, 13, 13, 13, 13, 21, 21, 21, 21, 15, 15, 15, 15, 15, 21, 21, 21, 21, 21, 21, 21, 21, 28, 21, 48];
+const INV_COL_WIDTHS = INV_COL_PX.map((px) => px / 7);
+const INV_DEFAULT_COL_WIDTH = 21 / 7;
+
+function invDate(str) {
+  const [y, m, d] = str.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)); // UTC 자정 = 엑셀 날짜 정수 (브라우저 시간대와 무관)
+}
+
+// 눈에 보이는 선 규격(INVOICE_EDGE_SPEC)을 상품 개수 n에 맞게 펼친다. H: 행 사이 가로선(n+16개), V: 행별 세로선(n+15개)
+function invoiceEdgeChars(variant, n) {
+  const S = INVOICE_EDGE_SPEC[variant];
+  const H = [S.H.top, S.H.titleMid, S.H.titleInfo];
+  for (let i = 0; i < 7; i++) H.push(S.H.info[i]);
+  H.push(S.H.infoHeader);
+  for (let j = 11; j <= 12 + n; j++) H.push(S.H.thin);
+  H.push(S.H.totalFoot, S.H.footMid, S.H.bottom);
+  const V = [S.V.title[0], S.V.title[1]];
+  for (let i = 0; i < 8; i++) V.push(S.V.info[i]);
+  V.push(S.V.header);
+  for (let k = 0; k < n; k++) V.push(k === 0 ? S.V.itemFirst : S.V.item);
+  V.push(S.V.item); // 상품 아래 빈 줄
+  V.push(S.V.total, S.V.foot[0], S.V.foot[1]);
+  return { H, V };
+}
+
+function invoiceRowHeights(n, variant) {
+  const info = variant === "blue" ? [12, 12, 12, 12, 12, 12, 11.25, 11.25] : Array(8).fill(13.5);
+  return [20.1, 20.1, ...info, 20.1, ...Array(n).fill(13.5), 13.5, 20.1, 17.25, 18.75];
+}
 
 function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, part) {
-  const info = REGION_ADDRESS_MAP[region.code] || { vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - 나중에 REGION_ADDRESS_MAP에 추가 필요)" };
-  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일 (실제 출고 스케줄 기준). DC는 당일 그대로.
-  const shortName = region.shortName || info.centerName;
+  const info = REGION_ADDRESS_MAP[region.code] || {
+    vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - REGION_ADDRESS_MAP에 추가 필요)", sheetName: region.shortName || region.code,
+  };
+  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일. DC는 당일.
   const partLabel = part === "DC" ? "DC" : `${part}편`;
-  const ws = workbook.addWorksheet(safeSheetName(`${shortName}(${partLabel})`, usedNames));
-  ws.columns = INVOICE_COL_WIDTHS.map((w) => ({ width: w }));
+  const ws = workbook.addWorksheet(safeSheetName(`${info.sheetName}(${partLabel})`, usedNames));
+  ws.properties.defaultRowHeight = 13.5;
+  ws.properties.defaultColWidth = INV_DEFAULT_COL_WIDTH;
+  ws.columns = INV_COL_WIDTHS.map((w) => ({ width: w }));
   ws.pageSetup = {
+    paperSize: 9,
     orientation: "portrait",
     fitToPage: true,
     fitToWidth: 1,
-    fitToHeight: 0,
-    margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+    fitToHeight: 1,
+    horizontalCentered: true,
+    margins: { left: 0.236, right: 0.236, top: 0.748, bottom: 0.748, header: 0.315, footer: 0.315 },
   };
 
-  // 값(검정) 폰트는 두 부(공급받는자/공급자) 공통 - 테마색(파랑/빨강)만 부별로 달라짐
-  const AMOUNT_FONT = { name: INV_FONT_GULIM, size: 9, bold: true, color: INV_BLACK }; // 합계금액(공란) 셀
-  const VALUE_FONT_L = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
-  const VALUE_FONT_L10 = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
-  const VALUE_FONT_R = { name: XLFONT, size: 9, bold: false, color: INV_BLACK };
-  const VALUE_FONT_R_BOLD12 = { name: XLFONT, size: 9, bold: true, color: INV_BLACK };
-  const ITEM_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: INV_BLACK };
-  const ITEM_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: INV_BLACK };
+  const n = region.items.length;
+  const R = n + 15; // 한 부(공급받는자용 또는 공급자용)의 행 수
 
-  function put(row, col, value, font, align, wrap) {
-    const cell = row.getCell(col);
-    if (value !== undefined) cell.value = value;
+  function put(r, c, value, font, opts) {
+    const o = opts || {};
+    const cell = ws.getCell(r, c);
+    if (value !== undefined && value !== null) cell.value = value;
     cell.font = font;
-    cell.alignment = { horizontal: align || "center", vertical: "middle", wrapText: !!wrap };
+    cell.alignment = { horizontal: o.h, vertical: "middle", wrapText: !!o.wrap };
+    if (o.nf) cell.numFmt = o.nf;
     return cell;
   }
+  // 병합 칸마다 가장자리 테두리를 따로 줘야 하는데, 기본 mergeCells는 병합된 칸들이 스타일 객체를 하나로 공유해서
+  // 가장자리별 테두리가 뭉개짐 → 스타일을 복사하지 않는 병합(mergeCellsWithoutStyle)을 쓴다.
+  const mc = (r1, c1, r2, c2) => ws.mergeCellsWithoutStyle(r1, c1, r2, c2);
 
-  // copyLabel: "공급받는자 보관용" | "공급자 보관용" / theme: INV_BLUE | INV_RED (실물처럼 1부=파랑, 2부=빨강 통째로 다름)
-  function addCopy(copyLabel, theme) {
-    const THIN = { style: "thin", color: theme };
-    const MED = { style: "medium", color: theme };
-    const LABEL_FONT = { name: INV_FONT_GULIM, size: 9, bold: false, color: theme };
-    const LABEL_FONT_BOLD = { name: INV_FONT_GULIM, size: 9, bold: true, color: theme };
+  function addCopy(T, variant, label) {
+    const theme = INV_COLOR[variant];
+    const black = INV_COLOR.black;
+    const LBL = { name: INV_FONT, size: 9, color: theme };
+    const BLK9 = { name: INV_FONT, size: 9, color: black };
+    const BLK10 = { name: INV_FONT, size: 10, color: black };
+    const BLK12B = { name: INV_FONT, size: 12, bold: true, color: black };
 
-    const rTitle = ws.addRow([]);
-    rTitle.height = 20; // 글자 9pt로 통일하면서 제목 행도 과하게 크지 않게 맞춤
-    put(rTitle, 2, `거 래 명 세 표 (${copyLabel})`, { name: INV_FONT_GULIM, size: 9, bold: true, color: theme }, "center");
-    ws.mergeCells(rTitle.number, 2, rTitle.number, 33);
-
-    // 정보블록 4줄: 등록번호 / 상호(법인명) / 사업장주소 / 합계금액(VAT포함)·업태·종목
-    // 라벨 텍스트에 있는 줄바꿈(\n)만 wrap 필요 - 나머지 값 칸은 wrap 끔(칸 높이가 줄바꿈으로 흔들려서 날짜가 밀리는 문제 방지)
-    const lineDefs = [
-      { label: "등록번호", lv: info.vvLabel, lvFont: VALUE_FONT_L, label2: "등록번호", rv: supplierInfo.regNo, rvFont: VALUE_FONT_R_BOLD12, height: 24 },
-      { label: "상 호\n(법인명)", lv: info.centerName, lvFont: VALUE_FONT_L10, label2: "상  호\n(법인명)", rv: supplierInfo.name, rvFont: VALUE_FONT_R, height: 24 },
-      { label: "사업장\n주  소", lv: info.address, lvFont: VALUE_FONT_L, label2: "사업장\n주  소", rv: supplierInfo.address, rvFont: VALUE_FONT_R, rvAlign: "left", height: 24, wrapValue: true },
-      { label: "합계금액\n(VAT포함)", lv: "", lvFont: AMOUNT_FONT, lvAlign: "right", label2: "업 태", rv: supplierInfo.bizType, rvFont: VALUE_FONT_R, rvNarrow: true, height: 22.5, hasBizItem: true },
-    ];
-    const infoRows = lineDefs.map((line, idx) => {
-      const row = ws.addRow([]);
-      row.height = line.height;
-      put(row, 1, idx === 0 ? "공급받는자" : undefined, LABEL_FONT, "center", false);
-      if (idx === 0) row.getCell(1).alignment = { horizontal: "center", vertical: "middle", textRotation: "vertical" };
-      put(row, 2, line.label, LABEL_FONT, "center", true);
-      ws.mergeCells(row.number, 2, row.number, 5);
-      put(row, 6, line.lv, line.lvFont, line.lvAlign || "center", !!line.wrapValue);
-      ws.mergeCells(row.number, 6, row.number, 15);
-      put(row, 16, idx === 0 ? "공급자" : undefined, LABEL_FONT, "center", false);
-      if (idx === 0) row.getCell(16).alignment = { horizontal: "center", vertical: "middle", textRotation: "vertical" };
-      put(row, 17, line.label2, LABEL_FONT, "center", true);
-      ws.mergeCells(row.number, 17, row.number, 20);
-      const rEnd = line.rvNarrow ? 26 : 33;
-      put(row, 21, line.rv, line.rvFont, line.rvAlign || "center", !!line.wrapValue);
-      ws.mergeCells(row.number, 21, row.number, rEnd);
-      if (line.hasBizItem) {
-        put(row, 27, "종 목", LABEL_FONT, "center", false);
-        ws.mergeCells(row.number, 27, row.number, 28);
-        put(row, 29, supplierInfo.bizItem, VALUE_FONT_R, "center", false);
-        ws.mergeCells(row.number, 29, row.number, 33);
-      }
-      return row;
-    });
-    ws.mergeCells(infoRows[0].number, 1, infoRows[3].number, 1);
-    ws.mergeCells(infoRows[0].number, 16, infoRows[3].number, 16);
-
-    // 품목 테이블 헤더: 년 | 월 | 일 | 품목 | 입수 | 수량 | 비고
-    const th = ws.addRow([]);
-    th.height = 20;
-    put(th, 1, "년", LABEL_FONT, "center", false);
-    put(th, 2, "월", LABEL_FONT, "center", false);
-    put(th, 3, "일", LABEL_FONT, "center", false);
-    put(th, 4, "품               목", LABEL_FONT, "center", false);
-    ws.mergeCells(th.number, 4, th.number, 11);
-    put(th, 12, "입수", LABEL_FONT, "center", false);
-    ws.mergeCells(th.number, 12, th.number, 16);
-    put(th, 17, "수량", LABEL_FONT, "center", false);
-    ws.mergeCells(th.number, 17, th.number, 20);
-    put(th, 21, "비고", LABEL_FONT, "center", false);
-    ws.mergeCells(th.number, 21, th.number, 33);
-
-    // 품목 행 - 날짜/수량/입수는 줄바꿈 없이(wrap:false) 한 줄로 고정해서 행 높이가 흔들리지 않게 함
-    const itemRows = region.items.map((item, idx) => {
-      const hasQty = item.qty > 0;
-      const row = ws.addRow([]);
-      row.height = 18.75;
-      if (idx === 0) {
-        const c = put(row, 1, invoiceDate, ITEM_FONT, "center", false);
-        c.numFmt = "yyyy-mm-dd";
-        ws.mergeCells(row.number, 1, row.number, 3); // 년/월/일 3칸에 걸쳐 날짜 하나로 병합 (안 하면 A열 하나에만 끼어 잘려 보임)
-      } else {
-        put(row, 1, undefined, ITEM_FONT, "center", false);
-      }
-      put(row, 2, undefined, ITEM_FONT, "center", false);
-      put(row, 3, undefined, ITEM_FONT, "center", false);
-      put(row, 4, item.name, ITEM_FONT, "center", false);
-      ws.mergeCells(row.number, 4, row.number, 11);
-      put(row, 12, item.packQty || "", ITEM_FONT, "center", false);
-      ws.mergeCells(row.number, 12, row.number, 16);
-      put(row, 17, hasQty ? item.qty : "-", ITEM_FONT, "center", false);
-      ws.mergeCells(row.number, 17, row.number, 20);
-      // 비고(소비기한) = 상품마다 다른 오프셋(PRODUCT_EXPIRY_DELTA)을 이 편의 년월일에 더함.
-      // DC는 상품마다 유통기한이 제각각이라 아직 규칙을 못 정함 - 실제 자료 받으면 채울 예정. 그 전까진 비고 공란.
-      // 목록에 없는 상품은 잠정적으로 +3일 기본값 사용.
-      const itemRemarkDate = part === "DC" ? "" : addDaysStr(invoiceDate, PRODUCT_EXPIRY_DELTA[item.name] ?? 3);
-      const rc = put(row, 21, hasQty ? itemRemarkDate : "", ITEM_FONT, "center", false);
-      if (hasQty && itemRemarkDate) rc.numFmt = "yyyy-mm-dd";
-      ws.mergeCells(row.number, 21, row.number, 33);
-      return row;
+    invoiceRowHeights(n, variant).forEach((h, k) => {
+      ws.getRow(T + k).height = h;
     });
 
-    const spacer = ws.addRow([]);
-    spacer.height = 18.75;
+    // 제목
+    // 제목은 실물과 똑같이 글자마다 크기가 다른 서식 섞인 글: 큰 글자 사이 공백은 9pt라서 간격이 좁게 붙어 보이고, "(...보관용)"만 10pt
+    const titleFont = (size, bold) => ({ name: INV_FONT, size, bold, color: theme, family: 3, charset: 129 });
+    const titleRuns = [];
+    "거래명세표".split("").forEach((ch) => {
+      titleRuns.push({ text: ch, font: titleFont(20, true) }, { text: " ", font: titleFont(9, true) });
+    });
+    titleRuns.push({ text: `(${label})`, font: titleFont(10, false) });
+    put(T, 2, { richText: titleRuns }, titleFont(20, true), { h: "center" });
+    mc(T, 2, T + 1, 34);
 
-    // 총수량: 라벨은 년/월/일 자리, 숫자는 수량 칸 자리 (원본과 동일한 정렬)
-    const totalRow = ws.addRow([]);
-    totalRow.height = 18.75;
-    put(totalRow, 1, "총수량", LABEL_FONT_BOLD, "center", false);
-    ws.mergeCells(totalRow.number, 1, totalRow.number, 3);
-    ws.mergeCells(totalRow.number, 4, totalRow.number, 11);
-    ws.mergeCells(totalRow.number, 12, totalRow.number, 16);
-    put(totalRow, 17, region.totalQty, ITEM_FONT_BOLD, "center", false);
-    ws.mergeCells(totalRow.number, 17, totalRow.number, 20);
-    ws.mergeCells(totalRow.number, 21, totalRow.number, 33);
+    // 공급받는자 / 공급자 세로 라벨 (줄바꿈 문자로 한 글자씩 쌓음 - 실물과 동일)
+    put(T + 2, 2, "공\n급\n받\n는\n자", LBL, { h: "center", wrap: true });
+    mc(T + 2, 2, T + 9, 2);
+    put(T + 2, 17, "공\n\n급\n\n자", LBL, { h: "center", wrap: true });
+    mc(T + 2, 17, T + 9, 17);
 
-    const footer = ws.addRow([]);
-    footer.height = 37.5;
-    put(footer, 1, supplierInfo.agent, LABEL_FONT, "left", true);
-    ws.mergeCells(footer.number, 1, footer.number, 21);
-    put(footer, 22, info.address, ITEM_FONT, "left", true);
-    ws.mergeCells(footer.number, 22, footer.number, 33);
+    // 정보블록 4줄 (각 줄 = 2행 병합)
+    let r = T + 2;
+    put(r, 3, "등록번호", LBL, { h: "center", wrap: true }); mc(r, 3, r + 1, 6);
+    put(r, 7, info.vvLabel, BLK9, { h: "center" }); mc(r, 7, r + 1, 16);
+    put(r, 18, "등록번호", LBL, { h: "center" }); mc(r, 18, r + 1, 21);
+    put(r, 22, supplierInfo.regNo, BLK12B, { h: "center" }); mc(r, 22, r + 1, 34);
 
-    // 테두리: 이 부(1부/2부) 전체를 테마색(파랑/빨강)으로 - 바깥 테두리·구획선은 굵게, 나머지는 얇게
-    const mediumTopRows = new Set([rTitle.number, th.number, footer.number]);
-    const mediumBottomRows = new Set([footer.number, infoRows[3].number, totalRow.number]);
-    for (let r = rTitle.number; r <= footer.number; r++) {
-      const row = ws.getRow(r);
-      for (let c = 1; c <= 33; c++) {
-        const cell = row.getCell(c);
-        cell.border = {
-          top: mediumTopRows.has(r) ? MED : THIN,
-          bottom: mediumBottomRows.has(r) ? MED : THIN,
-          left: c === 1 ? MED : THIN,
-          right: c === 33 ? MED : THIN,
-        };
+    r = T + 4;
+    put(r, 3, "상 호\n(법인명)", LBL, { h: "center", wrap: true }); mc(r, 3, r + 1, 6);
+    put(r, 7, info.centerName, BLK10, { h: "center", wrap: true }); mc(r, 7, r + 1, 16);
+    put(r, 18, "상  호\n(법인명)", LBL, { h: "center", wrap: true }); mc(r, 18, r + 1, 21);
+    put(r, 22, supplierInfo.name, BLK9, { h: "center", wrap: true }); mc(r, 22, r + 1, 27);
+    put(r, 28, "성 명", LBL, { h: "center" }); mc(r, 28, r + 1, 29);
+    put(r, 30, supplierInfo.ceo, BLK10, { h: "center" }); mc(r, 30, r + 1, 34);
+
+    r = T + 6;
+    put(r, 3, "사업장\n주  소", LBL, { h: "center", wrap: true }); mc(r, 3, r + 1, 6);
+    put(r, 7, info.address, BLK9, { h: "center", wrap: true }); mc(r, 7, r + 1, 16);
+    put(r, 18, "사업장\n주  소", LBL, { h: "center", wrap: true }); mc(r, 18, r + 1, 21);
+    put(r, 22, supplierInfo.address, BLK9, { h: "left", wrap: true }); mc(r, 22, r + 1, 34);
+
+    r = T + 8;
+    put(r, 3, "합계금액\n(VAT포함)", LBL, { h: "center", wrap: true }); mc(r, 3, r + 1, 6);
+    put(r, 7, null, BLK12B, { h: "right", nf: INV_NF_AMOUNT }); mc(r, 7, r + 1, 16); // 단가 연동 전이라 공란
+    put(r, 18, "업 태", LBL, { h: "center" }); mc(r, 18, r + 1, 21);
+    put(r, 22, supplierInfo.bizType, BLK9, { h: "center", wrap: true }); mc(r, 22, r + 1, 27);
+    put(r, 28, "종 목", LBL, { h: "center" }); mc(r, 28, r + 1, 29);
+    put(r, 30, supplierInfo.bizItem, BLK10, { h: "center" }); mc(r, 30, r + 1, 34);
+
+    // 품목 표 머리글
+    const hr = T + 10;
+    put(hr, 2, "년", LBL, { h: "center" });
+    put(hr, 3, "월", LBL, { h: "center" });
+    put(hr, 4, "일", LBL, { h: "center" });
+    put(hr, 5, "품               목", LBL, { h: "center" }); mc(hr, 5, hr, 12);
+    put(hr, 13, "입수", LBL, { h: "center" }); mc(hr, 13, hr, 17);
+    put(hr, 18, "수량", LBL, { h: "center" }); mc(hr, 18, hr, 21);
+    put(hr, 22, "비고", LBL, { h: "center" }); mc(hr, 22, hr, 34);
+
+    // 품목 행 (+ 아래 빈 줄 1개)
+    for (let k = 0; k <= n; k++) {
+      const ir = T + 11 + k;
+      const it = k < n ? region.items[k] : null;
+      const hasQty = !!it && it.qty > 0;
+      if (k === 0) {
+        put(ir, 2, invDate(invoiceDate), BLK9, { h: "center", nf: "mm-dd-yy" });
+        mc(ir, 2, ir, 4);
       }
+      put(ir, 5, it ? it.name : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
+      put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
+      put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_ACCT }); mc(ir, 18, ir, 21);
+      // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
+      const remark = hasQty && part !== "DC" ? invDate(addDaysStr(invoiceDate, PRODUCT_EXPIRY_DELTA[it.name] ?? 3)) : null;
+      put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
     }
 
-    ws.addRow([]);
-    ws.addRow([]);
+    // 총수량
+    const tr = T + 12 + n;
+    put(tr, 2, "총수량", { name: INV_FONT, size: 9, bold: true, color: black }, { h: "center" }); mc(tr, 2, tr, 4);
+    mc(tr, 5, tr, 12);
+    mc(tr, 13, tr, 17);
+    put(tr, 18, region.totalQty, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_ACCT }); mc(tr, 18, tr, 21);
+    mc(tr, 22, tr, 34);
+
+    // 하단: 3자물류 담당자 / 받는 센터 주소
+    const fr = T + 13 + n;
+    put(fr, 2, THREE_PL_AGENT, LBL, { h: "center", wrap: true }); mc(fr, 2, fr + 1, 22);
+    put(fr, 23, info.address, { name: INV_FONT, size: 8.5, color: theme }, { h: "center", wrap: true }); mc(fr, 23, fr + 1, 34);
+
+    // 테두리: 실물에서 뽑은 "눈에 보이는 선" 규격 그대로 (색은 1부 파랑 / 2부 빨강)
+    const { H, V } = invoiceEdgeChars(variant, n);
+    const sty = (ch) => (ch === "M" ? { style: "medium", color: theme } : ch === "t" ? { style: "thin", color: theme } : undefined);
+    const NC = 33;
+    const b = Array.from({ length: R }, () => Array.from({ length: NC }, () => ({})));
+    for (let j = 0; j <= R; j++) {
+      for (let i = 0; i < NC; i++) {
+        const s = sty(H[j][i]);
+        if (!s) continue;
+        if (j < R) b[j][i].top = s;
+        if (j > 0) b[j - 1][i].bottom = s;
+      }
+    }
+    for (let k = 0; k < R; k++) {
+      for (let i = 0; i <= NC; i++) {
+        const s = sty(V[k][i]);
+        if (!s) continue;
+        if (i < NC) b[k][i].left = s;
+        if (i > 0) b[k][i - 1].right = s;
+      }
+    }
+    for (let k = 0; k < R; k++) {
+      for (let i = 0; i < NC; i++) {
+        const cell = ws.getCell(T + k, 2 + i);
+        cell.border = b[k][i];
+        cell.fill = INV_WHITE_FILL;
+      }
+    }
   }
 
-  addCopy("공급받는자 보관용", INV_BLUE);
-  addCopy("공급자 보관용", INV_RED);
+  ws.getRow(1).height = 14.25;
+  addCopy(2, "blue", "공급받는자 보관용");
+  // 두 부 사이 여백 2줄 (실물: 기본 높이 줄 + 14.25 줄, 둘 다 흰색)
+  const gap1 = 2 + R;
+  const gap2 = gap1 + 1;
+  ws.getRow(gap2).height = 14.25;
+  [gap1, gap2].forEach((gr) => {
+    for (let c = 2; c <= 34; c++) ws.getCell(gr, c).fill = INV_WHITE_FILL;
+  });
+  addCopy(gap2 + 1, "red", "공급자 보관용");
 }
 
+// 맨 앞에 붙는 "N편발주량" 요약표 (실물 파일의 1편발주량/2편발주량 시트와 같은 모양: 지역 × 상품 수량)
+function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
+  const label = part === "DC" ? "DC" : `${part}편`;
+  const ws = workbook.addWorksheet(safeSheetName(`${label}발주량`, usedNames));
+  const [, m, d] = date.split("-").map(Number);
+  const hdrFont = { name: "맑은 고딕", size: 10, bold: true };
+  const bodyFont = { name: "맑은 고딕", size: 10 };
+  const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
+  const box = { top: thin, bottom: thin, left: thin, right: thin };
 
+  ws.getCell(1, 1).value = `${m}/${d}`;
+  ws.getCell(1, 1).font = hdrFont;
+  ws.getCell(2, 1).value = "행 레이블";
+  data.items.forEach((it, i) => {
+    ws.getCell(2, 2 + i).value = it.name;
+  });
+  const totalCol = 2 + data.items.length;
+  for (let c = 1; c <= totalCol; c++) {
+    const cell = ws.getCell(2, c);
+    cell.font = hdrFont;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = box;
+  }
+  ws.getRow(2).height = 42;
 
+  const colTotals = data.items.map(() => 0);
+  let r = 3;
+  INVOICE_PIVOT_ORDER.forEach((code) => {
+    const info = REGION_ADDRESS_MAP[code];
+    if (!info) return;
+    ws.getCell(r, 1).value = info.vvLabel;
+    let rowTotal = 0;
+    data.items.forEach((it, i) => {
+      const q = data.qtyOf(it, code);
+      rowTotal += q;
+      colTotals[i] += q;
+      if (q > 0) ws.getCell(r, 2 + i).value = q;
+    });
+    if (rowTotal > 0) ws.getCell(r, totalCol).value = rowTotal;
+    for (let c = 1; c <= totalCol; c++) {
+      const cell = ws.getCell(r, c);
+      cell.font = bodyFont;
+      cell.border = box;
+      if (c > 1) cell.alignment = { horizontal: "center", vertical: "middle" };
+    }
+    r++;
+  });
+  ws.getCell(r, 1).value = "총합계";
+  data.items.forEach((it, i) => {
+    ws.getCell(r, 2 + i).value = colTotals[i];
+  });
+  ws.getCell(r, totalCol).value = colTotals.reduce((a, b) => a + b, 0);
+  for (let c = 1; c <= totalCol; c++) {
+    const cell = ws.getCell(r, c);
+    cell.font = hdrFont;
+    cell.border = box;
+    if (c > 1) cell.alignment = { horizontal: "center", vertical: "middle" };
+  }
+  ws.getColumn(1).width = 34;
+  for (let c = 2; c <= totalCol; c++) ws.getColumn(c).width = 16;
+}
 
-// 1편 또는 2편 하나만 골라서 거래명세서 파일 하나를 내려받는다. 그 편에 발주가 없으면 false를 반환(조용히 스킵용).
+// 1편 또는 2편 또는 DC 하나만 골라서 거래명세서 파일 하나를 내려받는다. 그 편에 발주가 없으면 false를 반환(조용히 스킵용).
 async function downloadSupplierInvoicePart(products, supplierKey, date, part, setBusy) {
   if (setBusy) setBusy(true);
   try {
     const info = SUPPLIER_INVOICE_INFO[supplierKey];
     if (!info) throw new Error(`"${supplierKey}"의 거래명세서용 사업자 정보가 아직 등록되지 않았어요. (SUPPLIER_INVOICE_INFO에 추가 필요)`);
-    const regions = buildInvoiceRegionsForSupplier(products, supplierKey, part);
-    if (regions.length === 0) return false;
+    const data = buildInvoiceDataForSupplier(products, supplierKey, part);
+    if (data.regions.length === 0) return false;
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
-    regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames, part));
+    addInvoiceSummarySheet(workbook, data, date, part, usedNames);
+    data.regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames, part));
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -4734,6 +5024,11 @@ function InvoiceView({ orders }) {
     [invoiceProducts, activeInvoiceSupplier]
   );
   const invoiceRegionsTotal = invoiceRegionsPart1.length + invoiceRegionsPart2.length + invoiceRegionsPartDC.length;
+  // 소비기한 자료에도 DC 목록에도 없어서 명세서에 못 들어가는 이 공급사 상품 (예: 영진 PB 상품)
+  const invoiceSkipped = useMemo(
+    () => (activeInvoiceSupplier ? getInvoiceSkippedProducts(invoiceProducts, activeInvoiceSupplier) : []),
+    [invoiceProducts, activeInvoiceSupplier]
+  );
 
   async function handleGenerateInvoicePart(part) {
     if (!activeInvoiceDate || !activeInvoiceSupplier) return;
@@ -4801,6 +5096,12 @@ function InvoiceView({ orders }) {
           </button>
         </div>
         {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
+        {invoiceSkipped.length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, color: T.inkSoft }}>
+            명세서에서 빠진 상품 {invoiceSkipped.length}개 (소비기한 자료·DC 목록에 없음): {invoiceSkipped.slice(0, 6).join(", ")}
+            {invoiceSkipped.length > 6 ? ` 외 ${invoiceSkipped.length - 6}개` : ""}
+          </div>
+        )}
         {!invoiceErr && activeInvoiceSupplier && invoiceRegionsTotal === 0 && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>이 날짜엔 {activeInvoiceSupplier} 발주가 없어요.</div>
         )}
