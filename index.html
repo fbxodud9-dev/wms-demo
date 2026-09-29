@@ -5226,7 +5226,11 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
 // 피킹지시서 출력과 거래명세서 생성이 공통으로 쓰는 핵심 집계 함수.
 // 특정 공급사의 특정 지역은 피킹지시서/명세서 수량을 항상 0으로 고정 (오배송·과잉피킹 방지용 화주사 요청).
 // 예: 탭스푸드는 신제주(VV92)로 실제 출고하지 않으니, 발주파일에 수량이 찍혀와도 0으로 덮어씀.
-const PICKING_QTY_ZERO_OVERRIDES = [{ supplierKey: "탭스", regionCode: "VV92" }];
+const PICKING_QTY_ZERO_OVERRIDES = [
+  { supplierKey: "탭스", regionCode: "VV92" }, // 탭스 - 신제주
+  // 네고(참맛나라/맛요일/효성/h2 글로벌) - 김해/김해2/진주/CVS/경산/경산2/경산3
+  ...["참맛나라", "맛요일", "효성", "h2 글로벌"].flatMap((s) => ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ supplierKey: s, regionCode: r }))),
+];
 function isQtyZeroOverride(supplierKey, regionCode) {
   return PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === supplierKey && o.regionCode === regionCode);
 }
@@ -5252,9 +5256,11 @@ function buildProductsForDate(orders, activeDate) {
     const ref = REGION_ORDER_MAP[regionKey];
     const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
     const supplierKey = supplierGroupKey(o.supplier);
-    const zeroed = regionKey && isQtyZeroOverride(supplierKey, regionKey);
     o.lines.forEach((l) => {
       if (l.allocatedQty <= 0) return;
+      // 이 상품이 DC 상품이면 DC 공급사 기준으로, 아니면 발주서 공급사 기준으로 0고정 여부를 판단 (상품마다 다를 수 있음)
+      const zeroKey = dcVendorKey(l.name) || supplierKey;
+      const zeroed = regionKey && isQtyZeroOverride(zeroKey, regionKey);
       if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
       if (!bySku[l.sku].regions[regionKey]) {
         bySku[l.sku].regions[regionKey] = {
