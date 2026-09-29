@@ -5224,6 +5224,13 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
 
 // 발주번호는 무시하고, 상품(SKU) 기준으로 지역(납품처)별 수량을 집계 (특정 날짜 하나만).
 // 피킹지시서 출력과 거래명세서 생성이 공통으로 쓰는 핵심 집계 함수.
+// 특정 공급사의 특정 지역은 피킹지시서/명세서 수량을 항상 0으로 고정 (오배송·과잉피킹 방지용 화주사 요청).
+// 예: 탭스푸드는 신제주(VV92)로 실제 출고하지 않으니, 발주파일에 수량이 찍혀와도 0으로 덮어씀.
+const PICKING_QTY_ZERO_OVERRIDES = [{ supplierKey: "탭스", regionCode: "VV92" }];
+function isQtyZeroOverride(supplierKey, regionCode) {
+  return PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === supplierKey && o.regionCode === regionCode);
+}
+
 function buildProductsForDate(orders, activeDate) {
   const bySku = {};
   // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
@@ -5244,6 +5251,8 @@ function buildProductsForDate(orders, activeDate) {
     const regionKey = o.storeCode || o.customer;
     const ref = REGION_ORDER_MAP[regionKey];
     const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+    const supplierKey = supplierGroupKey(o.supplier);
+    const zeroed = regionKey && isQtyZeroOverride(supplierKey, regionKey);
     o.lines.forEach((l) => {
       if (l.allocatedQty <= 0) return;
       if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
@@ -5258,7 +5267,7 @@ function buildProductsForDate(orders, activeDate) {
           qty: 0,
         };
       }
-      bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
+      if (!zeroed) bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
     });
   });
   // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서)를 기본으로 하되
