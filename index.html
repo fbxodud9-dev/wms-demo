@@ -4353,12 +4353,18 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   });
 }
 
-async function downloadStyledInspectionExcel(products, filename, setBusy, date) {
+async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
   try {
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
     products.forEach((p) => addStyledInspectionSheet(workbook, p, usedNames, date));
+    // 여러 상품을 한 파일에 시트로 묶을 때, 화면에서 고르고 있던 상품의 시트가 열자마자 보이도록 활성 탭을 맞춘다.
+    // (지정 안 하면 항상 첫 번째 시트가 열려서, "분명 다른 상품을 골랐는데 엉뚱한 상품이 열린다"는 착각이 생김)
+    if (activeSku) {
+      const idx = products.findIndex((p) => p.sku === activeSku);
+      if (idx > 0) workbook.views = [{ activeTab: idx, firstSheet: idx }];
+    }
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -5403,7 +5409,8 @@ function PickingInspection({ orders }) {
                         filteredProducts,
                         `피킹지시서_${activeDate}${supplierFilter !== "all" ? `_${supplierFilter.replace(/[\\/:*?"<>|]/g, "")}` : ""}.xlsx`,
                         setExporting,
-                        activeDate
+                        activeDate,
+                        selected?.sku
                       )
                     }
                     disabled={exporting || filteredProducts.length === 0}
