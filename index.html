@@ -3375,7 +3375,24 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       if (qty <= 0) return;
       const unit = (col.unit !== -1 && r[col.unit]) || "EA";
       const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
-      const packQtyFixed = PACK_QTY_OVERRIDES[sku]; // 이 상품이면 파일 값 무시하고 고정값 사용
+      // 상품코드 대신 "품목명"으로 지정하는 입수 강제고정 (카카오톡으로 받은 입수 변경 요청 - 상품코드를 모를 때 사용).
+// 발주파일의 상품명과 아래 이름이 정확히 같아야 적용됨. 다르면(띄어쓰기·괄호 등) 조용히 무시되니,
+// 적용 후 화면에서 그 상품 입수가 실제로 바뀌었는지 확인 필요.
+const PACK_QTY_NAME_OVERRIDES = {
+  "혜자)토핑유부(명란&크랩마요)1편": 36,
+  "혜자)토핑유부(명란&크랩마요)2편": 36,
+  "채다원)그린박스10": 8,
+  "케이제이)예약)쭈꾸미비빔밥(시즌한정)": 12,
+  "케이제이)예약)쭈꾸미볶음밥(시즌한정)": 12,
+  "케이제이)예)들기름항정살김치찜(SNS인기)": 20,
+  "엠즈베이커스)흔한남매)우유팬케이크": 24,
+  "대광)(네고)미니파베초콜릿(밀크맛)60G": 80,
+  "효성)땡초어묵바80G": 100,
+  "네이처)폭찹스테이크1편": 40,
+  "네이처)폭찹스테이크2편": 40,
+};
+
+      const packQtyFixed = PACK_QTY_OVERRIDES[sku] ?? PACK_QTY_NAME_OVERRIDES[String(name).trim()]; // 이 상품이면 파일 값 무시하고 고정값 사용
       // 상품코드가 기준: 코드로 먼저 찾고, 없으면 품목명으로 찾되 그때는 마스터 코드를 발주파일 상품코드로 바꾼다
       const byCode = items.find((i) => i.sku === sku);
       const byName = byCode ? null : items.find((i) => i.name === name);
