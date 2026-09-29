@@ -1623,19 +1623,6 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
-  // III. 할당리스트 - 할당취소
-  const cancelAllocationLine = useCallback(
-    async (orderId, sku) => {
-      try {
-        await apiFetch(`/orders/${orderId}/lines/${encodeURIComponent(sku)}/cancel-allocation`, authToken, { method: "POST" });
-        await loadCoreData();
-      } catch (e) {
-        setApiErr(e.message);
-      }
-    },
-    [authToken, loadCoreData]
-  );
-
   // IV. 보충지시 (아직 서버로 옮기지 않은 로컬 전용 기능)
   const toggleReplenish = useCallback((sku) => {
     setReplenishedSkus((prev) => ({ ...prev, [sku]: !prev[sku] }));
@@ -3906,84 +3893,6 @@ function Allocation({ items, orders, onAllocate }) {
   );
 }
 
-/* ================= III. 할당리스트 ================= */
-function AllocationList({ orders, onCancel }) {
-  const [selected, setSelected] = useState({});
-  const rows = [];
-  orders.forEach((o) => {
-    o.lines.forEach((l) => {
-      if (l.allocatedQty > 0) rows.push({ orderId: o.id, orderNo: o.orderNo, customer: o.customer, status: o.status, ...l });
-    });
-  });
-  const key = (r) => `${r.orderId}__${r.sku}`;
-  const anySelected = Object.values(selected).some(Boolean);
-
-  function cancelSelected() {
-    rows.forEach((r) => {
-      if (selected[key(r)]) onCancel(r.orderId, r.sku);
-    });
-    setSelected({});
-  }
-
-  return (
-    <div>
-      <PageHeader title="III. 할당리스트" sub="할당된 품목을 확인하고 필요하면 할당을 취소합니다" />
-      {anySelected && (
-        <div style={{ marginBottom: 12 }}>
-          <button onClick={cancelSelected} className="ghost-btn" style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}>
-            <X size={14} /> 선택 항목 할당취소
-          </button>
-        </div>
-      )}
-      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              <th>발주번호</th>
-              <th>발주처</th>
-              <th>상품코드</th>
-              <th>품목명</th>
-              <th>할당수량</th>
-              <th>할당상태</th>
-              <th>로케이션</th>
-              <th>발주상태</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={9}>
-                  <EmptyRow text="할당된 품목이 없습니다." />
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={key(r)}>
-                  <td>
-                    <input type="checkbox" checked={!!selected[key(r)]} onChange={(e) => setSelected((prev) => ({ ...prev, [key(r)]: e.target.checked }))} />
-                  </td>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.orderNo}</td>
-                  <td>{r.customer}</td>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{r.sku}</td>
-                  <td style={{ fontWeight: 600 }}>{r.name}</td>
-                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{r.allocatedQty}</td>
-                  <td>{r.allocStatus}</td>
-                  <td>
-                    <LocationTag loc={r.location} />
-                  </td>
-                  <td>
-                    <OrderStatusPill status={r.status} />
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
 /* ================= IV. 보충지시 ================= */
 function Replenishment({ items, onToggle }) {
@@ -5284,14 +5193,16 @@ function buildProductsForDate(orders, activeDate) {
   });
 
   ordered.forEach((o) => {
-    if (o.status === "NEW") return; // 아직 할당 전인 발주는 제외
     if (activeDate && o.createdAt !== activeDate) return; // 다른 날짜 발주는 제외
     const regionKey = o.storeCode || o.customer;
     const ref = REGION_ORDER_MAP[regionKey];
     const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
     const supplierKey = supplierGroupKey(o.supplier);
     o.lines.forEach((l) => {
-      if (l.allocatedQty <= 0) return;
+      // 할당(할당완료/미할당) 시스템은 화면에서 뺐으니, 피킹지시서·거래명세서도 할당수량이 아니라
+      // 발주 수량(수정된 값이 있으면 그 값)을 그대로 쓴다 - 할당 상태 때문에 수량이 안 보이는 일이 없도록.
+      const qty = Number(l.changedQty ?? l.qty) || 0;
+      if (qty <= 0) return;
       // 이 상품이 DC 상품이면 DC 공급사 기준으로, 아니면 발주서 공급사 기준으로 0고정 여부를 판단 (상품마다 다를 수 있음)
       const zeroKey = dcVendorKey(l.name) || supplierKey;
       const zeroed = regionKey && isQtyZeroOverride(zeroKey, regionKey);
@@ -5307,11 +5218,14 @@ function buildProductsForDate(orders, activeDate) {
           qty: 0,
         };
       }
-      if (!zeroed) bySku[l.sku].regions[regionKey].qty += l.allocatedQty;
+      if (!zeroed) bySku[l.sku].regions[regionKey].qty += qty;
     });
   });
-  // 이름순 정렬 없이, 위에서 처음 등장한 순서(=발주파일 업로드 순서)를 기본으로 하되
-  // 1편이 전부 먼저, 2편이 전부 나중에 오도록 다시 묶음 (그룹 안에서는 업로드 순서 유지)
+  // 상품 순서: 공급사별로 묶고, 그 안에서는 "같은 상품의 1편 바로 옆에 2편"이 오도록 묶는다.
+  // (예전엔 1편 전체 -> 2편 전체로 나뉘어 있어서 "1편끼리, 2편끼리 뭉쳐 나온다"는 요청이 있었음)
+  // 묶는 기준은 상품명 끝의 편 표시를 뗀 "기본 이름"이고, 그 기본 이름이 처음 등장한 순서(=업로드 순서)를 그대로 쓴다.
+  const baseNameOf = (name) => String(name || "").replace(/(\d)\s*편?\s*$/, "").trim();
+  const groupOrder = new Map();
   return Object.values(bySku)
     .map((p) => {
       // 오피킹 방지 고정 지역표(A/B구역 37곳)는 이 상품에 발주가 없어도 항상 0으로 표시
@@ -5329,9 +5243,14 @@ function buildProductsForDate(orders, activeDate) {
       });
       const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
       const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
-      return { ...p, regionRows, totalQty, part: detectPart(p.name) };
+      return { ...p, regionRows, totalQty, part: detectPart(p.name), baseName: baseNameOf(p.name) };
     })
-    .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.part - b.part);
+    .map((p) => {
+      const key = supplierGroupKey(p.supplier) + "||" + p.baseName;
+      if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
+      return { ...p, groupSeq: groupOrder.get(key) };
+    })
+    .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.groupSeq - b.groupSeq || a.part - b.part);
 }
 
 function PickingInspection({ orders }) {
