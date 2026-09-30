@@ -5187,6 +5187,16 @@ function isQtyZeroOverride(supplierKey, regionCode) {
   return PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === supplierKey && o.regionCode === regionCode);
 }
 
+// 공급사 전체가 아니라 "이 상품들만" 특정 지역 수량을 0으로 고정 (예: 대광 DC 상품 중 일부만 제외 요청).
+const PICKING_QTY_ZERO_BY_NAME = [
+  ...["대광)미니파베초콜릿(밀크맛)60G", "대광)옛날맛순대500G", "대광)파베초콜릿100G", "즉석피자)파마산치즈(증정용)", "즉석피자)핫소스4G(증정용)"].flatMap((name) =>
+    ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ name, regionCode: r }))
+  ),
+];
+function isQtyZeroByName(name, regionCode) {
+  return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === name && o.regionCode === regionCode);
+}
+
 function buildProductsForDate(orders, activeDate) {
   const bySku = {};
   // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
@@ -5214,7 +5224,7 @@ function buildProductsForDate(orders, activeDate) {
       if (qty <= 0) return;
       // 이 상품이 DC 상품이면 DC 공급사 기준으로, 아니면 발주서 공급사 기준으로 0고정 여부를 판단 (상품마다 다를 수 있음)
       const zeroKey = dcVendorKey(l.name) || supplierKey;
-      const zeroed = regionKey && isQtyZeroOverride(zeroKey, regionKey);
+      const zeroed = regionKey && (isQtyZeroOverride(zeroKey, regionKey) || isQtyZeroByName(l.name, regionKey));
       if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
       if (!bySku[l.sku].regions[regionKey]) {
         bySku[l.sku].regions[regionKey] = {
