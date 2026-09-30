@@ -4139,7 +4139,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   ["A", "B", "미지정"].forEach((zone) => {
     product.regionRows.filter((r) => r.zone === zone).forEach((r) => flat.push({ ...r, zone }));
   });
-  // 체크포인트: 이 지역 "다음"부터 전체 끝까지 남은 낱개(소분) 합계를 박스로 환산
+  // 체크포인트: 이 지역 "다음"부터 전체 끝까지 남은 낱개(소분) 합계를 박스로 환산 (엑셀 수식의 초기 캐시값 계산용)
   const remAfter = new Array(flat.length + 1).fill(0);
   for (let i = flat.length - 1; i >= 0; i--) remAfter[i] = remAfter[i + 1] + bd(flat[i].qty).rem;
 
@@ -4181,10 +4181,21 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
 
+  // 박스(D)/낱개(F)를 고정값이 아니라 "그 줄의 입수(B)·수량(C)로 계산하는 수식"으로 넣는다.
+  // 이렇게 하면 나중에 엑셀에서 입수 칸을 손으로 고쳐도 박스/낱개가 자동으로 다시 계산된다.
+  function setBoxRemFormula(row, cQty) {
+    const rn = row.number;
+    row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(${cQty}/B${rn}))`, result: pack > 0 ? Math.floor((typeof cQty === "number" ? cQty : 0) / pack) : 0 };
+  }
+
   let bandIndex = 0; // 지역 데이터 행에서만 증가시키는 흰색/회색 교차용 카운터
+  const flatRowNum = new Array(flat.length).fill(null); // flat 인덱스 -> 실제 엑셀 행번호
+  const checkpointQueue = []; // { rowNumber, flatIdx } - 전체 행번호를 다 알고 난 뒤 2차로 수식을 채워넣음
+
   function addRegionRow(r, flatIdx) {
     const { box, rem } = bd(r.qty);
     const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
+    flatRowNum[flatIdx] = row.number;
     row.height = 26.25;
     const size = { A: 11, B: 11, C: 14, D: 12, E: 14, F: 12 };
     const bold = { A: false, B: false, C: true, D: false, E: true, F: false };
@@ -4198,25 +4209,24 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
       c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
+    const rn = row.number;
+    row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
+    row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
     // 체크포인트: 화주사가 지정한 특정 지역에서만 표시 (강릉·신광주2·아신A·김포3·도화2·신오산3)
     if (pack > 0 && r.checkpoint && flatIdx < flat.length - 1) {
-      const remainingRem = remAfter[flatIdx + 1];
-      const cpBox = Math.floor(remainingRem / pack);
-      const cpRem = remainingRem - cpBox * pack;
       ["G", "H"].forEach((col) => {
         const c = row.getCell(col);
         c.font = { name: XLFONT, size: 11, bold: true };
         c.alignment = { horizontal: "center", vertical: "middle" };
         c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "G" ? XL_THIN : undefined, right: XL_THIN };
       });
-      row.getCell("G").value = cpBox;
-      row.getCell("H").value = cpRem;
+      checkpointQueue.push({ rowNumber: rn, flatIdx });
     }
   }
 
-  function addTotalRow(label, qty) {
-    const { box, rem } = bd(qty);
-    const row = ws.addRow([label, pack || "", qty, box, "", rem]);
+  function addTotalRow(label, qtyFormulaOrValue, cachedQty) {
+    const { box, rem } = bd(cachedQty);
+    const row = ws.addRow([label, pack || "", cachedQty, box, "", rem]);
     row.height = 27;
     const alignH = { A: "center", B: "center", C: "right", D: "center", E: "center", F: "center" };
     ["A", "B", "C", "D", "E", "F"].forEach((col) => {
@@ -4225,24 +4235,37 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
       c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
+    const rn = row.number;
+    if (qtyFormulaOrValue !== null) row.getCell("C").value = { formula: qtyFormulaOrValue, result: cachedQty };
+    row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
+    row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
     return row;
   }
 
   let flatIdx = 0;
+  const zoneRanges = []; // { zone, startFlatIdx, endFlatIdx }
+  const zoneTotalRowNum = {};
   ["A", "B", "미지정"].forEach((zone) => {
     const rows = product.regionRows.filter((r) => r.zone === zone);
     if (rows.length === 0) return;
+    const startFlatIdx = flatIdx;
     rows.forEach((r) => {
       addRegionRow(r, flatIdx);
       flatIdx++;
     });
+    const endFlatIdx = flatIdx - 1;
+    zoneRanges.push({ zone, startFlatIdx, endFlatIdx });
     ws.addRow([]);
-    addTotalRow(zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, rows.reduce((a, r) => a + r.qty, 0));
+    const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
+    const sumFormula = `SUM(C${flatRowNum[startFlatIdx]}:C${flatRowNum[endFlatIdx]})`;
+    const totalRow = addTotalRow(zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, sumFormula, zoneTotalQty);
+    zoneTotalRowNum[zone] = totalRow.number;
     ws.addRow([]);
   });
 
   // 총합계 (전체를 하나로 합쳐 나눴을 때) + "소분박스/소분낱개" 라벨
-  const grandRow = addTotalRow("총합계", product.totalQty);
+  const zoneTotalCells = Object.values(zoneTotalRowNum).map((n) => `C${n}`);
+  const grandRow = addTotalRow("총합계", zoneTotalCells.join("+"), product.totalQty);
   ["G", "H"].forEach((col) => {
     const c = grandRow.getCell(col);
     c.value = col === "G" ? "소분박스" : "소분낱개";
@@ -4252,11 +4275,14 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   });
 
   // 대분(총 박스 수량, 지역별 박스 합) / 소분(총 낱개 수량, 지역별 낱개 합 → 다시 박스로 재환산)
+  // 구역합계·총합계 행은 빼고, 실제 지역 행(D·F열)만 구역별 연속 구간으로 더한다.
+  const boxRangeStr = zoneRanges.map((z) => `D${flatRowNum[z.startFlatIdx]}:D${flatRowNum[z.endFlatIdx]}`).join(",");
+  const remRangeStr = zoneRanges.map((z) => `F${flatRowNum[z.startFlatIdx]}:F${flatRowNum[z.endFlatIdx]}`).join(",");
   const totalBoxSum = flat.reduce((a, r) => a + bd(r.qty).box, 0);
   const totalRemSum = flat.reduce((a, r) => a + bd(r.qty).rem, 0);
   const subBox = pack > 0 ? Math.floor(totalRemSum / pack) : 0;
   const subRem = totalRemSum - subBox * pack;
-  const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
+  const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", pack || "", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
   finalRow.height = 27;
   const finalAlign = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
@@ -4265,12 +4291,33 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     c.alignment = { horizontal: finalAlign[col], vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
+  const frn = finalRow.number;
+  finalRow.getCell("D").value = { formula: `SUM(${boxRangeStr})`, result: totalBoxSum };
+  finalRow.getCell("F").value = { formula: `SUM(${remRangeStr})`, result: totalRemSum };
+  finalRow.getCell("G").value = { formula: `IF(B${frn}=0,0,INT(F${frn}/B${frn}))`, result: subBox };
+  finalRow.getCell("H").value = { formula: `IF(B${frn}=0,F${frn},F${frn}-G${frn}*B${frn})`, result: subRem };
   ["G", "H"].forEach((col) => {
     const c = finalRow.getCell(col);
     c.font = { name: XLFONT, size: 20, bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
+  });
+
+  // 체크포인트 G/H: 이 지점 "다음"부터 (같은 구역의 남은 지역행) + (그 뒤 구역들의 지역행 전체) 낱개 합계를 박스로 환산
+  checkpointQueue.forEach(({ rowNumber, flatIdx: fi }) => {
+    const zr = zoneRanges.find((z) => fi >= z.startFlatIdx && fi <= z.endFlatIdx);
+    const ranges = [];
+    if (fi < zr.endFlatIdx) ranges.push(`F${flatRowNum[fi + 1]}:F${flatRowNum[zr.endFlatIdx]}`);
+    zoneRanges
+      .filter((z) => z.startFlatIdx > zr.endFlatIdx)
+      .forEach((z) => ranges.push(`F${flatRowNum[z.startFlatIdx]}:F${flatRowNum[z.endFlatIdx]}`));
+    const sumExpr = `SUM(${ranges.join(",")})`;
+    const remainingRem = remAfter[fi + 1];
+    const cpBox = pack > 0 ? Math.floor(remainingRem / pack) : 0;
+    const cpRem = remainingRem - cpBox * pack;
+    ws.getCell(`G${rowNumber}`).value = { formula: `IF(B${rowNumber}=0,0,INT(${sumExpr}/B${rowNumber}))`, result: cpBox };
+    ws.getCell(`H${rowNumber}`).value = { formula: `IF(B${rowNumber}=0,${sumExpr},${sumExpr}-G${rowNumber}*B${rowNumber})`, result: cpRem };
   });
 }
 
