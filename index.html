@@ -5269,7 +5269,11 @@ function buildProductsForDate(orders, activeDate) {
       if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
       return { ...p, groupSeq: groupOrder.get(key) };
     })
-    .sort((a, b) => supplierPriority(a.supplier) - supplierPriority(b.supplier) || a.groupSeq - b.groupSeq || a.part - b.part);
+    // 공급사(고객사) 순서: 가나다순 - 그 안에서는 같은 상품 1편 옆에 2편이 오도록 groupSeq/part로 이어서 정렬
+    .sort(
+      (a, b) =>
+        supplierGroupKey(a.supplier).localeCompare(supplierGroupKey(b.supplier), "ko") || a.groupSeq - b.groupSeq || a.part - b.part
+    );
 }
 
 function PickingInspection({ orders }) {
