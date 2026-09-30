@@ -4556,12 +4556,15 @@ function getInvoiceInfo(key) {
 // 1편/2편 명세서에 실리는 상품은 "소비기한 자료"(SUPPLIER_INVOICE_CATALOG)에 있는 상품만, 그 자료의 순서대로.
 // (예: 영진베이커리는 PB 상품(서울우유 등)이 같이 주문돼도 명세서에는 오든든 10종만 나감)
 // DC는 DC_PRODUCT_PREFIXES에 걸리는 상품만, 업로드 순서대로.
+// 카탈로그(소비기한 자료)에 없는 상품을 두 종류로 나눈다: 명세서에 자동 추가되는 "신제품"과, PB/TC라서 아예 안 나가는 "제외 상품"
 function getInvoiceSkippedProducts(products, supplierKey) {
   const cat = SUPPLIER_INVOICE_CATALOG[supplierKey] || {};
   const known = new Set([...(cat["1"] || []), ...(cat["2"] || [])]);
-  return products
-    .filter((p) => supplierGroupKey(p.supplier) === supplierKey && !isDcProduct(p.name) && !known.has(p.name))
-    .map((p) => p.name);
+  const notInCatalog = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey && !isDcProduct(p.name) && !known.has(p.name));
+  return {
+    added: notInCatalog.filter((p) => !/PB/i.test(String(p.supplier || ""))).map((p) => p.name),
+    excluded: notInCatalog.filter((p) => /PB/i.test(String(p.supplier || ""))).map((p) => p.name),
+  };
 }
 
 // 그날 발주가 한 건도 없어서 주문 데이터에서 입수를 못 읽는 상품용 (실물 명세서에 적혀있던 입수)
@@ -4599,7 +4602,10 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     const catalogSet = new Set(catalogNames);
     const extraNames = [];
     supplierProducts.forEach((p) => {
-      if (p.part === part && !isDcProduct(p.name) && !catalogSet.has(p.name) && !extraNames.includes(p.name)) extraNames.push(p.name);
+      // PB/TC 상품(발주서 공급사 표기에 "PB"가 붙는 것들, 예: 영진의 서울우유 등)은 거래명세서 대상이 아니므로
+      // 카탈로그에 없어도 자동으로 끼워넣지 않는다(신제품 자동추가는 정상 상품에만 적용).
+      const isPb = /PB/i.test(String(p.supplier || ""));
+      if (p.part === part && !isDcProduct(p.name) && !catalogSet.has(p.name) && !isPb && !extraNames.includes(p.name)) extraNames.push(p.name);
     });
     names = [...catalogNames, ...extraNames];
   }
@@ -5559,9 +5565,9 @@ function InvoiceView({ orders }) {
       setDcErr(e.message);
     }
   }
-  // 소비기한 자료에도 DC 목록에도 없어서 명세서에 못 들어가는 이 공급사 상품 (예: 영진 PB 상품)
+  // 소비기한 자료(카탈로그)에 없는 이 공급사 상품: 신제품은 명세서에 자동 추가되고, PB/TC 상품은 아예 제외됨
   const invoiceSkipped = useMemo(
-    () => (activeInvoiceSupplier ? getInvoiceSkippedProducts(invoiceProducts, activeInvoiceSupplier) : []),
+    () => (activeInvoiceSupplier ? getInvoiceSkippedProducts(invoiceProducts, activeInvoiceSupplier) : { added: [], excluded: [] }),
     [invoiceProducts, activeInvoiceSupplier]
   );
 
@@ -5623,11 +5629,18 @@ function InvoiceView({ orders }) {
           </button>
         </div>
         {invoiceErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{invoiceErr}</div>}
-        {invoiceSkipped.length > 0 && (
+        {invoiceSkipped.added.length > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, color: T.inkSoft }}>
-            소비기한 자료에 없는 신제품 {invoiceSkipped.length}개는 명세서 맨 아래에 자동으로 추가됐어요(소비기한 비고는 임시로 +3일):{" "}
-            {invoiceSkipped.slice(0, 6).join(", ")}
-            {invoiceSkipped.length > 6 ? ` 외 ${invoiceSkipped.length - 6}개` : ""}
+            소비기한 자료에 없는 신제품 {invoiceSkipped.added.length}개는 명세서 맨 아래에 자동으로 추가됐어요(소비기한 비고는 임시로 +3일):{" "}
+            {invoiceSkipped.added.slice(0, 6).join(", ")}
+            {invoiceSkipped.added.length > 6 ? ` 외 ${invoiceSkipped.added.length - 6}개` : ""}
+          </div>
+        )}
+        {invoiceSkipped.excluded.length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, color: T.inkSoft }}>
+            PB/TC 상품 {invoiceSkipped.excluded.length}개는 명세서 대상이 아니라 뺐어요:{" "}
+            {invoiceSkipped.excluded.slice(0, 6).join(", ")}
+            {invoiceSkipped.excluded.length > 6 ? ` 외 ${invoiceSkipped.excluded.length - 6}개` : ""}
           </div>
         )}
         {!invoiceErr && activeInvoiceSupplier && invoiceRegionsTotal === 0 && (
