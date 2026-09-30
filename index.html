@@ -5180,7 +5180,8 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
 const PICKING_QTY_ZERO_OVERRIDES = [
   { supplierKey: "탭스", regionCode: "VV92" }, // 탭스 - 신제주
   // 네고(참맛나라/맛요일/효성/h2 글로벌) - 김해/김해2/진주/CVS/경산/경산2/경산3
-  ...["참맛나라", "맛요일", "효성", "h2 글로벌"].flatMap((s) => ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ supplierKey: s, regionCode: r }))),
+  // 김해/김해2/진주/CVS/경산/경산2/경산3/청주
+  ...["참맛나라", "맛요일", "효성", "h2 글로벌"].flatMap((s) => ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97", "VV34"].map((r) => ({ supplierKey: s, regionCode: r }))),
 ];
 function isQtyZeroOverride(supplierKey, regionCode) {
   return PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === supplierKey && o.regionCode === regionCode);
