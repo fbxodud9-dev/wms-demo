@@ -4557,14 +4557,21 @@ function getInvoiceInfo(key) {
 // 1편/2편 명세서에 실리는 상품은 "소비기한 자료"(SUPPLIER_INVOICE_CATALOG)에 있는 상품만, 그 자료의 순서대로.
 // (예: 영진베이커리는 PB 상품(서울우유 등)이 같이 주문돼도 명세서에는 오든든 10종만 나감)
 // DC는 DC_PRODUCT_PREFIXES에 걸리는 상품만, 업로드 순서대로.
-// 카탈로그(소비기한 자료)에 없는 상품을 두 종류로 나눈다: 명세서에 자동 추가되는 "신제품"과, PB/TC라서 아예 안 나가는 "제외 상품"
+// 실제로는 그 공급사가 납품하지 않는 상품이라, 카탈로그에 없어도 명세서에 자동으로 끼워넣으면 안 되는 것들 (건별 요청)
+const INVOICE_EXCLUDED_PRODUCTS = [{ supplierKey: "대광푸드", name: "SET)오븐에구운도너츠버터맛10입" }];
+function isInvoiceExcludedProduct(supplierKey, name) {
+  return INVOICE_EXCLUDED_PRODUCTS.some((o) => o.supplierKey === supplierKey && o.name === name);
+}
+
+// 카탈로그(소비기한 자료)에 없는 상품을 두 종류로 나눈다: 명세서에 자동 추가되는 "신제품"과, PB/TC(또는 건별 제외 요청)라서 아예 안 나가는 "제외 상품"
 function getInvoiceSkippedProducts(products, supplierKey) {
   const cat = SUPPLIER_INVOICE_CATALOG[supplierKey] || {};
   const known = new Set([...(cat["1"] || []), ...(cat["2"] || [])]);
   const notInCatalog = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey && !isDcProduct(p.name) && !known.has(p.name));
+  const isExcluded = (p) => /PB/i.test(String(p.supplier || "")) || isInvoiceExcludedProduct(supplierKey, p.name);
   return {
-    added: notInCatalog.filter((p) => !/PB/i.test(String(p.supplier || ""))).map((p) => p.name),
-    excluded: notInCatalog.filter((p) => /PB/i.test(String(p.supplier || ""))).map((p) => p.name),
+    added: notInCatalog.filter((p) => !isExcluded(p)).map((p) => p.name),
+    excluded: notInCatalog.filter(isExcluded).map((p) => p.name),
   };
 }
 
@@ -4603,10 +4610,11 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     const catalogSet = new Set(catalogNames);
     const extraNames = [];
     supplierProducts.forEach((p) => {
-      // PB/TC 상품(발주서 공급사 표기에 "PB"가 붙는 것들, 예: 영진의 서울우유 등)은 거래명세서 대상이 아니므로
+      // PB/TC 상품이나, 건별로 "이 상품은 명세서에서 빼달라"고 요청받은 상품은 거래명세서 대상이 아니므로
       // 카탈로그에 없어도 자동으로 끼워넣지 않는다(신제품 자동추가는 정상 상품에만 적용).
       const isPb = /PB/i.test(String(p.supplier || ""));
-      if (p.part === part && !isDcProduct(p.name) && !catalogSet.has(p.name) && !isPb && !extraNames.includes(p.name)) extraNames.push(p.name);
+      const isExcluded = isPb || isInvoiceExcludedProduct(supplierKey, p.name);
+      if (p.part === part && !isDcProduct(p.name) && !catalogSet.has(p.name) && !isExcluded && !extraNames.includes(p.name)) extraNames.push(p.name);
     });
     names = [...catalogNames, ...extraNames];
   }
