@@ -5645,10 +5645,12 @@ function buildProductsForDate(orders, activeDate) {
       if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
       return { ...p, groupSeq: groupOrder.get(key) };
     })
-    // 공급사(고객사) 순서: 화주사가 지정한 고정 순서 - 그 안에서는 상품명 영문 먼저 + 가나다순, 같은 상품 1편 옆에 2편
+    // 공급사(고객사) 순서: 화주사가 지정한 고정 순서 - 그 안에서는 평소 상품(영문 먼저+가나다순)이 먼저 나오고
+    // 당착(현장출고) 상품은 그 공급사 맨 끝으로 몰아서 나온다. 당착끼리는 상품명 가나다순.
     .sort(
       (a, b) =>
         pickingSupplierPriority(supplierGroupKey(a.supplier)) - pickingSupplierPriority(supplierGroupKey(b.supplier)) ||
+        isDangchakProduct(a.name) - isDangchakProduct(b.name) ||
         pickingNameCompare(a.baseName, b.baseName) ||
         a.part - b.part
     );
