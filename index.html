@@ -4429,7 +4429,10 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
 // 상품마다: 날짜+공급사 줄 -> 헤더줄 -> 주문 있는 지역행(들) -> 총합계 -> 총박스/낱개(체크박스) -> 담당자 서명란, 빈 줄 하나 두고 다음 상품.
 function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, date) {
   const regionNames = new Set();
-  products.forEach((p) => p.regionRows.forEach((r) => (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName)));
+  products.forEach((p) => {
+    const onlyRegion = (getDangchakInfo(p.name) || {}).region;
+    p.regionRows.forEach((r) => (!onlyRegion || r.key === onlyRegion) && (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName));
+  });
   const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
   const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
   ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 } ];
@@ -4438,7 +4441,11 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
   products.forEach((product) => {
     const pack = product.packQty || 0;
     const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
-    const rows = product.regionRows.filter((r) => (r.rawQty ?? r.qty) > 0).map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
+    // 당착 몫은 그 상품에 지정된 지역 하나만 (나머지 지역 주문은 평소 피킹지시서로 정상적으로 나감)
+    const onlyRegion = (getDangchakInfo(product.name) || {}).region;
+    const rows = product.regionRows
+      .filter((r) => (!onlyRegion || r.key === onlyRegion) && (r.rawQty ?? r.qty) > 0)
+      .map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
     if (rows.length === 0) return;
     const totalQty = rows.reduce((a, r) => a + r.qty, 0);
 
@@ -4530,14 +4537,18 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
       const style = getDangchakStyle(p.name);
       if (style === "full") {
         addStyledInspectionSheet(workbook, p, usedNames, date, true);
-      } else if (style === "combined") {
-        const groupKey = getDangchakInfo(p.name).group;
-        if (combinedDone.has(groupKey)) return; // 이미 이 묶음 시트를 만들었으면 건너뜀
-        combinedDone.add(groupKey);
-        const group = products.filter((q) => (getDangchakInfo(q.name) || {}).group === groupKey);
-        addDangchakCombinedSheet(workbook, groupKey, group, usedNames, date);
       } else {
+        // combined 당착이든 아니든 평소 피킹지시서는 그대로 만든다 - 당착으로 빠지는 지역 하나만
+        // 위의 PICKING_QTY_ZERO_BY_NAME으로 이미 0 처리돼서, 나머지 지역 주문은 평소처럼 다 보인다.
         addStyledInspectionSheet(workbook, p, usedNames, date);
+        if (style === "combined") {
+          const groupKey = getDangchakInfo(p.name).group;
+          if (!combinedDone.has(groupKey)) {
+            combinedDone.add(groupKey);
+            const group = products.filter((q) => (getDangchakInfo(q.name) || {}).group === groupKey);
+            addDangchakCombinedSheet(workbook, groupKey, group, usedNames, date);
+          }
+        }
       }
     });
     // 여러 상품을 한 파일에 시트로 묶을 때, 화면에서 고르고 있던 상품의 시트가 열자마자 보이도록 활성 탭을 맞춘다.
@@ -4819,20 +4830,22 @@ const DANGCHAK_PRODUCTS = {
   "고단백저당)쿠키(다크초코아몬드": { style: "full" },
   "고단백저당)쿠키(말차마카다미아": { style: "full" },
   // 참맛나라와 맛요일은 한 시트("맛요일-참맛나라(오전현장-지역)")에 같이 묶여 나간다 (실물 파일 기준)
-  "두끼)치즈즉석라볶이633G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)스팸치즈부대찌개298G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)3900소고기미역국밥480G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)3900치즈미역국468G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)간장불고기덮밥366G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)대파육개장480G": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)떠먹는얼큰국물파스타": { style: "combined", group: "맛요일-참맛나라" },
-  "맛요일)스팸참기름김치덮밥345G": { style: "combined", group: "맛요일-참맛나라" },
-  "오뚜기마요)참치마요간장계란밥": { style: "combined", group: "맛요일-참맛나라" },
-  "노포식당)김치찌개406G": { style: "combined", group: "H2글로벌" },
-  "노포식당)된장찌개420G": { style: "combined", group: "H2글로벌" },
-  "서청미역)소고기미역국480G": { style: "combined", group: "H2글로벌" },
-  "리얼)쫄깃한모짜렐라치즈35G": { style: "combined", group: "데어리젠" },
-  "리얼)쫄깃한스트링치즈4입": { style: "combined", group: "데어리젠" },
+  // region: 당착 몫으로 빠지는 지역 하나 - 이 상품이 실제로는 다른 지역에도 정상적으로 나갈 수 있어서,
+  // 평소 피킹지시서는 그대로 만들고(이 지역만 기존 0고정 규칙으로 빠짐), 이 지역 몫만 따로 당착 시트로 나간다.
+  "두끼)치즈즉석라볶이633G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)스팸치즈부대찌개298G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)3900소고기미역국밥480G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)3900치즈미역국468G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)간장불고기덮밥366G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)대파육개장480G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)떠먹는얼큰국물파스타": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "맛요일)스팸참기름김치덮밥345G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "오뚜기마요)참치마요간장계란밥": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "노포식당)김치찌개406G": { style: "combined", group: "H2글로벌", region: "VV34" },
+  "노포식당)된장찌개420G": { style: "combined", group: "H2글로벌", region: "VV34" },
+  "서청미역)소고기미역국480G": { style: "combined", group: "H2글로벌", region: "VV34" },
+  "리얼)쫄깃한모짜렐라치즈35G": { style: "combined", group: "데어리젠", region: "VV92" },
+  "리얼)쫄깃한스트링치즈4입": { style: "combined", group: "데어리젠", region: "VV92" },
 };
 function getDangchakInfo(name) {
   const n = String(name || "").trim();
@@ -5519,6 +5532,10 @@ const PICKING_QTY_ZERO_BY_NAME = [
   ...["대광)미니파베초콜릿(밀크맛)60G", "대광)옛날맛순대500G", "대광)파베초콜릿100G", "즉석피자)파마산치즈(증정용)", "즉석피자)핫소스4G(증정용)"].flatMap((name) =>
     ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ name, regionCode: r }))
   ),
+  // 당착(오전현장)으로 따로 빠지는 지역은 평소 피킹지시서에서도 0으로 고정 (중복 집계 방지)
+  ...Object.entries(DANGCHAK_PRODUCTS)
+    .filter(([, info]) => info.style === "combined")
+    .map(([name, info]) => ({ name, regionCode: info.region })),
 ];
 function isQtyZeroByName(name, regionCode) {
   return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === name && o.regionCode === regionCode);
