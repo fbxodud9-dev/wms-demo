@@ -4205,9 +4205,11 @@ const XL_MEDIUM = { style: "medium", color: { argb: "FF000000" } };
 const XL_GRAY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
 
 // 실제 피킹지시서 디자인(테두리·음영·폰트 크기)을 그대로 적용해 1개 품목 시트를 만듦
-function addStyledInspectionSheet(workbook, product, usedNames, date) {
+function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+  // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
+  const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
   const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
   ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 10 }, { width: 10 }];
 
@@ -4221,10 +4223,14 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   };
   ws.pageSetup.printTitlesRow = "1:3";
 
-  // 전체 지역을 화주사 고정 순서(A→B→미지정)로 한 줄로 나열 (체크포인트 계산이 구역 경계를 넘어 전체를 봄)
+  // skipZero(당착)일 땐 "영남/호남/수도권" 실제 권역으로, 평소엔 기존 A/B구역으로 묶는다
+  const zoneList = skipZero ? ["영남", "호남", "수도권"] : ["A", "B", "미지정"];
+  const zoneOf = (r) => (skipZero ? realZoneOf(r.key) : r.zone);
+  const zoneLabel = (zone) => (skipZero ? `${zone} 합계` : zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`);
+  // 전체 지역을 화주사 고정 순서로 한 줄로 나열 (체크포인트 계산이 구역 경계를 넘어 전체를 봄)
   const flat = [];
-  ["A", "B", "미지정"].forEach((zone) => {
-    product.regionRows.filter((r) => r.zone === zone).forEach((r) => flat.push({ ...r, zone }));
+  zoneList.forEach((zone) => {
+    regionRowsUsed.filter((r) => zoneOf(r) === zone).forEach((r) => flat.push({ ...r, zone }));
   });
   // 체크포인트: 이 지역 "다음"부터 전체 끝까지 남은 낱개(소분) 합계를 박스로 환산 (엑셀 수식의 초기 캐시값 계산용)
   const remAfter = new Array(flat.length + 1).fill(0);
@@ -4332,8 +4338,8 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   let flatIdx = 0;
   const zoneRanges = []; // { zone, startFlatIdx, endFlatIdx }
   const zoneTotalRowNum = {};
-  ["A", "B", "미지정"].forEach((zone) => {
-    const rows = product.regionRows.filter((r) => r.zone === zone);
+  zoneList.forEach((zone) => {
+    const rows = regionRowsUsed.filter((r) => zoneOf(r) === zone);
     if (rows.length === 0) return;
     const startFlatIdx = flatIdx;
     rows.forEach((r) => {
@@ -4345,7 +4351,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     ws.addRow([]);
     const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
     const sumFormula = `SUM(C${flatRowNum[startFlatIdx]}:C${flatRowNum[endFlatIdx]})`;
-    const totalRow = addTotalRow(zone === "미지정" ? "미지정 지역 합계" : `${zone}구역 합계`, sumFormula, zoneTotalQty);
+    const totalRow = addTotalRow(zoneLabel(zone), sumFormula, zoneTotalQty);
     zoneTotalRowNum[zone] = totalRow.number;
     ws.addRow([]);
   });
@@ -4369,7 +4375,8 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   const totalRemSum = flat.reduce((a, r) => a + bd(r.qty).rem, 0);
   const subBox = pack > 0 ? Math.floor(totalRemSum / pack) : 0;
   const subRem = totalRemSum - subBox * pack;
-  const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", pack || "", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
+  // B열은 실물처럼 체크박스("완료" 표시용) - 소분박스/낱개 수식은 첫 지역행의 입수(B)를 그대로 참조해서 계산한다.
+  const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "□", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
   finalRow.height = 29;
   const finalAlign = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
@@ -4379,10 +4386,11 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
   const frn = finalRow.number;
+  const packRef = `B${flatRowNum[0]}`;
   finalRow.getCell("D").value = { formula: `SUM(${boxRangeStr})`, result: totalBoxSum };
   finalRow.getCell("F").value = { formula: `SUM(${remRangeStr})`, result: totalRemSum };
-  finalRow.getCell("G").value = { formula: `IF(B${frn}=0,0,INT(F${frn}/B${frn}))`, result: subBox };
-  finalRow.getCell("H").value = { formula: `IF(B${frn}=0,F${frn},F${frn}-G${frn}*B${frn})`, result: subRem };
+  finalRow.getCell("G").value = { formula: `IF(${packRef}=0,0,INT(F${frn}/${packRef}))`, result: subBox };
+  finalRow.getCell("H").value = { formula: `IF(${packRef}=0,F${frn},F${frn}-G${frn}*${packRef})`, result: subRem };
   ["G", "H"].forEach((col) => {
     const c = finalRow.getCell(col);
     c.font = { name: XLFONT, size: 21, bold: true };
@@ -4390,6 +4398,15 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
   });
+
+  // 담당자 서명란(이름은 피킹하는 사람이 손으로 적도록 비워둠) + 완료 체크박스 - 실물 피킹지와 동일하게 맨 아래에
+  const signRow = ws.addRow([]);
+  signRow.height = 18;
+  ws.getCell(`G${signRow.number}`).border = { top: XL_THIN };
+  ws.getCell(`H${signRow.number}`).value = "□";
+  ws.getCell(`H${signRow.number}`).font = { name: XLFONT, size: 12 };
+  ws.getCell(`H${signRow.number}`).alignment = { horizontal: "center", vertical: "middle" };
+  ws.getCell(`H${signRow.number}`).border = { top: XL_THIN };
 
   // 체크포인트 G/H: 이 지점 "다음"부터 (같은 구역의 남은 지역행) + (그 뒤 구역들의 지역행 전체) 낱개 합계를 박스로 환산
   checkpointQueue.forEach(({ rowNumber, flatIdx: fi }) => {
@@ -4408,12 +4425,121 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   });
 }
 
+// "combined" 당착 상품들을 공급사 하나당 시트 하나로 몰아서 넣는다 (실물 "{공급사}(오전현장-지역)" 시트 그대로).
+// 상품마다: 날짜+공급사 줄 -> 헤더줄 -> 주문 있는 지역행(들) -> 총합계 -> 총박스/낱개(체크박스) -> 담당자 서명란, 빈 줄 하나 두고 다음 상품.
+function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, date) {
+  const regionNames = new Set();
+  products.forEach((p) => p.regionRows.forEach((r) => (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName)));
+  const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
+  const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
+  ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 } ];
+  ws.pageSetup = { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 1, margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.2, footer: 0.2 } };
+
+  products.forEach((product) => {
+    const pack = product.packQty || 0;
+    const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+    const rows = product.regionRows.filter((r) => (r.rawQty ?? r.qty) > 0).map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
+    if (rows.length === 0) return;
+    const totalQty = rows.reduce((a, r) => a + r.qty, 0);
+
+    const r1 = ws.addRow([date || todayStr(), `${supplierLabel}□`, "", "", "", ""]);
+    r1.height = 22;
+    ws.mergeCells(`B${r1.number}:F${r1.number}`);
+    ["A", "B"].forEach((col) => {
+      const c = ws.getCell(`${col}${r1.number}`);
+      c.font = { name: "맑은 고딕", size: 14, bold: true };
+      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.border = { top: XL_MEDIUM, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : undefined, right: col === "B" ? XL_MEDIUM : undefined };
+    });
+    ws.getCell(`A${r1.number}`).numFmt = "yyyy-mm-dd";
+
+    const r2 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
+    r2.height = 18;
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = ws.getCell(`${col}${r2.number}`);
+      c.font = { name: "맑은 고딕", size: col === "C" ? 13 : 11, bold: true };
+      c.alignment = { horizontal: "center", vertical: "middle" };
+      c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    });
+
+    const rowNums = [];
+    rows.forEach((r) => {
+      const { box, rem } = bd(r.qty);
+      const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
+      rowNums.push(row.number);
+      row.height = 20;
+      const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
+      const size = { A: 11, B: 11, C: 15, D: 14, E: 16, F: 14 };
+      ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+        const c = row.getCell(col);
+        c.font = { name: "맑은 고딕", size: size[col], bold: col === "E" };
+        c.alignment = { horizontal: alignH[col], vertical: "middle" };
+        c.border = { left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+      });
+      const rn = row.number;
+      row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
+      row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
+    });
+
+    ws.addRow([]);
+    const { box: tBox, rem: tRem } = bd(totalQty);
+    const totalRow = ws.addRow(["총합계", pack || "", totalQty, tBox, "", tRem]);
+    totalRow.height = 20;
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = totalRow.getCell(col);
+      c.font = { name: "맑은 고딕", size: col === "C" || col === "A" ? 15 : 14, bold: true };
+      c.alignment = { horizontal: col === "C" ? "right" : "left", vertical: "middle" };
+      c.border = { left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    });
+    const trn = totalRow.number;
+    totalRow.getCell("C").value = { formula: `SUM(C${rowNums[0]}:C${rowNums[rowNums.length - 1]})`, result: totalQty };
+    totalRow.getCell("D").value = { formula: `IF(B${trn}=0,0,INT(C${trn}/B${trn}))`, result: tBox };
+    totalRow.getCell("F").value = { formula: `IF(B${trn}=0,C${trn},C${trn}-D${trn}*B${trn})`, result: tRem };
+
+    const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "□", "", tBox, "", tRem]);
+    finalRow.height = 20;
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = finalRow.getCell(col);
+      c.font = { name: "맑은 고딕", size: 15, bold: true };
+      c.alignment = { horizontal: col === "A" ? "left" : "center", vertical: "middle" };
+      c.border = { bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    });
+    finalRow.getCell("D").value = { formula: `SUM(D${rowNums[0]}:D${rowNums[rowNums.length - 1]})`, result: tBox };
+    finalRow.getCell("F").value = { formula: `SUM(F${rowNums[0]}:F${rowNums[rowNums.length - 1]})`, result: tRem };
+
+    // 담당자(이름은 비워둠, 손으로 적도록) + 완료 체크박스 - 실물과 같은 위치(E/F)
+    const signRow = ws.addRow([]);
+    signRow.height = 16;
+    ws.getCell(`F${signRow.number}`).value = "□";
+    ws.getCell(`F${signRow.number}`).font = { name: "맑은 고딕", size: 15 };
+    ws.getCell(`F${signRow.number}`).alignment = { horizontal: "center", vertical: "middle" };
+    ws.addRow([]);
+  });
+}
+
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
   try {
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
-    products.forEach((p) => addStyledInspectionSheet(workbook, p, usedNames, date));
+    // 당착 상품(GS_당착리스트)은 같은 파일에 섞여 들어가되 37개 지역 전부가 아니라 실제 주문 있는 지역만 보여준다.
+    // - style "full"(조인앤조인): 구역 합계는 유지한 채 자기 시트에서 0인 지역만 건너뜀
+    // - style "combined"(참맛나라·맛요일·H2글로벌·데어리젠): 같은 공급사 것끼리 한 시트에 몰아서 "{공급사}(오전현장-지역)"로 나감
+    const combinedDone = new Set();
+    products.forEach((p) => {
+      const style = getDangchakStyle(p.name);
+      if (style === "full") {
+        addStyledInspectionSheet(workbook, p, usedNames, date, true);
+      } else if (style === "combined") {
+        const groupKey = getDangchakInfo(p.name).group;
+        if (combinedDone.has(groupKey)) return; // 이미 이 묶음 시트를 만들었으면 건너뜀
+        combinedDone.add(groupKey);
+        const group = products.filter((q) => (getDangchakInfo(q.name) || {}).group === groupKey);
+        addDangchakCombinedSheet(workbook, groupKey, group, usedNames, date);
+      } else {
+        addStyledInspectionSheet(workbook, p, usedNames, date);
+      }
+    });
     // 여러 상품을 한 파일에 시트로 묶을 때, 화면에서 고르고 있던 상품의 시트가 열자마자 보이도록 활성 탭을 맞춘다.
     // (지정 안 하면 항상 첫 번째 시트가 열려서, "분명 다른 상품을 골랐는데 엉뚱한 상품이 열린다"는 착각이 생김)
     if (activeSku) {
@@ -4679,6 +4805,56 @@ function dcGroupOf(name) {
 function dcVendorKey(name) {
   const r = dcGroupOf(name);
   return r ? r.group.key : null;
+}
+
+// "당착" 상품 목록 (GS_당착리스트 + 실물 피킹검수 파일 기준). 평소 피킹지시서와 같은 파일에 섞여 들어가되,
+// 37개 지역을 전부 보여주는 평소 방식이 아니라 "그날 실제로 주문 있는 지역만" 보여주는 모양으로 나간다.
+// style "full": 여러 지역에 걸쳐 나갈 수 있는 상품 - 구역 합계는 유지한 채 0인 지역만 건너뛰고 자기 시트로 나감 (조인앤조인).
+// style "combined": 보통 한두 지역(주로 청주·제주)에만 나가는 상품 - 같은 공급사 것끼리 한 시트에 몰아서, "{공급사}(오전현장-지역)"로 나감.
+const DANGCHAK_PRODUCTS = {
+  "고단백저당)도넛케이크(다크초코": { style: "full" },
+  "고단백저당)도넛케이크(헤이즐넛": { style: "full" },
+  "고단백저당)카스테라(초코": { style: "full" },
+  "고단백저당)카스테라(플레인": { style: "full" },
+  "고단백저당)쿠키(다크초코아몬드": { style: "full" },
+  "고단백저당)쿠키(말차마카다미아": { style: "full" },
+  // 참맛나라와 맛요일은 한 시트("맛요일-참맛나라(오전현장-지역)")에 같이 묶여 나간다 (실물 파일 기준)
+  "두끼)치즈즉석라볶이633G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)스팸치즈부대찌개298G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)3900소고기미역국밥480G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)3900치즈미역국468G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)간장불고기덮밥366G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)대파육개장480G": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)떠먹는얼큰국물파스타": { style: "combined", group: "맛요일-참맛나라" },
+  "맛요일)스팸참기름김치덮밥345G": { style: "combined", group: "맛요일-참맛나라" },
+  "오뚜기마요)참치마요간장계란밥": { style: "combined", group: "맛요일-참맛나라" },
+  "노포식당)김치찌개406G": { style: "combined", group: "H2글로벌" },
+  "노포식당)된장찌개420G": { style: "combined", group: "H2글로벌" },
+  "서청미역)소고기미역국480G": { style: "combined", group: "H2글로벌" },
+  "리얼)쫄깃한모짜렐라치즈35G": { style: "combined", group: "데어리젠" },
+  "리얼)쫄깃한스트링치즈4입": { style: "combined", group: "데어리젠" },
+};
+function getDangchakInfo(name) {
+  const n = String(name || "").trim();
+  const key = Object.keys(DANGCHAK_PRODUCTS).find((d) => n.startsWith(d));
+  return key ? DANGCHAK_PRODUCTS[key] : null;
+}
+function getDangchakStyle(name) {
+  const info = getDangchakInfo(name);
+  return info ? info.style : null;
+}
+function isDangchakProduct(name) {
+  return !!getDangchakInfo(name);
+}
+
+// 조인앤조인처럼 여러 지역에 나가는 당착 상품은 화주사 기준 "영남/호남/수도권" 세 권역으로 묶는다
+// (저희 시스템 내부의 A/B구역과는 다른, 실제 지리적 구분 - 체크포인트 등 다른 기능에는 영향 없음)
+const REGION_REAL_ZONE = {
+  VV57: "영남", VV58: "영남", VV92: "영남", VV25: "영남", VV20: "영남", VV83: "영남", VV84: "영남", VV97: "영남",
+  VV95: "호남", VV96: "호남", VV65: "호남",
+};
+function realZoneOf(code) {
+  return REGION_REAL_ZONE[code] || "수도권";
 }
 
 // 사업자 정보가 아직 없는 공급사(대부분의 DC 공급사)는 상호에 이름만 넣고 나머지는 공란으로 발행
@@ -5386,8 +5562,10 @@ function buildProductsForDate(orders, activeDate) {
           order: ref ? ref.order : 9999,
           checkpoint: ref ? ref.checkpoint : false,
           qty: 0,
+          rawQty: 0, // 0고정 규칙 적용 전의 실제 발주 수량 (당착 피킹지처럼 그 규칙과 무관하게 원본 수량이 필요한 곳에서 사용)
         };
       }
+      bySku[l.sku].regions[regionKey].rawQty += qty;
       if (!zeroed) bySku[l.sku].regions[regionKey].qty += qty;
     });
   });
