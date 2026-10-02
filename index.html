@@ -527,7 +527,10 @@ const REGION_ADDRESS_MAP = {
 };
 
 // 거래명세서 엑셀 시트 탭 순서(실물 파일 순서)와 "N편발주량" 요약표 행 순서
-const INVOICE_SHEET_ORDER = ["VV92", "VV93", "VV94", "VV16", "VV69", "VV57", "VV58", "VV04", "VV75", "VV34", "VV25", "VV20", "VV95", "VV96", "VV65", "VV83", "VV84", "VV97", "VV03", "VV90", "VV91", "VV98", "VV99", "VV63", "VV64", "VV81", "VV62", "VV70", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV85", "VV86", "VV87"];
+// 1편 명세서 시트 순서 (기존 그대로 - 김주경님 요청 2번: 1편은 바꾸지 말아달라고 하심)
+const INVOICE_SHEET_ORDER_1 = ["VV92", "VV93", "VV94", "VV16", "VV69", "VV57", "VV58", "VV04", "VV75", "VV34", "VV25", "VV20", "VV95", "VV96", "VV65", "VV83", "VV84", "VV97", "VV03", "VV90", "VV91", "VV98", "VV99", "VV63", "VV64", "VV81", "VV62", "VV70", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV85", "VV86", "VV87"];
+// 2편·DC 명세서 시트 순서 - 곤지암(VV93)/곤지암2(VV94)를 맨 앞에서 신오산1 바로 앞으로 이동
+const INVOICE_SHEET_ORDER_2 = ["VV92", "VV16", "VV69", "VV57", "VV58", "VV04", "VV75", "VV34", "VV25", "VV20", "VV95", "VV96", "VV65", "VV83", "VV84", "VV97", "VV03", "VV90", "VV91", "VV98", "VV99", "VV63", "VV64", "VV81", "VV62", "VV70", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV93", "VV94", "VV85", "VV86", "VV87"];
 const INVOICE_PIVOT_ORDER = ["VV16", "VV69", "VV57", "VV58", "VV25", "VV20", "VV92", "VV95", "VV96", "VV83", "VV84", "VV97", "VV34", "VV04", "VV75", "VV65", "VV03", "VV63", "VV64", "VV81", "VV62", "VV70", "VV98", "VV99", "VV90", "VV91", "VV85", "VV86", "VV87", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV93", "VV94"];
 
 // 실물 거래명세서에서 뽑은 "눈에 보이는 선" 규격 (. 없음 / t 얇게 / M 굵게). 1부(파랑)·2부(빨강) 각각.
@@ -4186,15 +4189,15 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
   const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
-  ws.columns = [{ width: 34 }, { width: 8 }, { width: 31 }, { width: 10 }, { width: 12 }, { width: 11 }, { width: 9 }, { width: 9 }];
+  ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 10 }, { width: 10 }];
 
-  // 인쇄 설정: 가로 방향 + 폭을 1페이지에 맞춰 자동 축소, 페이지 넘어가도 3행(헤더)은 반복
+  // 인쇄 설정: 세로 방향으로 고정, 가로·세로 둘 다 1페이지에 맞춰서 상품마다 출력 장수가 들쭉날쭉하지 않게 함
   ws.pageSetup = {
-    orientation: "landscape",
+    orientation: "portrait",
     fitToPage: true,
     fitToWidth: 1,
-    fitToHeight: 0,
-    margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+    fitToHeight: 1,
+    margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.2, footer: 0.2 },
   };
   ws.pageSetup.printTitlesRow = "1:3";
 
@@ -4215,29 +4218,29 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
 
   // 2행: 날짜 | 공급자명(병합) | 박스 | 낱개
   const r2 = ws.addRow([date || todayStr(), product.supplier || "", "", "", "", "", "박스", "낱개"]);
-  r2.height = 24.75;
+  r2.height = 26;
   ws.mergeCells("B2:F2");
   const a2 = ws.getCell("A2");
-  a2.font = { name: XLFONT, size: 14, bold: true };
+  a2.font = { name: XLFONT, size: 15, bold: true };
   a2.alignment = { horizontal: "left", vertical: "middle" };
   a2.numFmt = "yyyy-mm-dd";
   a2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_MEDIUM, right: XL_THIN };
   const b2 = ws.getCell("B2");
-  b2.font = { name: XLFONT, size: 14, bold: true };
+  b2.font = { name: XLFONT, size: 15, bold: true };
   b2.alignment = { horizontal: "center", vertical: "middle" };
   b2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_THIN, right: XL_MEDIUM };
   ["C2", "D2", "E2"].forEach((a) => (ws.getCell(a).border = { top: XL_MEDIUM, bottom: XL_THIN }));
   ["G2", "H2"].forEach((a) => {
     const c = ws.getCell(a);
-    c.font = { name: XLFONT, size: 13, bold: true };
+    c.font = { name: XLFONT, size: 14, bold: true };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_MEDIUM, bottom: XL_MEDIUM };
   });
 
   // 3행: 헤더
   const r3 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
-  r3.height = 24;
-  const headerSize = { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 };
+  r3.height = 26;
+  const headerSize = { A: 12, B: 12, C: 14, D: 13, E: 12, F: 13 };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
     const c = ws.getCell(`${col}3`);
     c.font = { name: XLFONT, size: headerSize[col], bold: true };
@@ -4260,8 +4263,8 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
     const { box, rem } = bd(r.qty);
     const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
     flatRowNum[flatIdx] = row.number;
-    row.height = 26.25;
-    const size = { A: 11, B: 11, C: 14, D: 12, E: 14, F: 12 };
+    row.height = 28;
+    const size = { A: 12, B: 12, C: 15, D: 13, E: 15, F: 13 };
     const bold = { A: false, B: false, C: true, D: false, E: true, F: false };
     const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
     const isGray = bandIndex % 2 === 0;
@@ -4291,11 +4294,11 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   function addTotalRow(label, qtyFormulaOrValue, cachedQty) {
     const { box, rem } = bd(cachedQty);
     const row = ws.addRow([label, pack || "", cachedQty, box, "", rem]);
-    row.height = 27;
+    row.height = 29;
     const alignH = { A: "center", B: "center", C: "right", D: "center", E: "center", F: "center" };
     ["A", "B", "C", "D", "E", "F"].forEach((col) => {
       const c = row.getCell(col);
-      c.font = { name: XLFONT, size: 16, bold: true };
+      c.font = { name: XLFONT, size: 17, bold: true };
       c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
@@ -4333,7 +4336,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   ["G", "H"].forEach((col) => {
     const c = grandRow.getCell(col);
     c.value = col === "G" ? "소분박스" : "소분낱개";
-    c.font = { name: XLFONT, size: 12, bold: true };
+    c.font = { name: XLFONT, size: 13, bold: true };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
   });
@@ -4347,11 +4350,11 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   const subBox = pack > 0 ? Math.floor(totalRemSum / pack) : 0;
   const subRem = totalRemSum - subBox * pack;
   const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", pack || "", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
-  finalRow.height = 27;
+  finalRow.height = 29;
   const finalAlign = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 16, bold: true };
+    c.font = { name: XLFONT, size: 17, bold: true };
     c.alignment = { horizontal: finalAlign[col], vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
@@ -4362,7 +4365,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date) {
   finalRow.getCell("H").value = { formula: `IF(B${frn}=0,F${frn},F${frn}-G${frn}*B${frn})`, result: subRem };
   ["G", "H"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 20, bold: true };
+    c.font = { name: XLFONT, size: 21, bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
@@ -4550,6 +4553,7 @@ const DC_VENDOR_GROUPS = [
     "고단백저당)쿠키(말차마카다미아",
   ] },
   { key: "대광푸드", label: "대광", prefixes: [
+    "뉴생초코파이", // 신제품 (영푸드시스템) - 예전엔 DC 분류가 안 돼서 TC 1편 명세서로 잘못 들어갔음
     "달빛한상)매콤순대곱창200G",
     "대광)두바이초코스틱55G",
     "대광)두바이크런치콘",
@@ -4738,7 +4742,8 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     return rr ? rr.qty : 0;
   };
   const regions = [];
-  INVOICE_SHEET_ORDER.forEach((code) => {
+  const sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
+  sheetOrder.forEach((code) => {
     if (!REGION_ORDER_MAP[code]) return;
     const rowItems = items.map((it) => ({ name: it.name, packQty: it.packQty, qty: qtyOf(it, code) }));
     const totalQty = rowItems.reduce((a, r) => a + r.qty, 0);
@@ -5395,10 +5400,12 @@ function buildProductsForDate(orders, activeDate) {
       if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
       return { ...p, groupSeq: groupOrder.get(key) };
     })
-    // 공급사(고객사) 순서: 가나다순 - 그 안에서는 같은 상품 1편 옆에 2편이 오도록 groupSeq/part로 이어서 정렬
+    // 공급사(고객사) 순서: 가나다순 - 그 안에서는 상품도 가나다순(기본 이름 기준), 같은 상품 1편 옆에 2편
     .sort(
       (a, b) =>
-        supplierGroupKey(a.supplier).localeCompare(supplierGroupKey(b.supplier), "ko") || a.groupSeq - b.groupSeq || a.part - b.part
+        supplierGroupKey(a.supplier).localeCompare(supplierGroupKey(b.supplier), "ko") ||
+        a.baseName.localeCompare(b.baseName, "ko") ||
+        a.part - b.part
     );
 }
 
