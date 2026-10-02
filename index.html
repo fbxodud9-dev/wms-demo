@@ -467,6 +467,7 @@ const SUPPLIER_ORDER_LIST = [
   "엠즈베이커스",
   "청정푸드",
   "대광푸드",
+  "삼경MNS",
   "골든에프앤디",
   "흥선",
   "유라가",
@@ -1006,6 +1007,25 @@ const PACK_QTY_OVERRIDES = {
   "8801121289037": 60, // 서울우유)옥수수크림떡
 
 };
+
+// 화주사가 지정한 피킹지시서 "시트 순서"(공급사 기준). SUPPLIER_ORDER_LIST의 표기와 다르게 받은 건
+// 실제 발주파일에서 확인된 표기로 맞췄다(예: 네이처→네이쳐, 태향→태항, 흥성엔에프→효성앤에프 등은 화주사 표기가 실제와 다를 수 있어 기존 확인값 유지).
+const SUPPLIER_PICKING_ORDER = [
+  "영진베이커리", "조인앤조인", "네이쳐앤휴먼지피", "탭스", "저스트그린", "은성파머스", "은성", "미샛", "채다원", "스윗밸런스",
+  "태항", "케이제이컴퍼니", "엠즈베이커스", "청정푸드", "대광푸드", "삼경MNS", "골든에프앤디", "흥선", "뜬뜬(락컴퍼니)", "유라가",
+  "아워홈", "삼진어묵", "우리집사람들", "브라더스팩토리", "(네고)싱싱한", "(네고)흥성엔에프", "(네고)참맛나라", "(네고)맛요일", "(네고)H2글로벌", "데어리젠",
+];
+function pickingSupplierPriority(supplierKey) {
+  const idx = SUPPLIER_PICKING_ORDER.indexOf(supplierKey);
+  return idx === -1 ? SUPPLIER_PICKING_ORDER.length : idx;
+}
+// 피킹지시서 상품 이름 정렬: 화주사 요청대로 "영문 먼저, 그다음 한글 가나다순"
+function pickingNameCompare(a, b) {
+  const isAscii = (s) => /^[A-Za-z]/.test(s);
+  const ea = isAscii(a), eb = isAscii(b);
+  if (ea !== eb) return ea ? -1 : 1;
+  return String(a).localeCompare(String(b), "ko");
+}
 
 function supplierPriority(supplier) {
   const s = String(supplier || "");
@@ -5400,11 +5420,11 @@ function buildProductsForDate(orders, activeDate) {
       if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
       return { ...p, groupSeq: groupOrder.get(key) };
     })
-    // 공급사(고객사) 순서: 가나다순 - 그 안에서는 상품도 가나다순(기본 이름 기준), 같은 상품 1편 옆에 2편
+    // 공급사(고객사) 순서: 화주사가 지정한 고정 순서 - 그 안에서는 상품명 영문 먼저 + 가나다순, 같은 상품 1편 옆에 2편
     .sort(
       (a, b) =>
-        supplierGroupKey(a.supplier).localeCompare(supplierGroupKey(b.supplier), "ko") ||
-        a.baseName.localeCompare(b.baseName, "ko") ||
+        pickingSupplierPriority(supplierGroupKey(a.supplier)) - pickingSupplierPriority(supplierGroupKey(b.supplier)) ||
+        pickingNameCompare(a.baseName, b.baseName) ||
         a.part - b.part
     );
 }
