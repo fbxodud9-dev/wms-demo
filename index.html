@@ -4427,6 +4427,9 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
 
 // "combined" 당착 상품들을 공급사 하나당 시트 하나로 몰아서 넣는다 (실물 "{공급사}(오전현장-지역)" 시트 그대로).
 // 상품마다: 날짜+공급사 줄 -> 헤더줄 -> 주문 있는 지역행(들) -> 총합계 -> 총박스/낱개(체크박스) -> 담당자 서명란, 빈 줄 하나 두고 다음 상품.
+// 실물로 직접 만들어주신 "당착.xlsx" 견본과 셀 단위로 맞춘 서식 (글꼴 크기·색상·테두리·행높이·병합 전부 동일)
+const DANGCHAK_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFBE3D6" } }; // 견본의 옅은 주황(테마색+틴트 80%) 그대로 계산한 값
+const DANGCHAK_ACCT_FMT = '_-* #,##0_-;\\-* #,##0_-;_-* "-"_-;_-@_-'; // 0은 "-"로 보이는 회계 서식 (견본과 동일)
 function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, date) {
   const regionNames = new Set();
   products.forEach((p) => {
@@ -4435,10 +4438,24 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
   });
   const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
   const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
-  ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 } ];
+  ws.columns = [{ width: 36.625 }, { width: 7.625 }, { width: 30.625 }, { width: 12.375 }, { width: 11.375 }, { width: 11.125 }];
   ws.pageSetup = { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 1, margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.2, footer: 0.2 } };
 
-  products.forEach((product) => {
+  function styleRow(row, { font, align, border, fill, numFmt } = {}) {
+    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
+      const c = row.getCell(col);
+      if (font) c.font = typeof font === "function" ? font(col) : font;
+      if (align) c.alignment = typeof align === "function" ? align(col) : align;
+      if (fill) c.fill = fill;
+      if (numFmt && "CDF".includes(col)) c.numFmt = numFmt;
+      const left = col === "A" ? XL_MEDIUM : XL_THIN;
+      const right = col === "F" ? XL_MEDIUM : XL_THIN;
+      const vert = typeof border === "function" ? border(col) : border || { top: XL_THIN, bottom: XL_THIN };
+      c.border = { left, right, ...vert };
+    });
+  }
+
+  products.forEach((product, idx) => {
     const pack = product.packQty || 0;
     const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
     // 당착 몫은 그 상품에 지정된 지역 하나만 (나머지 지역 주문은 평소 피킹지시서로 정상적으로 나감)
@@ -4449,24 +4466,36 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     if (rows.length === 0) return;
     const totalQty = rows.reduce((a, r) => a + r.qty, 0);
 
+    if (idx > 0) {
+      // 블록 사이 여백 2줄 (견본과 동일하게 작은 줄 하나 + 병합된 구분줄 하나)
+      ws.addRow([]).height = 17.25;
+      const gapRow = ws.addRow([]);
+      gapRow.height = 25.9;
+      ws.mergeCells(`A${gapRow.number}:F${gapRow.number}`);
+    }
+
     const r1 = ws.addRow([date || todayStr(), `${supplierLabel}□`, "", "", "", ""]);
-    r1.height = 22;
+    r1.height = 42;
     ws.mergeCells(`B${r1.number}:F${r1.number}`);
-    ["A", "B"].forEach((col) => {
-      const c = ws.getCell(`${col}${r1.number}`);
-      c.font = { name: "맑은 고딕", size: 14, bold: true };
-      c.alignment = { horizontal: "center", vertical: "middle" };
-      c.border = { top: XL_MEDIUM, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : undefined, right: col === "B" ? XL_MEDIUM : undefined };
-    });
-    ws.getCell(`A${r1.number}`).numFmt = "yyyy-mm-dd";
+    const a1 = ws.getCell(`A${r1.number}`);
+    a1.font = { name: XLFONT, size: 14, bold: true };
+    a1.alignment = { horizontal: "center", vertical: "middle" };
+    a1.numFmt = "mm-dd-yy";
+    a1.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_MEDIUM, right: XL_THIN };
+    const b1 = ws.getCell(`B${r1.number}`);
+    b1.font = { name: XLFONT, size: 14, bold: true };
+    b1.alignment = { horizontal: "center", vertical: "middle" };
+    b1.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_THIN };
+    ["C", "D", "E"].forEach((col) => (ws.getCell(`${col}${r1.number}`).border = { top: XL_MEDIUM, bottom: XL_THIN }));
+    ws.getCell(`F${r1.number}`).border = { top: XL_MEDIUM, bottom: XL_THIN, right: XL_MEDIUM };
 
     const r2 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
-    r2.height = 18;
-    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
-      const c = ws.getCell(`${col}${r2.number}`);
-      c.font = { name: "맑은 고딕", size: col === "C" ? 13 : 11, bold: true };
-      c.alignment = { horizontal: "center", vertical: "middle" };
-      c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    r2.height = 42;
+    styleRow(r2, {
+      font: (col) => ({ name: XLFONT, size: { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 }[col], bold: true }),
+      align: (col) => ({ horizontal: "center", vertical: "middle", wrapText: col === "C" }),
+      fill: DANGCHAK_FILL,
+      numFmt: DANGCHAK_ACCT_FMT,
     });
 
     const rowNums = [];
@@ -4474,29 +4503,31 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
       const { box, rem } = bd(r.qty);
       const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
       rowNums.push(row.number);
-      row.height = 20;
-      const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
-      const size = { A: 11, B: 11, C: 15, D: 14, E: 16, F: 14 };
-      ["A", "B", "C", "D", "E", "F"].forEach((col) => {
-        const c = row.getCell(col);
-        c.font = { name: "맑은 고딕", size: size[col], bold: col === "E" };
-        c.alignment = { horizontal: alignH[col], vertical: "middle" };
-        c.border = { left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+      row.height = 42;
+      styleRow(row, {
+        font: (col) => ({ name: XLFONT, size: { A: 11, B: 11, C: 15, D: 14, E: 16, F: 14 }[col], bold: col === "E" }),
+        align: (col) => ({ horizontal: { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" }[col], vertical: "middle" }),
+        numFmt: DANGCHAK_ACCT_FMT,
       });
       const rn = row.number;
       row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
       row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
     });
 
-    ws.addRow([]);
+    // 데이터 행과 총합계 사이 얇은 구분줄 (견본의 A5:F5 병합 줄과 동일)
+    const divRow = ws.addRow([]);
+    divRow.height = 4.5;
+    ws.mergeCells(`A${divRow.number}:F${divRow.number}`);
+    divRow.getCell("A").border = { top: XL_THIN, bottom: XL_THIN, left: XL_MEDIUM, right: XL_MEDIUM };
+
     const { box: tBox, rem: tRem } = bd(totalQty);
     const totalRow = ws.addRow(["총합계", pack || "", totalQty, tBox, "", tRem]);
-    totalRow.height = 20;
-    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
-      const c = totalRow.getCell(col);
-      c.font = { name: "맑은 고딕", size: col === "C" || col === "A" ? 15 : 14, bold: true };
-      c.alignment = { horizontal: col === "C" ? "right" : "left", vertical: "middle" };
-      c.border = { left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    totalRow.height = 42;
+    styleRow(totalRow, {
+      font: (col) => ({ name: XLFONT, size: col === "C" || col === "D" || col === "F" ? 16 : 15, bold: col !== "B" }),
+      align: (col) => ({ horizontal: col === "A" ? "left" : col === "B" ? "center" : undefined, vertical: "middle" }),
+      fill: DANGCHAK_FILL,
+      numFmt: DANGCHAK_ACCT_FMT,
     });
     const trn = totalRow.number;
     totalRow.getCell("C").value = { formula: `SUM(C${rowNums[0]}:C${rowNums[rowNums.length - 1]})`, result: totalQty };
@@ -4504,23 +4535,22 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     totalRow.getCell("F").value = { formula: `IF(B${trn}=0,C${trn},C${trn}-D${trn}*B${trn})`, result: tRem };
 
     const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "□", "", tBox, "", tRem]);
-    finalRow.height = 20;
-    ["A", "B", "C", "D", "E", "F"].forEach((col) => {
-      const c = finalRow.getCell(col);
-      c.font = { name: "맑은 고딕", size: 15, bold: true };
-      c.alignment = { horizontal: col === "A" ? "left" : "center", vertical: "middle" };
-      c.border = { bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : undefined, right: col === "F" ? XL_MEDIUM : undefined };
+    finalRow.height = 42;
+    styleRow(finalRow, {
+      font: (col) => ({ name: XLFONT, size: col === "A" || col === "B" ? 15 : 16, bold: col !== "B" && col !== "C" }),
+      align: (col) => ({ horizontal: col === "A" ? "left" : "center", vertical: "middle" }),
+      border: () => ({ top: XL_THIN, bottom: XL_MEDIUM }),
+      numFmt: DANGCHAK_ACCT_FMT,
     });
     finalRow.getCell("D").value = { formula: `SUM(D${rowNums[0]}:D${rowNums[rowNums.length - 1]})`, result: tBox };
     finalRow.getCell("F").value = { formula: `SUM(F${rowNums[0]}:F${rowNums[rowNums.length - 1]})`, result: tRem };
 
-    // 담당자(이름은 비워둠, 손으로 적도록) + 완료 체크박스 - 실물과 같은 위치(E/F)
+    // 담당자(이름은 비워둠, 손으로 적도록) + 완료 체크박스 - 견본과 같은 위치(E/F), 테두리 없음
     const signRow = ws.addRow([]);
-    signRow.height = 16;
+    signRow.height = 24;
     ws.getCell(`F${signRow.number}`).value = "□";
-    ws.getCell(`F${signRow.number}`).font = { name: "맑은 고딕", size: 15 };
+    ws.getCell(`F${signRow.number}`).font = { name: XLFONT, size: 15 };
     ws.getCell(`F${signRow.number}`).alignment = { horizontal: "center", vertical: "middle" };
-    ws.addRow([]);
   });
 }
 
