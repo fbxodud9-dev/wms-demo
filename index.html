@@ -4211,17 +4211,20 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
   const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
   const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
-  ws.columns = [{ width: 36 }, { width: 9 }, { width: 33 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 10 }, { width: 10 }];
+  // 열 너비는 실물 피킹지 그대로 (G·H는 "소분박스/소분낱개"가 들어가서 17)
+  ws.columns = [{ width: 33.88 }, { width: 7.62 }, { width: 30.62 }, { width: 12 }, { width: 11.38 }, { width: 13 }, { width: 17 }, { width: 17 }];
 
-  // 인쇄 설정: 세로 방향으로 고정, 가로·세로 둘 다 1페이지에 맞춰서 상품마다 출력 장수가 들쭉날쭉하지 않게 함
+  // 인쇄 설정(실물 피킹지와 동일): A4 세로, 1페이지에 꽉 차게 맞춤, 여백 최소, 가로·세로 가운데, 1행(빈 줄)은 인쇄 제외
   ws.pageSetup = {
+    paperSize: 9,
     orientation: "portrait",
     fitToPage: true,
     fitToWidth: 1,
     fitToHeight: 1,
-    margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.2, footer: 0.2 },
+    horizontalCentered: true,
+    verticalCentered: true,
+    margins: { left: 0.24, right: 0.197, top: 0.197, bottom: 0.197, header: 0.197, footer: 0.197 },
   };
-  ws.pageSetup.printTitlesRow = "1:3";
 
   // skipZero(당착)일 땐 "영남/호남/수도권" 실제 권역으로, 평소엔 기존 A/B구역으로 묶는다
   const zoneList = skipZero ? ["영남", "호남", "수도권"] : ["A", "B", "미지정"];
@@ -4238,39 +4241,37 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
 
   // 1행: 장식용 빈 줄 (위쪽 굵은 테두리)
   ws.addRow([]);
-  ws.getRow(1).height = 8;
-  ws.mergeCells("A1:F1");
-  ["A", "B", "C", "D", "E", "F"].forEach((col) => (ws.getCell(`${col}1`).border = { bottom: XL_MEDIUM }));
+  ws.getRow(1).height = 25.9;
 
   // 2행: 날짜 | 공급자명(병합) | 박스 | 낱개
   const r2 = ws.addRow([date || todayStr(), product.supplier || "", "", "", "", "", "박스", "낱개"]);
-  r2.height = 26;
+  r2.height = 25.9;
   ws.mergeCells("B2:F2");
   const a2 = ws.getCell("A2");
-  a2.font = { name: XLFONT, size: 15, bold: true };
+  a2.font = { name: XLFONT, size: 14, bold: true };
   a2.alignment = { horizontal: "left", vertical: "middle" };
   a2.numFmt = "yyyy-mm-dd";
   a2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_MEDIUM, right: XL_THIN };
   const b2 = ws.getCell("B2");
-  b2.font = { name: XLFONT, size: 15, bold: true };
+  b2.font = { name: XLFONT, size: 14, bold: true };
   b2.alignment = { horizontal: "center", vertical: "middle" };
   b2.border = { top: XL_MEDIUM, bottom: XL_THIN, left: XL_THIN, right: XL_MEDIUM };
   ["C2", "D2", "E2"].forEach((a) => (ws.getCell(a).border = { top: XL_MEDIUM, bottom: XL_THIN }));
   ["G2", "H2"].forEach((a) => {
     const c = ws.getCell(a);
-    c.font = { name: XLFONT, size: 14, bold: true };
+    c.font = { name: XLFONT, size: 15, bold: true };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_MEDIUM, bottom: XL_MEDIUM };
   });
 
   // 3행: 헤더
   const r3 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
-  r3.height = 26;
-  const headerSize = { A: 12, B: 12, C: 14, D: 13, E: 12, F: 13 };
+  r3.height = 40.5;
+  const headerSize = { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
     const c = ws.getCell(`${col}3`);
     c.font = { name: XLFONT, size: headerSize[col], bold: true };
-    c.alignment = { horizontal: "center", vertical: "middle" };
+    c.alignment = { horizontal: "center", vertical: "middle", wrapText: col === "C" };
     c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
 
@@ -4289,9 +4290,9 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
     const { box, rem } = bd(r.qty);
     const row = ws.addRow([r.label, pack || "", r.qty, box, r.shortName || "", rem]);
     flatRowNum[flatIdx] = row.number;
-    row.height = 28;
-    const size = { A: 12, B: 12, C: 15, D: 13, E: 15, F: 13 };
-    const bold = { A: false, B: false, C: true, D: false, E: true, F: false };
+    row.height = 25.35;
+    const size = { A: 11, B: 11, C: 15, D: 14, E: 16, F: 14 };
+    const bold = { A: false, B: false, C: false, D: false, E: true, F: false };
     const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
     const isGray = bandIndex % 2 === 0;
     bandIndex++;
@@ -4299,6 +4300,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
       const c = row.getCell(col);
       c.font = { name: XLFONT, size: size[col], bold: bold[col] };
       if (isGray) c.fill = XL_GRAY_FILL;
+      if ("CDF".includes(col)) c.numFmt = DANGCHAK_ACCT_FMT;
       c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
@@ -4309,7 +4311,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
     if (pack > 0 && r.checkpoint && flatIdx < flat.length - 1) {
       ["G", "H"].forEach((col) => {
         const c = row.getCell(col);
-        c.font = { name: XLFONT, size: 11, bold: true };
+        c.font = { name: XLFONT, size: 15, bold: true };
         c.alignment = { horizontal: "center", vertical: "middle" };
         c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "G" ? XL_THIN : undefined, right: XL_THIN };
       });
@@ -4317,14 +4319,18 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
     }
   }
 
-  function addTotalRow(label, qtyFormulaOrValue, cachedQty) {
+  function addTotalRow(label, qtyFormulaOrValue, cachedQty, opts) {
+    const o = opts || {};
     const { box, rem } = bd(cachedQty);
     const row = ws.addRow([label, pack || "", cachedQty, box, "", rem]);
-    row.height = 29;
-    const alignH = { A: "center", B: "center", C: "right", D: "center", E: "center", F: "center" };
+    row.height = o.height || 25.35;
+    const alignH = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
+    const sizes = o.sizes || { A: 16, B: 15, C: 15, D: 16, E: 16, F: 16 };
     ["A", "B", "C", "D", "E", "F"].forEach((col) => {
       const c = row.getCell(col);
-      c.font = { name: XLFONT, size: 17, bold: true };
+      c.font = { name: XLFONT, size: sizes[col], bold: col !== "B" };
+      if (o.gray) c.fill = XL_GRAY_FILL;
+      if ("CDF".includes(col)) c.numFmt = DANGCHAK_ACCT_FMT;
       c.alignment = { horizontal: alignH[col], vertical: "middle" };
       c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
@@ -4338,9 +4344,11 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   let flatIdx = 0;
   const zoneRanges = []; // { zone, startFlatIdx, endFlatIdx }
   const zoneTotalRowNum = {};
+  const activeZones = zoneList.filter((z) => regionRowsUsed.some((r) => zoneOf(r) === z));
   zoneList.forEach((zone) => {
     const rows = regionRowsUsed.filter((r) => zoneOf(r) === zone);
     if (rows.length === 0) return;
+    const isLastZone = zone === activeZones[activeZones.length - 1];
     const startFlatIdx = flatIdx;
     rows.forEach((r) => {
       addRegionRow(r, flatIdx);
@@ -4348,21 +4356,26 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
     });
     const endFlatIdx = flatIdx - 1;
     zoneRanges.push({ zone, startFlatIdx, endFlatIdx });
-    ws.addRow([]);
+    ws.addRow([]).height = isLastZone ? 4.5 : 5.45; // 지역 행과 합계 사이 얇은 간격 (실물과 동일)
     const zoneTotalQty = rows.reduce((a, r) => a + r.qty, 0);
     const sumFormula = `SUM(C${flatRowNum[startFlatIdx]}:C${flatRowNum[endFlatIdx]})`;
-    const totalRow = addTotalRow(zoneLabel(zone), sumFormula, zoneTotalQty);
+    const totalRow = addTotalRow(zoneLabel(zone), sumFormula, zoneTotalQty, { height: isLastZone ? 34.15 : 25.35 });
     zoneTotalRowNum[zone] = totalRow.number;
-    ws.addRow([]);
+    ws.addRow([]).height = isLastZone ? 5.45 : 8.45;
   });
 
   // 총합계 (전체를 하나로 합쳐 나눴을 때) + "소분박스/소분낱개" 라벨
   const zoneTotalCells = Object.values(zoneTotalRowNum).map((n) => `C${n}`);
-  const grandRow = addTotalRow("총합계", zoneTotalCells.join("+"), product.totalQty);
+  const grandRow = addTotalRow("총합계", zoneTotalCells.join("+"), product.totalQty, {
+    height: 31.5,
+    gray: true,
+    sizes: { A: 15, B: 15, C: 16, D: 16, E: 16, F: 16 },
+  });
   ["G", "H"].forEach((col) => {
     const c = grandRow.getCell(col);
     c.value = col === "G" ? "소분박스" : "소분낱개";
-    c.font = { name: XLFONT, size: 13, bold: true };
+    c.font = { name: XLFONT, size: 20, bold: true };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
   });
@@ -4377,11 +4390,12 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   const subRem = totalRemSum - subBox * pack;
   // B열은 실물처럼 체크박스("완료" 표시용) - 소분박스/낱개 수식은 첫 지역행의 입수(B)를 그대로 참조해서 계산한다.
   const finalRow = ws.addRow(["총 박스 수량 / 총 낱개 수량", "□", "", totalBoxSum, "", totalRemSum, subBox, subRem]);
-  finalRow.height = 29;
+  finalRow.height = 32.25;
   const finalAlign = { A: "left", B: "center", C: "right", D: "center", E: "center", F: "center" };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 17, bold: true };
+    c.font = { name: XLFONT, size: col === "A" || col === "B" ? 15 : 16, bold: col !== "B" };
+    if ("CDF".includes(col)) c.numFmt = DANGCHAK_ACCT_FMT;
     c.alignment = { horizontal: finalAlign[col], vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
   });
@@ -4393,7 +4407,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   finalRow.getCell("H").value = { formula: `IF(${packRef}=0,F${frn},F${frn}-G${frn}*${packRef})`, result: subRem };
   ["G", "H"].forEach((col) => {
     const c = finalRow.getCell(col);
-    c.font = { name: XLFONT, size: 21, bold: true };
+    c.font = { name: XLFONT, size: 20, bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } };
     c.alignment = { horizontal: "center", vertical: "middle" };
     c.border = { top: XL_THIN, bottom: XL_MEDIUM, left: XL_THIN, right: XL_THIN };
@@ -4401,12 +4415,13 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
 
   // 담당자 서명란(이름은 피킹하는 사람이 손으로 적도록 비워둠) + 완료 체크박스 - 실물 피킹지와 동일하게 맨 아래에
   const signRow = ws.addRow([]);
-  signRow.height = 18;
+  signRow.height = 27.75;
   ws.getCell(`G${signRow.number}`).border = { top: XL_THIN };
   ws.getCell(`H${signRow.number}`).value = "□";
-  ws.getCell(`H${signRow.number}`).font = { name: XLFONT, size: 12 };
+  ws.getCell(`H${signRow.number}`).font = { name: XLFONT, size: 26 };
   ws.getCell(`H${signRow.number}`).alignment = { horizontal: "center", vertical: "middle" };
   ws.getCell(`H${signRow.number}`).border = { top: XL_THIN };
+  ws.pageSetup.printArea = `A2:H${signRow.number}`; // 1행(빈 줄)을 뺀 나머지만 인쇄 - 실물 피킹지와 동일
 
   // 체크포인트 G/H: 이 지점 "다음"부터 (같은 구역의 남은 지역행) + (그 뒤 구역들의 지역행 전체) 낱개 합계를 박스로 환산
   checkpointQueue.forEach(({ rowNumber, flatIdx: fi }) => {
