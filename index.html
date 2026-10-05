@@ -5101,16 +5101,23 @@ const INVOICE_KNOWN_PACK = {
   "케이준에그샐러드2편": 25, "트리플무스샐러드2편": 25, "한컵)불고기도토리면샐러드2편": 24, "한컵)치킨카펠리니샐러드2편": 24, "한컵)치폴레불고기샐러드2편": 24,
 };
 
-// part: 1 | 2 | "DC"
+// 명세서 구분 이름: 1편 / 2편 / DC / 당착
+function invPartLabel(part) {
+  return part === "DC" || part === "당착" ? part : `${part}편`;
+}
+
+// part: 1 | 2 | "DC" | "당착"
+// 당착 상품은 모두 DC 공급사 목록에도 들어 있어서, DC와 똑같은 방식으로 만들되 당착 상품만 따로 분류해 "당착" 명세서로 낸다
+// (DC 명세서에서는 당착 상품이 빠지고, 당착 명세서에는 당착 상품만 들어간다).
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
   const byName = new Map();
   let names;
-  if (part === "DC") {
+  if (part === "DC" || part === "당착") {
     // DC는 주문 파일의 공급사가 아니라 "GS편의점DC" 목록의 DC 공급사 기준. 그날 주문된 상품만, 목록 순서대로(같은 목록 안에선 업로드 순서)
     const dcProducts = products
       .map((p, i) => ({ p, i, r: dcGroupOf(p.name) }))
-      .filter((x) => x.r && x.r.group.key === supplierKey)
+      .filter((x) => x.r && x.r.group.key === supplierKey && (part === "당착") === isDangchakProduct(x.p.name))
       .sort((a, b) => a.r.idx - b.r.idx || a.i - b.i)
       .map((x) => x.p);
     dcProducts.forEach((p) => {
@@ -5122,7 +5129,8 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       if (!byName.has(p.name)) byName.set(p.name, p);
     });
     const cat = SUPPLIER_INVOICE_CATALOG[supplierKey];
-    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n));
+    // DC 상품과 당착 상품은 1편/2편 명세서에 절대 들어가지 않는다 (각각 DC·당착 카드에서만 나감)
+    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n) && !isDangchakProduct(n));
     // 소비기한 자료(카탈로그)에 아직 없는 신제품도 빠지지 않도록, 그 편에 실제로 나간 상품을 뒤에 자동으로 덧붙인다.
     // (카탈로그 순서 먼저 -> 신제품은 업로드 순서로 맨 뒤에)
     const catalogSet = new Set(catalogNames);
@@ -5132,7 +5140,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       // 카탈로그에 없어도 자동으로 끼워넣지 않는다(신제품 자동추가는 정상 상품에만 적용).
       const isPb = /PB/i.test(String(p.supplier || ""));
       const isExcluded = isPb || isInvoiceExcludedProduct(supplierKey, p.name);
-      if (p.part === part && !isDcProduct(p.name) && !catalogSet.has(p.name) && !isExcluded && !extraNames.includes(p.name)) extraNames.push(p.name);
+      if (p.part === part && !isDcProduct(p.name) && !isDangchakProduct(p.name) && !catalogSet.has(p.name) && !isExcluded && !extraNames.includes(p.name)) extraNames.push(p.name);
     });
     names = [...catalogNames, ...extraNames];
   }
@@ -5156,7 +5164,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   return { items, regions, qtyOf };
 }
 
-// partFilter: 1 | 2 | "DC"
+// partFilter: 1 | 2 | "DC" | "당착"
 function buildInvoiceRegionsForSupplier(products, supplierKey, partFilter) {
   return buildInvoiceDataForSupplier(products, supplierKey, partFilter).regions;
 }
@@ -5205,8 +5213,8 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
   const info = REGION_ADDRESS_MAP[region.code] || {
     vvLabel: region.code, centerName: region.code, address: "(주소 미등록 - REGION_ADDRESS_MAP에 추가 필요)", sheetName: region.shortName || region.code,
   };
-  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일. DC는 당일.
-  const partLabel = part === "DC" ? "DC" : `${part}편`;
+  const invoiceDate = part === 2 ? addDaysStr(date, 1) : date; // 1편=발주 당일, 2편=익일. DC·당착은 당일.
+  const partLabel = invPartLabel(part);
   const ws = workbook.addWorksheet(safeSheetName(`${info.sheetName}(${partLabel})`, usedNames));
   ws.properties.defaultRowHeight = 13.5;
   ws.properties.defaultColWidth = INV_DEFAULT_COL_WIDTH;
@@ -5318,7 +5326,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
       put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
       put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_ACCT }); mc(ir, 18, ir, 21);
       // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
-      const remark = hasQty && part !== "DC" ? invDate(addDaysStr(invoiceDate, PRODUCT_EXPIRY_DELTA[it.name] ?? 3)) : null;
+      const remark = hasQty && (part === 1 || part === 2) ? invDate(addDaysStr(invoiceDate, PRODUCT_EXPIRY_DELTA[it.name] ?? 3)) : null;
       put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
     }
 
@@ -5379,7 +5387,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
 
 // 맨 앞에 붙는 "N편발주량" 요약표 (실물 파일의 1편발주량/2편발주량 시트와 같은 모양: 지역 × 상품 수량)
 function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
-  const label = part === "DC" ? "DC" : `${part}편`;
+  const label = invPartLabel(part);
   const ws = workbook.addWorksheet(safeSheetName(`${label}발주량`, usedNames));
   const [, m, d] = date.split("-").map(Number);
   const hdrFont = { name: "맑은 고딕", size: 10, bold: true };
@@ -5455,7 +5463,7 @@ async function downloadSupplierInvoicePart(products, supplierKey, date, part, se
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const partLabel = part === "DC" ? "DC" : `${part}편`;
+    const partLabel = invPartLabel(part);
     a.download = `${partLabel}_${supplierKey}_거래명세서_${date}.xlsx`;
     document.body.appendChild(a);
     a.click();
@@ -6371,6 +6379,31 @@ function InvoiceView({ orders }) {
       setDcErr(e.message);
     }
   }
+  // ===== 당착 거래명세서 (DC와 같은 방식, 당착 상품만 따로 분류) =====
+  const [dkDate, setDkDate] = useState(null);
+  const activeDkDate = dkDate && dateOptions.includes(dkDate) ? dkDate : dateOptions[0] || null;
+  const dkProducts = useMemo(() => buildProductsForDate(orders, activeDkDate), [orders, activeDkDate]);
+  const dkVendorOptions = useMemo(
+    () =>
+      DC_VENDOR_GROUPS.map((g) => ({ key: g.key, label: g.label, regions: buildInvoiceRegionsForSupplier(dkProducts, g.key, "당착") })).filter(
+        (v) => v.regions.length > 0
+      ),
+    [dkProducts]
+  );
+  const [dkVendor, setDkVendor] = useState(null);
+  const activeDkVendor = dkVendorOptions.some((v) => v.key === dkVendor) ? dkVendor : dkVendorOptions[0]?.key || null;
+  const activeDkRegions = (dkVendorOptions.find((v) => v.key === activeDkVendor) || { regions: [] }).regions;
+  const [dkBusy, setDkBusy] = useState(false);
+  const [dkErr, setDkErr] = useState("");
+  async function handleGenerateDk() {
+    if (!activeDkDate || !activeDkVendor) return;
+    setDkErr("");
+    try {
+      await downloadSupplierInvoicePart(dkProducts, activeDkVendor, activeDkDate, "당착", setDkBusy);
+    } catch (e) {
+      setDkErr(e.message);
+    }
+  }
   // 소비기한 자료(카탈로그)에 없는 이 공급사 상품: 신제품은 명세서에 자동 추가되고, PB/TC 상품은 아예 제외됨
   const invoiceSkipped = useMemo(
     () => (activeInvoiceSupplier ? getInvoiceSkippedProducts(invoiceProducts, activeInvoiceSupplier) : { added: [], excluded: [] }),
@@ -6462,7 +6495,7 @@ function InvoiceView({ orders }) {
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>DC 거래명세서</div>
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
-          GS편의점 DC 상품은 공급사별로 한 파일씩 만들어요. 그 공급사 DC 상품을 받은 지역마다 시트가 나오고, 날짜는 발주 당일이에요. 사업자 정보와 비고(소비기한)는 자료가 없으면 공란으로 나갑니다.
+          GS편의점 DC 상품은 공급사별로 한 파일씩 만들어요. 그 공급사 DC 상품을 받은 지역마다 시트가 나오고, 날짜는 발주 당일이에요. 사업자 정보와 비고(소비기한)는 자료가 없으면 공란으로 나갑니다. 당착 상품은 여기서 빠지고 아래 “당착 거래명세서” 카드에서 따로 받아요.
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="날짜">
@@ -6497,6 +6530,47 @@ function InvoiceView({ orders }) {
         {dcErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{dcErr}</div>}
         {!dcErr && dcVendorOptions.length === 0 && (
           <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>이 날짜엔 DC 상품 발주가 없어요.</div>
+        )}
+      </div>
+
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>당착 거래명세서</div>
+        <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
+          당착 상품만 따로 모아 DC와 같은 양식으로 공급사별 한 파일씩 만들어요. 그 공급사 당착 상품을 받은 지역마다 시트가 나오고, 날짜는 발주 당일이에요.
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <Field label="날짜">
+            <select style={inputStyle} value={activeDkDate || ""} onChange={(e) => setDkDate(e.target.value)}>
+              {dateOptions.length === 0 && <option value="">발주 없음</option>}
+              {dateOptions.map((d) => (
+                <option key={d} value={d}>
+                  {fmtDate(d)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="당착 공급사">
+            <select style={inputStyle} value={activeDkVendor || ""} onChange={(e) => setDkVendor(e.target.value)}>
+              {dkVendorOptions.length === 0 && <option value="">해당 없음</option>}
+              {dkVendorOptions.map((v) => (
+                <option key={v.key} value={v.key}>
+                  {v.label} ({v.regions.length}곳)
+                </option>
+              ))}
+            </select>
+          </Field>
+          <button
+            onClick={handleGenerateDk}
+            disabled={dkBusy || !activeDkVendor || activeDkRegions.length === 0}
+            className="primary-btn"
+            style={{ ...primaryBtnStyle, opacity: dkBusy || !activeDkVendor || activeDkRegions.length === 0 ? 0.6 : 1 }}
+          >
+            <Download size={15} /> {dkBusy ? "생성 중..." : `당착 거래명세서 (${activeDkRegions.length}곳)`}
+          </button>
+        </div>
+        {dkErr && <div style={{ marginTop: 10, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{dkErr}</div>}
+        {!dkErr && dkVendorOptions.length === 0 && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: T.inkSoft }}>이 날짜엔 당착 상품 발주가 없어요.</div>
         )}
       </div>
 
