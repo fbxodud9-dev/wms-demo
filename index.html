@@ -5107,8 +5107,10 @@ function invPartLabel(part) {
 }
 
 // part: 1 | 2 | "DC" | "당착"
-// 당착 상품은 모두 DC 공급사 목록에도 들어 있어서, DC와 똑같은 방식으로 만들되 당착 상품만 따로 분류해 "당착" 명세서로 낸다
-// (DC 명세서에서는 당착 상품이 빠지고, 당착 명세서에는 당착 상품만 들어간다).
+// 당착 상품은 모두 DC 공급사 목록에도 들어 있어서, DC와 똑같은 양식으로 "당착 몫"만 따로 분류해 "당착" 명세서로 낸다.
+//  - 조인앤조인처럼 style "full"인 당착 상품: 모든 지역이 당착 → 당착 명세서에만 나가고 DC에서는 빠진다.
+//  - 참맛나라·맛요일·H2글로벌(청주), 데어리젠(신제주)처럼 style "combined"인 상품: 그 당착 지역 한 곳만 당착 명세서에 나가고
+//    (0고정과 무관하게 원래 발주 수량), 나머지 지역은 평소처럼 DC 명세서로 나간다. 당착 지역 몫은 DC에 절대 안 나간다.
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
   const byName = new Map();
@@ -5117,7 +5119,12 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     // DC는 주문 파일의 공급사가 아니라 "GS편의점DC" 목록의 DC 공급사 기준. 그날 주문된 상품만, 목록 순서대로(같은 목록 안에선 업로드 순서)
     const dcProducts = products
       .map((p, i) => ({ p, i, r: dcGroupOf(p.name) }))
-      .filter((x) => x.r && x.r.group.key === supplierKey && (part === "당착") === isDangchakProduct(x.p.name))
+      .filter((x) => {
+        if (!x.r || x.r.group.key !== supplierKey) return false;
+        const dk = getDangchakInfo(x.p.name);
+        if (part === "당착") return !!dk;
+        return !dk || dk.style === "combined"; // DC: 일반 DC 상품 + 지역 한 곳만 당착인 상품의 나머지 지역
+      })
       .sort((a, b) => a.r.idx - b.r.idx || a.i - b.i)
       .map((x) => x.p);
     dcProducts.forEach((p) => {
@@ -5150,7 +5157,17 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   });
   const qtyOf = (it, code) => {
     const rr = it.product ? it.product.regionRows.find((r) => r.key === code) : null;
-    return rr ? rr.qty : 0;
+    if (!rr) return 0;
+    if (part === "당착" || part === "DC") {
+      const dk = getDangchakInfo(it.name);
+      if (part === "당착") {
+        if (!dk) return 0;
+        if (dk.style === "combined" && code !== dk.region) return 0; // 당착 지역 한 곳만
+        return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
+      }
+      if (dk && dk.style === "combined" && code === dk.region) return 0; // 당착 지역 몫은 DC에서 제외
+    }
+    return rr.qty;
   };
   const regions = [];
   const sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
