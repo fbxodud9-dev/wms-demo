@@ -226,6 +226,15 @@ function Thermometer(props) {
     </IconBase>
   );
 }
+function SettingsGear(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </IconBase>
+  );
+}
+
 function ListOrdered(props) {
   return (
     <IconBase {...props}>
@@ -2028,14 +2037,13 @@ function WMSApp() {
       ],
     },
     {
-      label: "VIII~XIII  기준정보",
+      label: "VIII~XII  기준정보",
       items: [
         { key: "masdatacheck", label: "VIII. 기준정보체크", icon: ShieldCheck },
         { key: "vehiclemap", label: "IX. 차량/매장 매핑", icon: MapPinned },
         { key: "productmaster", label: "X. 상품마스터", icon: Tag },
         { key: "cell", label: "XI. 창고CELL", icon: Grid3x3 },
         { key: "course", label: "XII. 배송코스차수", icon: Route },
-        { key: "orderset", label: "XIII. 피킹지 순서 설정", icon: ListOrdered },
       ],
     },
   ];
@@ -2238,13 +2246,12 @@ function WMSApp() {
         {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
-        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} />}
+        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
 
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
         {tab === "invoice" && <InvoiceView orders={orders} />}
-        {tab === "orderset" && <PickingOrderSettings orders={orders} authToken={authToken} config={orderCfg} onSaved={applyOrderCfg} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
@@ -5736,14 +5743,17 @@ function buildProductsForDate(orders, activeDate) {
     );
 }
 
-/* ================= XIII. 피킹지 순서 설정 (전산팀용) ================= */
+/* ================= 피킹지 순서 설정 (전산팀용, 피킹지시서 출력 화면의 설정 버튼으로 열림) ================= */
 // 공급사(시트) 순서와, 공급사 안에서의 상품 순서를 화면에서 직접 바꿔 저장한다. 저장하면 피킹지시서 화면·엑셀에 바로 반영된다.
-function PickingOrderSettings({ orders, authToken, config, onSaved }) {
+function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, initialDate, onDirtyChange }) {
   const [draft, setDraft] = useState(() => ({ suppliers: config.suppliers, products: { ...config.products } }));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [selDate, setSelDate] = useState(null);
+  const [selDate, setSelDate] = useState(initialDate || null);
+  useEffect(() => {
+    if (onDirtyChange) onDirtyChange(dirty);
+  }, [dirty]);
   const [selSupplier, setSelSupplier] = useState(null);
 
   // 서버에서 저장값을 새로 불러오거나 저장이 끝나면 초안도 그 값으로 맞춘다
@@ -5821,7 +5831,7 @@ function PickingOrderSettings({ orders, authToken, config, onSaved }) {
   const rowBtn = { ...smallBtnStyle, padding: "3px 9px", minWidth: 30, justifyContent: "center" };
   return (
     <div>
-      <PageHeader title="XIII. 피킹지 순서 설정" sub="피킹지시서(시트)에 나오는 공급사 순서와, 공급사 안의 상품 순서를 직접 정해요. 저장하면 바로 반영돼요." />
+      {!embedded && <PageHeader title="피킹지 순서 설정" sub="피킹지시서(시트)에 나오는 공급사 순서와, 공급사 안의 상품 순서를 직접 정해요. 저장하면 바로 반영돼요." />}
 
       <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
@@ -5941,8 +5951,44 @@ function PickingOrderSettings({ orders, authToken, config, onSaved }) {
   );
 }
 
-function PickingInspection({ orders, orderCfg }) {
+// 피킹지시서 출력 화면 오른쪽 위 "순서 설정" 버튼으로 여는 창. 저장하지 않은 변경이 있으면 닫기 전에 확인한다.
+function PickingOrderSettingsModal({ onClose, ...rest }) {
+  const dirtyRef = useRef(false);
+  function tryClose() {
+    if (dirtyRef.current && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
+    onClose();
+  }
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") tryClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return createPortal(
+    <div onClick={tryClose} style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg || T.surface, borderRadius: 12, width: "100%", maxWidth: 1180, maxHeight: "92vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${T.border}`, background: T.surface }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>피킹지 순서 설정</div>
+            <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 2 }}>피킹지시서(시트)에 나오는 공급사 순서와, 공급사 안의 상품 순서를 정해요. 저장하면 바로 반영돼요.</div>
+          </div>
+          <button onClick={tryClose} title="닫기" style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: T.inkSoft }}>
+            <X size={18} />
+          </button>
+        </div>
+        <div style={{ overflowY: "auto", padding: "16px 20px 20px" }}>
+          <PickingOrderSettings {...rest} embedded onDirtyChange={(d) => (dirtyRef.current = d)} />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function PickingInspection({ orders, orderCfg, authToken, onOrderCfgSaved }) {
   const [selectedSku, setSelectedSku] = useState(null);
+  const [showOrderSet, setShowOrderSet] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [printMode, setPrintMode] = useState(null); // null | "single" | "all"
   const [supplierFilter, setSupplierFilter] = useState("all");
@@ -5995,7 +6041,19 @@ function PickingInspection({ orders, orderCfg }) {
 
   return (
     <div>
-      <PageHeader title="피킹지시서 출력" sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다" />
+      <PageHeader
+        title="피킹지시서 출력"
+        sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다"
+        action={
+          <button className="no-print" onClick={() => setShowOrderSet(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="공급사·상품 순서 설정">
+            <SettingsGear size={15} />
+            순서 설정
+          </button>
+        }
+      />
+      {showOrderSet && (
+        <PickingOrderSettingsModal orders={orders} authToken={authToken} config={orderCfg} onSaved={onOrderCfgSaved} initialDate={activeDate} onClose={() => setShowOrderSet(false)} />
+      )}
       {dateOptions.length === 0 ? (
         <div style={cardStyle}>
           <EmptyRow text="할당된 품목이 없습니다. 먼저 발주파일을 업로드해주세요." />
