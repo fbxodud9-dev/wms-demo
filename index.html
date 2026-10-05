@@ -1139,13 +1139,56 @@ const REGION_ORDER_TABLE = [
   { code: "VV93", name: "곤지암", zone: "B" },
   { code: "VV94", name: "곤지암2", zone: "B" },
 ];
-const REGION_ORDER_MAP = (() => {
+// 2편 상품 전용 지역 순서 (실물 2편 피킹지 기준, 예: 대광 저스트햄버거)새우롱버거2편 2026-09-28)
+// 37곳은 1편과 같지만, 원주·강릉·공주·공주2·청주·아신A가 A구역에서 빠져 B구역으로 가고 순서·체크포인트가 다르다.
+const REGION_ORDER_TABLE_2 = [
+  { code: "VV57", name: "김해", zone: "A" },
+  { code: "VV58", name: "김해2", zone: "A", checkpoint: true },
+  { code: "VV25", name: "진주", zone: "A" },
+  { code: "VV20", name: "CVS", zone: "A" },
+  { code: "VV92", name: "신제주", zone: "A", checkpoint: true },
+  { code: "VV95", name: "신광주", zone: "A" },
+  { code: "VV96", name: "신광주2", zone: "A" },
+  { code: "VV65", name: "익산", zone: "A", checkpoint: true },
+  { code: "VV83", name: "경산", zone: "A" },
+  { code: "VV84", name: "경산2", zone: "A" },
+  { code: "VV97", name: "경산3", zone: "A", checkpoint: true },
+  { code: "VV34", name: "청주", zone: "B" },
+  { code: "VV04", name: "공주", zone: "B" },
+  { code: "VV75", name: "공주2", zone: "B", checkpoint: true },
+  { code: "VV17", name: "발안", zone: "B" },
+  { code: "VV71", name: "발안2", zone: "B" },
+  { code: "VV03", name: "아신A", zone: "B", checkpoint: true },
+  { code: "VV85", name: "신오산1", zone: "B" },
+  { code: "VV86", name: "신오산2", zone: "B" },
+  { code: "VV87", name: "신오산3", zone: "B", checkpoint: true },
+  { code: "VV16", name: "원주", zone: "B" },
+  { code: "VV69", name: "강릉", zone: "B" },
+  { code: "VV62", name: "김포2", zone: "B" },
+  { code: "VV70", name: "김포3", zone: "B" },
+  { code: "VV98", name: "고촌", zone: "B" },
+  { code: "VV99", name: "고촌2", zone: "B" },
+  { code: "VV63", name: "고양", zone: "B" },
+  { code: "VV64", name: "고양2", zone: "B" },
+  { code: "VV81", name: "고양3", zone: "B" },
+  { code: "VV90", name: "포천", zone: "B" },
+  { code: "VV91", name: "포천2", zone: "B", checkpoint: true },
+  { code: "VV66", name: "도화", zone: "B" },
+  { code: "VV67", name: "도화2", zone: "B" },
+  { code: "VV53", name: "송파", zone: "B" },
+  { code: "VV55", name: "송파2", zone: "B" },
+  { code: "VV93", name: "곤지암", zone: "B" },
+  { code: "VV94", name: "곤지암2", zone: "B" },
+];
+const buildRegionOrderMap = (table) => {
   const m = {};
-  REGION_ORDER_TABLE.forEach((r, i) => {
+  table.forEach((r, i) => {
     m[r.code] = { order: i, zone: r.zone, shortName: r.name, checkpoint: !!r.checkpoint };
   });
   return m;
-})();
+};
+const REGION_ORDER_MAP = buildRegionOrderMap(REGION_ORDER_TABLE);
+const REGION_ORDER_MAP_2 = buildRegionOrderMap(REGION_ORDER_TABLE_2);
 
 function seedStores() {
   return STORE_NAMES.map((name, i) => ({ id: `st${i + 1}`, name, vehicleId: i < 2 ? `v${i + 1}` : null }));
@@ -4413,7 +4456,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
     const rn = row.number;
     row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
     row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
-    // 체크포인트: 화주사가 지정한 특정 지역에서만 표시 (강릉·신광주2·아신A·김포3·도화2·신오산3)
+    // 체크포인트: 화주사가 지정한 특정 지역에서만 표시 (1편: 강릉·신광주2·아신A·김포3·도화2·신오산3 / 2편: 김해2·신제주·익산·경산3·공주2·아신A·신오산3·포천2)
     if (pack > 0 && r.checkpoint && flatIdx < flat.length - 1) {
       ["G", "H"].forEach((col) => {
         const c = row.getCell(col);
@@ -5744,15 +5787,26 @@ function buildProductsForDate(orders, activeDate) {
   const groupOrder = new Map();
   return Object.values(bySku)
     .map((p) => {
+      // 1편(편 표시 없는 상품 포함)과 2편은 지역 순서·A/B구역·체크포인트가 다르다 (실물 1편/2편 피킹지 기준)
+      const isPart2 = detectPart(p.name) === 2;
+      const table = isPart2 ? REGION_ORDER_TABLE_2 : REGION_ORDER_TABLE;
+      const orderMap = isPart2 ? REGION_ORDER_MAP_2 : REGION_ORDER_MAP;
+      Object.values(p.regions).forEach((reg) => {
+        const ref2 = orderMap[reg.key];
+        if (!ref2) return;
+        reg.zone = ref2.zone;
+        reg.order = ref2.order;
+        reg.checkpoint = ref2.checkpoint;
+      });
       // 오피킹 방지 고정 지역표(A/B구역 37곳)는 이 상품에 발주가 없어도 항상 0으로 표시
-      REGION_ORDER_TABLE.forEach((r) => {
+      table.forEach((r) => {
         if (p.regions[r.code]) return;
         p.regions[r.code] = {
           key: r.code,
           label: regionLabelMap[r.code] || `${r.code} ${r.name}`,
           shortName: r.name,
           zone: r.zone,
-          order: REGION_ORDER_MAP[r.code].order,
+          order: orderMap[r.code].order,
           checkpoint: !!r.checkpoint,
           qty: 0,
         };
