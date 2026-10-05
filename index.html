@@ -847,6 +847,14 @@ const SUPPLIER_INVOICE_INFO = {
 // 값은 그 상품이 찍히는 편(1편=당일, 2편=익일)의 년월일 칸 날짜에 이 값을 더하면 됨
 // (예: 2편 상품이 "익일+4-1" 이면 여기 값은 3 = 2편 년월일(=익일)+3).
 // 목록에 없는 상품은 잠정적으로 +3을 기본값으로 사용 (실제 자료 받으면 여기 추가).
+// 소비기한(비고) 일수: 상품마스터에서 직원이 정한 값이 있으면 그 값, 없으면 아래 표, 그것도 없으면 +3일
+function expiryOverrideOf(name) {
+  const ov = productInfoOf(name);
+  return ov && ov.expiryDays !== undefined && ov.expiryDays !== null && ov.expiryDays !== "" && Number.isFinite(Number(ov.expiryDays)) ? Number(ov.expiryDays) : null;
+}
+function expiryDaysOf(name) {
+  return expiryOverrideOf(name) ?? PRODUCT_EXPIRY_DELTA[name] ?? 3;
+}
 const PRODUCT_EXPIRY_DELTA = {
   "오든든)대만식햄치즈샌드2편": 3,
   "오든든)더블햄샌드2편": 3,
@@ -1027,6 +1035,26 @@ const SUPPLIER_PICKING_ORDER = [
 // 전산팀이 "피킹지 순서 설정" 화면에서 저장한 값. 없으면(null) 위의 기본 순서·가나다순을 쓴다.
 // suppliers: 공급사 대표명 배열(순서대로), products: { 공급사 대표명: [상품 기본이름 배열] }
 let PICKING_ORDER_CONFIG = { suppliers: null, products: {} };
+
+// 직원이 "X. 상품마스터"에서 바꾼 상품 정보 (서버 /settings/product_info에 저장). 상품명(발주파일에 찍혀오는 이름) 기준.
+// { [상품명]: { packQty?, expiryDays?, displayName?, dc?: ""(DC 아님)|DC공급사키, dangchak?: null(당착 아님)|{style, region?, group?} } }
+// 값이 없는 항목은 코드에 있는 기본값을 그대로 쓰고, 값이 있으면 피킹지시서·거래명세서를 만들 때마다 이 값이 먼저 적용된다
+// (이미 올린 날짜도 다시 업로드할 필요 없이 바로 반영).
+let PRODUCT_INFO = {};
+function setProductInfo(v) {
+  PRODUCT_INFO = v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+function productInfoOf(name) {
+  return PRODUCT_INFO[String(name || "").replace(/\n/g, "").trim()] || null;
+}
+function packQtyOverrideOf(name) {
+  const ov = productInfoOf(name);
+  return ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : null;
+}
+function displayNameOf(name) {
+  const ov = productInfoOf(name);
+  return (ov && String(ov.displayName || "").trim()) || name;
+}
 function setPickingOrderConfig(cfg) {
   PICKING_ORDER_CONFIG = {
     suppliers: cfg && Array.isArray(cfg.suppliers) && cfg.suppliers.length ? cfg.suppliers : null,
@@ -1594,6 +1622,34 @@ function WMSApp() {
   useEffect(() => {
     if (authToken) loadCoreData();
   }, [authToken]); // eslint-disable-line
+
+  // 직원이 상품마스터에서 바꾼 상품 정보(입수·소비기한·표시 상품명·DC/당착 분류)를 로그인 후 한 번 불러온다
+  const [productInfo, setProductInfoState] = useState({});
+  const applyProductInfo = useCallback((value) => {
+    setProductInfo(value);
+    setProductInfoState({ ...PRODUCT_INFO });
+  }, []);
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    (async () => {
+      let value = null;
+      try {
+        const res = await apiFetch("/settings/product_info", authToken);
+        value = res.value;
+      } catch (e) {
+        try {
+          value = JSON.parse(localStorage.getItem("wms-product-info") || "null");
+        } catch (e2) {
+          value = null;
+        }
+      }
+      if (!cancelled) applyProductInfo(value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, applyProductInfo]);
 
   // 전산팀이 저장해 둔 피킹지 순서 설정을 로그인 후 한 번 불러온다 (저장된 게 없으면 기본 순서)
   const [orderCfg, setOrderCfg] = useState({ suppliers: null, products: {} });
@@ -2289,16 +2345,16 @@ function WMSApp() {
         {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
-        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
+        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
 
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
-        {tab === "invoice" && <InvoiceView orders={orders} />}
+        {tab === "invoice" && <InvoiceView orders={orders} productInfo={productInfo} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} authToken={authToken} productInfo={productInfo} onProductInfoSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -3627,7 +3683,7 @@ function resolveNamePackOverride(name) {
   return undefined;
 }
 
-      const packQtyFixed = PACK_QTY_OVERRIDES[sku] ?? resolveNamePackOverride(name); // 이 상품이면 파일 값 무시하고 고정값 사용
+      const packQtyFixed = packQtyOverrideOf(name) ?? PACK_QTY_OVERRIDES[sku] ?? resolveNamePackOverride(name); // 이 상품이면 파일 값 무시하고 고정값 사용
       // 상품코드가 기준: 코드로 먼저 찾고, 없으면 품목명으로 찾되 그때는 마스터 코드를 발주파일 상품코드로 바꾼다
       const byCode = items.find((i) => i.sku === sku);
       const byName = byCode ? null : items.find((i) => i.name === name);
@@ -4359,7 +4415,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
   // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
   const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
-  const ws = workbook.addWorksheet(safeSheetName(product.name, usedNames));
+  const ws = workbook.addWorksheet(safeSheetName(product.displayName || product.name, usedNames));
   // 열 너비는 실물 피킹지 그대로 (G·H는 "소분박스/소분낱개"가 들어가서 17)
   ws.columns = [{ width: 33.88 }, { width: 7.62 }, { width: 30.62 }, { width: 12 }, { width: 11.38 }, { width: 13 }, { width: 17 }, { width: 17 }];
 
@@ -4414,7 +4470,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   });
 
   // 3행: 헤더
-  const r3 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
+  const r3 = ws.addRow(["행 레이블", "입수", product.displayName || product.name, "박스", "센터명", "낱개"]);
   r3.height = 40.5;
   const headerSize = { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 };
   ["A", "B", "C", "D", "E", "F"].forEach((col) => {
@@ -4653,7 +4709,7 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     ["C", "D", "E"].forEach((col) => (ws.getCell(`${col}${r1.number}`).border = { top: XL_MEDIUM, bottom: XL_THIN }));
     ws.getCell(`F${r1.number}`).border = { top: XL_MEDIUM, bottom: XL_THIN, right: XL_MEDIUM };
 
-    const r2 = ws.addRow(["행 레이블", "입수", product.name, "박스", "센터명", "낱개"]);
+    const r2 = ws.addRow(["행 레이블", "입수", product.displayName || product.name, "박스", "센터명", "낱개"]);
     r2.height = 42;
     styleRow(r2, {
       font: (col) => ({ name: XLFONT, size: { A: 11, B: 11, C: 13, D: 12, E: 11, F: 12 }[col], bold: true }),
@@ -4994,18 +5050,31 @@ const DC_VENDOR_GROUPS = [
 ];
 const DC_PRODUCT_PREFIXES = DC_VENDOR_GROUPS.flatMap((g) => g.prefixes);
 function isDcProduct(name) {
-  const n = String(name || "").replace(/\n/g, "").trim();
-  return DC_PRODUCT_PREFIXES.some((p) => n.startsWith(p));
+  return !!dcGroupOf(name);
 }
 
 // DC 상품이 속한 DC 공급사(거래명세서 공급사 키)와, 파일 안에서의 순서(정렬용). DC가 아니면 null / -1
-function dcGroupOf(name) {
+// 코드에 있는 기본 DC 분류 (상품마스터에서 바꾼 값 무시)
+function dcGroupOfBase(name) {
   const n = String(name || "").replace(/\n/g, "").trim();
   for (const g of DC_VENDOR_GROUPS) {
     const idx = g.prefixes.findIndex((p) => n.startsWith(p));
     if (idx !== -1) return { group: g, idx };
   }
   return null;
+}
+// 상품마스터에서 바꾼 DC 분류가 있으면 그것("" = DC 아님), 없으면 기본 분류. 직원이 넣은 상품은 그 DC 공급사 목록 맨 뒤로.
+function dcGroupOf(name) {
+  const ov = productInfoOf(name);
+  if (ov && ov.dc !== undefined && ov.dc !== null) {
+    if (ov.dc === "") return null;
+    const g = DC_VENDOR_GROUPS.find((x) => x.key === ov.dc);
+    if (g) {
+      const base = dcGroupOfBase(name);
+      return { group: g, idx: base && base.group.key === g.key ? base.idx : 999 };
+    }
+  }
+  return dcGroupOfBase(name);
 }
 function dcVendorKey(name) {
   const r = dcGroupOf(name);
@@ -5041,7 +5110,18 @@ const DANGCHAK_PRODUCTS = {
   "리얼)쫄깃한모짜렐라치즈35G": { style: "combined", group: "데어리젠", region: "VV92" },
   "리얼)쫄깃한스트링치즈4입": { style: "combined", group: "데어리젠", region: "VV92" },
 };
+// 상품마스터에서 바꾼 당착 분류가 있으면 그것(null = 당착 아님), 없으면 기본 당착 목록
 function getDangchakInfo(name) {
+  const ov = productInfoOf(name);
+  if (ov && ov.dangchak !== undefined) {
+    const d = ov.dangchak;
+    if (!d || !d.style) return null;
+    if (d.style === "combined") return { style: "combined", region: d.region || "VV34", group: String(d.group || "").trim() || dcVendorKey(name) || "당착" };
+    return { style: "full" };
+  }
+  return getDangchakInfoBase(name);
+}
+function getDangchakInfoBase(name) {
   const n = String(name || "").trim();
   const key = Object.keys(DANGCHAK_PRODUCTS).find((d) => n.startsWith(d));
   return key ? DANGCHAK_PRODUCTS[key] : null;
@@ -5101,6 +5181,28 @@ const INVOICE_KNOWN_PACK = {
   "케이준에그샐러드2편": 25, "트리플무스샐러드2편": 25, "한컵)불고기도토리면샐러드2편": 24, "한컵)치킨카펠리니샐러드2편": 24, "한컵)치폴레불고기샐러드2편": 24,
 };
 
+// 당착 명세서의 공급사 묶음: DC 상품이면 그 DC 공급사, 아니면 발주파일의 공급사
+function dangchakVendorKey(p) {
+  return dcVendorKey(p.name) || supplierGroupKey(p.supplier);
+}
+// 그날 당착 명세서를 만들 수 있는 공급사 목록 (DC 공급사 순서 먼저, 그 외 공급사는 뒤에)
+function dangchakVendorOptions(products) {
+  const keys = [];
+  products.forEach((p) => {
+    if (!isDangchakProduct(p.name)) return;
+    const k = dangchakVendorKey(p);
+    if (!keys.includes(k)) keys.push(k);
+  });
+  const dcOrder = DC_VENDOR_GROUPS.map((g) => g.key);
+  keys.sort((a, b) => (dcOrder.includes(a) ? dcOrder.indexOf(a) : 999) - (dcOrder.includes(b) ? dcOrder.indexOf(b) : 999));
+  return keys
+    .map((k) => {
+      const g = DC_VENDOR_GROUPS.find((x) => x.key === k);
+      return { key: k, label: g ? g.label : k, regions: buildInvoiceRegionsForSupplier(products, k, "당착") };
+    })
+    .filter((v) => v.regions.length > 0);
+}
+
 // 명세서 구분 이름: 1편 / 2편 / DC / 당착
 function invPartLabel(part) {
   return part === "DC" || part === "당착" ? part : `${part}편`;
@@ -5120,12 +5222,12 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     const dcProducts = products
       .map((p, i) => ({ p, i, r: dcGroupOf(p.name) }))
       .filter((x) => {
-        if (!x.r || x.r.group.key !== supplierKey) return false;
         const dk = getDangchakInfo(x.p.name);
-        if (part === "당착") return !!dk;
+        if (part === "당착") return !!dk && dangchakVendorKey(x.p) === supplierKey;
+        if (!x.r || x.r.group.key !== supplierKey) return false;
         return !dk || dk.style === "combined"; // DC: 일반 DC 상품 + 지역 한 곳만 당착인 상품의 나머지 지역
       })
-      .sort((a, b) => a.r.idx - b.r.idx || a.i - b.i)
+      .sort((a, b) => (a.r ? a.r.idx : 9999) - (b.r ? b.r.idx : 9999) || a.i - b.i)
       .map((x) => x.p);
     dcProducts.forEach((p) => {
       if (!byName.has(p.name)) byName.set(p.name, p);
@@ -5137,7 +5239,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     });
     const cat = SUPPLIER_INVOICE_CATALOG[supplierKey];
     // DC 상품과 당착 상품은 1편/2편 명세서에 절대 들어가지 않는다 (각각 DC·당착 카드에서만 나감)
-    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n) && !isDangchakProduct(n));
+    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n) && getDangchakStyle(n) !== "full");
     // 소비기한 자료(카탈로그)에 아직 없는 신제품도 빠지지 않도록, 그 편에 실제로 나간 상품을 뒤에 자동으로 덧붙인다.
     // (카탈로그 순서 먼저 -> 신제품은 업로드 순서로 맨 뒤에)
     const catalogSet = new Set(catalogNames);
@@ -5147,7 +5249,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       // 카탈로그에 없어도 자동으로 끼워넣지 않는다(신제품 자동추가는 정상 상품에만 적용).
       const isPb = /PB/i.test(String(p.supplier || ""));
       const isExcluded = isPb || isInvoiceExcludedProduct(supplierKey, p.name);
-      if (p.part === part && !isDcProduct(p.name) && !isDangchakProduct(p.name) && !catalogSet.has(p.name) && !isExcluded && !extraNames.includes(p.name)) extraNames.push(p.name);
+      if (p.part === part && !isDcProduct(p.name) && getDangchakStyle(p.name) !== "full" && !catalogSet.has(p.name) && !isExcluded && !extraNames.includes(p.name)) extraNames.push(p.name);
     });
     names = [...catalogNames, ...extraNames];
   }
@@ -5158,15 +5260,14 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   const qtyOf = (it, code) => {
     const rr = it.product ? it.product.regionRows.find((r) => r.key === code) : null;
     if (!rr) return 0;
-    if (part === "당착" || part === "DC") {
-      const dk = getDangchakInfo(it.name);
-      if (part === "당착") {
-        if (!dk) return 0;
-        if (dk.style === "combined" && code !== dk.region) return 0; // 당착 지역 한 곳만
-        return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
-      }
-      if (dk && dk.style === "combined" && code === dk.region) return 0; // 당착 지역 몫은 DC에서 제외
+    const dk = getDangchakInfo(it.name);
+    if (part === "당착") {
+      if (!dk) return 0;
+      if (dk.style === "combined" && code !== dk.region) return 0; // 당착 지역 한 곳만
+      return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
     }
+    if (dk && dk.style === "full") return 0; // 전 지역 당착 상품은 당착 명세서에서만
+    if (dk && dk.style === "combined" && code === dk.region) return 0; // 당착 지역 몫은 1편·2편·DC에서 제외
     return rr.qty;
   };
   const regions = [];
@@ -5339,11 +5440,11 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
         put(ir, 2, invDate(invoiceDate), BLK9, { h: "center", nf: "mm-dd-yy" });
         mc(ir, 2, ir, 4);
       }
-      put(ir, 5, it ? it.name : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
+      put(ir, 5, it ? displayNameOf(it.name) : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
       put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
       put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_ACCT }); mc(ir, 18, ir, 21);
       // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
-      const remark = hasQty && (part === 1 || part === 2) ? invDate(addDaysStr(invoiceDate, PRODUCT_EXPIRY_DELTA[it.name] ?? 3)) : null;
+      const remark = hasQty && (part === 1 || part === 2 || expiryOverrideOf(it.name) != null) ? invDate(addDaysStr(invoiceDate, expiryDaysOf(it.name))) : null;
       put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
     }
 
@@ -5416,7 +5517,7 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
   ws.getCell(1, 1).font = hdrFont;
   ws.getCell(2, 1).value = "행 레이블";
   data.items.forEach((it, i) => {
-    ws.getCell(2, 2 + i).value = it.name;
+    ws.getCell(2, 2 + i).value = displayNameOf(it.name);
   });
   const totalCol = 2 + data.items.length;
   for (let c = 1; c <= totalCol; c++) {
@@ -5514,7 +5615,7 @@ function InspectionTable({ product, pageBreak }) {
   const rows = useMemo(() => buildTableRowsForProduct(product), [product]);
   return (
     <div style={pageBreak ? { pageBreakAfter: "always" } : undefined}>
-      <div style={{ fontWeight: 700, fontSize: 15.5 }}>{product.name}</div>
+      <div style={{ fontWeight: 700, fontSize: 15.5 }}>{product.displayName || product.name}</div>
       <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
         {product.sku} · 입수 {product.packQty || "-"}
       </div>
@@ -5667,7 +5768,7 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
           <tr>
             <th style={cellStyle(0, { bold: true })}>행 레이블</th>
             <th style={cellStyle(1, { bold: true })}>입수</th>
-            <th style={cellStyle(2, { bold: true, size: 12 })}>{product.name}</th>
+            <th style={cellStyle(2, { bold: true, size: 12 })}>{product.displayName || product.name}</th>
             <th style={cellStyle(3, { bold: true })}>박스</th>
             <th style={cellStyle(4, { bold: true })}>센터명</th>
             <th style={cellStyle(5, { bold: true })}>낱개</th>
@@ -5751,12 +5852,11 @@ const PICKING_QTY_ZERO_BY_NAME = [
   ...["대광)미니파베초콜릿(밀크맛)60G", "대광)옛날맛순대500G", "대광)파베초콜릿100G", "즉석피자)파마산치즈(증정용)", "즉석피자)핫소스4G(증정용)"].flatMap((name) =>
     ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ name, regionCode: r }))
   ),
-  // 당착(오전현장)으로 따로 빠지는 지역은 평소 피킹지시서에서도 0으로 고정 (중복 집계 방지)
-  ...Object.entries(DANGCHAK_PRODUCTS)
-    .filter(([, info]) => info.style === "combined")
-    .map(([name, info]) => ({ name, regionCode: info.region })),
 ];
 function isQtyZeroByName(name, regionCode) {
+  // 당착(오전현장)으로 따로 빠지는 지역은 평소 피킹지시서에서도 0으로 고정 (중복 집계 방지) - 상품마스터에서 바꾼 당착 분류도 그대로 따름
+  const dk = getDangchakInfo(name);
+  if (dk && dk.style === "combined" && dk.region === regionCode) return true;
   return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === name && o.regionCode === regionCode);
 }
 
@@ -5838,7 +5938,8 @@ function buildProductsForDate(orders, activeDate) {
       });
       const regionRows = Object.values(p.regions).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
       const totalQty = regionRows.reduce((a, r) => a + r.qty, 0);
-      return { ...p, regionRows, totalQty, part: detectPart(p.name), baseName: baseNameOf(p.name) };
+      const packOv = packQtyOverrideOf(p.name); // 상품마스터에서 바꾼 입수가 있으면 그 값 (박스/낱개/체크포인트 전부 이 값으로 계산)
+      return { ...p, packQty: packOv ?? p.packQty, displayName: displayNameOf(p.name), regionRows, totalQty, part: detectPart(p.name), baseName: baseNameOf(p.name) };
     })
     .map((p) => {
       const key = supplierGroupKey(p.supplier) + "||" + p.baseName;
@@ -6100,7 +6201,7 @@ function PickingOrderSettingsModal({ onClose, ...rest }) {
   );
 }
 
-function PickingInspection({ orders, orderCfg, authToken, onOrderCfgSaved }) {
+function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCfgSaved }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [showOrderSet, setShowOrderSet] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -6132,7 +6233,7 @@ function PickingInspection({ orders, orderCfg, authToken, onOrderCfgSaved }) {
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
-  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg]);
+  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg, productInfo]);
 
 
   // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 같은 회사는 하나로 묶어서, 고정 순서표 순으로)
@@ -6281,7 +6382,7 @@ function PickingInspection({ orders, orderCfg, authToken, onOrderCfgSaved }) {
                         >
                           {p.part}편
                         </span>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.displayName || p.name}</div>
                       </div>
                       <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
                         {p.supplier ? `${p.supplier} · ` : ""}{p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
@@ -6335,7 +6436,7 @@ function PickingInspection({ orders, orderCfg, authToken, onOrderCfgSaved }) {
 }
 
 /* ================= 거래명세서 ================= */
-function InvoiceView({ orders }) {
+function InvoiceView({ orders, productInfo }) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const invoiced = orders.filter((o) => o.invoiceIssued);
@@ -6349,7 +6450,7 @@ function InvoiceView({ orders }) {
   }, [orders]);
   const [invoiceDate, setInvoiceDate] = useState(null);
   const activeInvoiceDate = invoiceDate && dateOptions.includes(invoiceDate) ? invoiceDate : dateOptions[0] || null;
-  const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate]);
+  const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate, productInfo]);
   const invoiceSupplierOptions = useMemo(() => {
     // 사업자 정보가 등록된 공급사만 (DC 공급사는 아래 "DC 거래명세서" 카드에서 따로)
     const set = new Set(invoiceProducts.map((p) => supplierGroupKey(p.supplier)));
@@ -6374,7 +6475,7 @@ function InvoiceView({ orders }) {
   // ===== DC 거래명세서 (일반 1편/2편과 완전히 분리된 카드) =====
   const [dcDate, setDcDate] = useState(null);
   const activeDcDate = dcDate && dateOptions.includes(dcDate) ? dcDate : dateOptions[0] || null;
-  const dcProducts = useMemo(() => buildProductsForDate(orders, activeDcDate), [orders, activeDcDate]);
+  const dcProducts = useMemo(() => buildProductsForDate(orders, activeDcDate), [orders, activeDcDate, productInfo]);
   const dcVendorOptions = useMemo(
     () =>
       DC_VENDOR_GROUPS.map((g) => ({ key: g.key, label: g.label, regions: buildInvoiceRegionsForSupplier(dcProducts, g.key, "DC") })).filter(
@@ -6399,14 +6500,8 @@ function InvoiceView({ orders }) {
   // ===== 당착 거래명세서 (DC와 같은 방식, 당착 상품만 따로 분류) =====
   const [dkDate, setDkDate] = useState(null);
   const activeDkDate = dkDate && dateOptions.includes(dkDate) ? dkDate : dateOptions[0] || null;
-  const dkProducts = useMemo(() => buildProductsForDate(orders, activeDkDate), [orders, activeDkDate]);
-  const dkVendorOptions = useMemo(
-    () =>
-      DC_VENDOR_GROUPS.map((g) => ({ key: g.key, label: g.label, regions: buildInvoiceRegionsForSupplier(dkProducts, g.key, "당착") })).filter(
-        (v) => v.regions.length > 0
-      ),
-    [dkProducts]
-  );
+  const dkProducts = useMemo(() => buildProductsForDate(orders, activeDkDate), [orders, activeDkDate, productInfo]);
+  const dkVendorOptions = useMemo(() => dangchakVendorOptions(dkProducts), [dkProducts]);
   const [dkVendor, setDkVendor] = useState(null);
   const activeDkVendor = dkVendorOptions.some((v) => v.key === dkVendor) ? dkVendor : dkVendorOptions[0]?.key || null;
   const activeDkRegions = (dkVendorOptions.find((v) => v.key === activeDkVendor) || { regions: [] }).regions;
@@ -6939,7 +7034,146 @@ function VehicleStoreMap({ stores, vehicles, onAddVehicle, onMap }) {
 }
 
 /* ================= X. 상품마스터 ================= */
-function ProductMaster({ items, onSave, onCreate, onDelete }) {
+// 상품마스터 안의 "피킹지·명세서 정보" 편집 카드. 저장하면 서버에 저장되고 피킹지시서·거래명세서에 바로 반영된다.
+const DANGCHAK_REGION_CHOICES = [
+  { value: "VV34", label: "청주만" },
+  { value: "VV92", label: "신제주만" },
+];
+function ProductInfoEditor({ name, authToken, productInfo, onSaved }) {
+  const key = String(name || "").trim();
+  const cur = (productInfo || {})[key] || {};
+  const baseDc = dcGroupOfBase(key);
+  const baseDk = getDangchakInfoBase(key);
+  const baseExpiry = PRODUCT_EXPIRY_DELTA[key] ?? 3;
+  const dkToChoice = (d) => (!d ? "none" : d.style === "full" ? "full" : `combined:${d.region}`);
+  const [f, setF] = useState(() => ({
+    packQty: cur.packQty ?? "",
+    expiryDays: cur.expiryDays ?? "",
+    displayName: cur.displayName ?? "",
+    dc: cur.dc === undefined || cur.dc === null ? "__base" : cur.dc,
+    dangchak: cur.dangchak === undefined ? "__base" : dkToChoice(cur.dangchak),
+    dkGroup: (cur.dangchak && cur.dangchak.group) || (baseDk && baseDk.group) || (baseDc && baseDc.group.key) || "",
+  }));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const baseDkLabel = !baseDk ? "당착 아님" : baseDk.style === "full" ? "당착 - 전 지역" : `당착 - ${(DANGCHAK_REGION_CHOICES.find((c) => c.value === baseDk.region) || { label: baseDk.region }).label}`;
+
+  async function persist(entry) {
+    // 다른 직원이 그사이 다른 상품을 저장했을 수 있으니, 저장 직전에 서버의 최신 값을 받아 이 상품만 바꿔서 저장한다
+    let latest = productInfo || {};
+    try {
+      const res = await apiFetch("/settings/product_info", authToken);
+      if (res && res.value && typeof res.value === "object") latest = res.value;
+    } catch (e) {
+      /* 서버를 못 읽으면 화면에 있는 값 기준 */
+    }
+    const next = { ...latest };
+    if (entry && Object.keys(entry).length) next[key] = entry;
+    else delete next[key];
+    setBusy(true);
+    setMsg("");
+    try {
+      await apiFetch("/settings/product_info", authToken, { method: "PUT", body: { value: next } });
+      onSaved(next);
+      setMsg("저장했어요. 피킹지시서·거래명세서에 바로 반영돼요 (이미 올린 날짜 포함).");
+    } catch (e) {
+      try {
+        localStorage.setItem("wms-product-info", JSON.stringify(next));
+      } catch (e2) {
+        /* 무시 */
+      }
+      onSaved(next);
+      setMsg(`서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${e.message})`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function save() {
+    const entry = {};
+    const pq = String(f.packQty).trim();
+    if (pq !== "") {
+      if (!(Number(pq) > 0)) return setMsg("입수는 1 이상의 숫자로 넣어주세요.");
+      entry.packQty = Number(pq);
+    }
+    const ex = String(f.expiryDays).trim();
+    if (ex !== "") {
+      if (!Number.isFinite(Number(ex))) return setMsg("소비기한은 숫자(일수)로 넣어주세요.");
+      entry.expiryDays = Number(ex);
+    }
+    if (String(f.displayName).trim()) entry.displayName = String(f.displayName).trim();
+    if (f.dc !== "__base") entry.dc = f.dc;
+    if (f.dangchak !== "__base") {
+      if (f.dangchak === "none") entry.dangchak = null;
+      else if (f.dangchak === "full") entry.dangchak = { style: "full" };
+      else entry.dangchak = { style: "combined", region: f.dangchak.split(":")[1], group: String(f.dkGroup).trim() || undefined };
+    }
+    persist(entry);
+  }
+  function reset() {
+    if (!window.confirm("이 상품의 변경 내용을 지우고 기본값으로 되돌릴까요?")) return;
+    setF({ packQty: "", expiryDays: "", displayName: "", dc: "__base", dangchak: "__base", dkGroup: (baseDk && baseDk.group) || (baseDc && baseDc.group.key) || "" });
+    persist(null);
+  }
+
+  const hint = { fontSize: 11.5, color: T.inkSoft, marginTop: 3 };
+  return (
+    <div style={{ ...cardStyle, marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>피킹지·명세서 정보</div>
+        <div style={hint}>비워두면 기본값(발주파일·기존 설정)을 써요. 저장하면 피킹지시서와 거래명세서에 바로 반영되고, 이미 올린 날짜도 다시 올릴 필요 없어요.</div>
+      </div>
+      <div className="field-row" style={{ display: "flex", gap: 10 }}>
+        <Field label="입수">
+          <input style={inputStyle} type="number" min="1" value={f.packQty} placeholder="발주파일 값" onChange={(e) => set("packQty", e.target.value)} />
+        </Field>
+        <Field label="소비기한 (비고 +N일)">
+          <input style={inputStyle} type="number" value={f.expiryDays} placeholder={baseDc ? "DC는 공란" : `기본 +${baseExpiry}일`} onChange={(e) => set("expiryDays", e.target.value)} />
+        </Field>
+      </div>
+      <Field label="표시 상품명 (피킹지·명세서에 찍히는 이름)">
+        <input style={inputStyle} value={f.displayName} placeholder={key} onChange={(e) => set("displayName", e.target.value)} />
+      </Field>
+      <Field label="DC 분류">
+        <select style={inputStyle} value={f.dc} onChange={(e) => set("dc", e.target.value)}>
+          <option value="__base">기본 ({baseDc ? `DC - ${baseDc.group.label}` : "DC 아님"})</option>
+          <option value="">DC 아님</option>
+          {DC_VENDOR_GROUPS.map((g) => (
+            <option key={g.key} value={g.key}>
+              DC - {g.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="당착 분류">
+        <select style={inputStyle} value={f.dangchak} onChange={(e) => set("dangchak", e.target.value)}>
+          <option value="__base">기본 ({baseDkLabel})</option>
+          <option value="none">당착 아님</option>
+          <option value="full">당착 - 전 지역</option>
+          {DANGCHAK_REGION_CHOICES.map((c) => (
+            <option key={c.value} value={`combined:${c.value}`}>
+              당착 - {c.label}
+            </option>
+          ))}
+        </select>
+        {String(f.dangchak).startsWith("combined:") && (
+          <input style={{ ...inputStyle, marginTop: 6 }} value={f.dkGroup} placeholder="당착 시트 묶음 이름 (예: 맛요일)" onChange={(e) => set("dkGroup", e.target.value)} />
+        )}
+      </Field>
+      {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={save} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
+          <Check size={14} /> {busy ? "저장 중..." : "정보 저장"}
+        </button>
+        <button onClick={reset} disabled={busy} className="ghost-btn" style={smallBtnStyle}>
+          기본값으로
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProductMaster({ items, onSave, onCreate, onDelete, authToken, productInfo, onProductInfoSaved }) {
   const [selectedSku, setSelectedSku] = useState(items[0]?.sku || null);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(null);
@@ -7140,6 +7374,9 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
               </div>
             )}
           </div>
+          {mode === "edit" && selected && form && (
+            <ProductInfoEditor key={selected.name} name={selected.name} authToken={authToken} productInfo={productInfo} onSaved={onProductInfoSaved} />
+          )}
         </div>
       </div>
     </div>
