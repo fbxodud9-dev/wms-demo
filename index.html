@@ -3460,6 +3460,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       packQty: findCol(["입수"]),
       unit: findCol(["단위"]),
       date: findCol(["발주일자", "발주일"]),
+      delivDate: findCol(["납품일자", "입고일"]),
       type: findCol(["발주타입", "발주유형"]),
     };
     if (col.sku === -1 || col.qty === -1) {
@@ -3473,6 +3474,39 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       const m = s.match(/^([A-Za-z0-9]+)\s+(.+)$/);
       if (m) return { code: m[1], name: m[2].trim() };
       return { code: "", name: s };
+    };
+
+    // 작업일(피킹 날짜) 보정: 신제주(VV92) 1편처럼 GS가 하루 일찍 발주하는 줄은 발주일자가 하루 빠르지만(예: 발주 10/04)
+    // 납품일자는 다른 지역과 같다(10/06). 발주일자 그대로 쓰면 그 줄만 전날 날짜로 들어가 그날 피킹지·명세서에서 빠지므로,
+    // 같은 납품일자를 가진 줄들 중 가장 많은 발주일자를 그 납품일자의 작업일로 보고 모든 줄을 그 날짜로 맞춘다.
+    const dayOf = (v) => (v == null || v === "" ? "" : String(v).slice(0, 10));
+    const workDateByDeliv = new Map();
+    if (col.date !== -1 && col.delivDate !== -1) {
+      const counts = new Map(); // 납품일자 -> Map(발주일자 -> 줄 수)
+      dataRows.forEach((r) => {
+        const od = dayOf(r[col.date]);
+        const dd = dayOf(r[col.delivDate]);
+        if (!od || !dd) return;
+        if (!counts.has(dd)) counts.set(dd, new Map());
+        const m = counts.get(dd);
+        m.set(od, (m.get(od) || 0) + 1);
+      });
+      counts.forEach((m, dd) => {
+        let best = null;
+        let bestN = -1;
+        m.forEach((n, od) => {
+          if (n > bestN || (n === bestN && od > best)) {
+            best = od;
+            bestN = n;
+          }
+        });
+        workDateByDeliv.set(dd, best);
+      });
+    }
+    const workDateOf = (r) => {
+      const od = col.date !== -1 ? dayOf(r[col.date]) : "";
+      const dd = col.delivDate !== -1 ? dayOf(r[col.delivDate]) : "";
+      return (dd && workDateByDeliv.get(dd)) || od || todayStr();
     };
 
     const groups = {};
@@ -3505,7 +3539,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
           supplier: supplierSplit.name || "기타 화주사",
           supplierCode: supplierSplit.code,
           channel: (col.type !== -1 && r[col.type]) || "화주사발주",
-          createdAt: (col.date !== -1 && r[col.date] && String(r[col.date]).slice(0, 10)) || todayStr(),
+          createdAt: workDateOf(r),
           status: "NEW",
           pickDocNo: null,
           pmsStatus: null,
