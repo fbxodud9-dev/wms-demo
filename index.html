@@ -471,7 +471,7 @@ const SUPPLIER_ORDER_LIST = [
   "골든에프앤디",
   "흥선",
   "유라가",
-  "뜬뜬(락컴퍼니)",
+  "뚠뚠푸드(락컴퍼니)",
   "아워홈",
   "삼진어묵",
   "우리집사람들",
@@ -1012,12 +1012,44 @@ const PACK_QTY_OVERRIDES = {
 // 실제 발주파일에서 확인된 표기로 맞췄다(예: 네이처→네이쳐, 태향→태항, 흥성엔에프→효성앤에프 등은 화주사 표기가 실제와 다를 수 있어 기존 확인값 유지).
 const SUPPLIER_PICKING_ORDER = [
   "영진베이커리", "조인앤조인", "네이쳐앤휴먼지피", "탭스", "저스트그린", "은성파머스", "은성", "미샛", "채다원", "스윗밸런스",
-  "태항", "케이제이컴퍼니", "엠즈베이커스", "청정푸드", "대광푸드", "삼경MNS", "골든에프앤디", "흥선", "뜬뜬(락컴퍼니)", "유라가",
+  "태항", "케이제이컴퍼니", "엠즈베이커스", "청정푸드", "대광푸드", "삼경MNS", "골든에프앤디", "흥선", "뚠뚠푸드(락컴퍼니)", "유라가",
   "아워홈", "삼진어묵", "우리집사람들", "브라더스팩토리", "(네고)싱싱한", "(네고)흥성엔에프", "(네고)참맛나라", "(네고)맛요일", "(네고)H2글로벌", "데어리젠",
 ];
+// 전산팀이 "피킹지 순서 설정" 화면에서 저장한 값. 없으면(null) 위의 기본 순서·가나다순을 쓴다.
+// suppliers: 공급사 대표명 배열(순서대로), products: { 공급사 대표명: [상품 기본이름 배열] }
+let PICKING_ORDER_CONFIG = { suppliers: null, products: {} };
+function setPickingOrderConfig(cfg) {
+  PICKING_ORDER_CONFIG = {
+    suppliers: cfg && Array.isArray(cfg.suppliers) && cfg.suppliers.length ? cfg.suppliers : null,
+    products: (cfg && cfg.products && typeof cfg.products === "object" && cfg.products) || {},
+  };
+}
+function getPickingSupplierOrder() {
+  return PICKING_ORDER_CONFIG.suppliers || SUPPLIER_PICKING_ORDER;
+}
+function pickingSupplierKey(supplier) {
+  const k = supplierGroupKey(supplier);
+  const list = getPickingSupplierOrder();
+  if (list.includes(k)) return k;
+  const norm = (s) => String(s).replace(/^\(네고\)/, "").replace(/\s+/g, "").toLowerCase();
+  const hit = list.find((x) => x.startsWith("(네고)") && norm(x) === norm(k));
+  return hit || k;
+}
 function pickingSupplierPriority(supplierKey) {
-  const idx = SUPPLIER_PICKING_ORDER.indexOf(supplierKey);
-  return idx === -1 ? SUPPLIER_PICKING_ORDER.length : idx;
+  const list = getPickingSupplierOrder();
+  const idx = list.indexOf(supplierKey);
+  return idx === -1 ? list.length : idx;
+}
+// 같은 공급사 안에서 상품 순서: 저장된 맞춤 순서가 있으면 그 순서(목록에 없는 새 상품은 그 뒤에 가나다순), 없으면 영문→가나다순
+function pickingProductCompare(supplierKey, a, b) {
+  const custom = PICKING_ORDER_CONFIG.products[supplierKey];
+  if (Array.isArray(custom) && custom.length) {
+    const ia = custom.indexOf(a), ib = custom.indexOf(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+  }
+  return pickingNameCompare(a, b);
 }
 // 피킹지시서 상품 이름 정렬: 화주사 요청대로 "영문 먼저, 그다음 한글 가나다순"
 function pickingNameCompare(a, b) {
@@ -1036,10 +1068,12 @@ function supplierPriority(supplier) {
 // 원본 발주파일의 공급사명은 "(주)영진베이커리(12.5%)" / "(주)영진베이커리(PB, 11.3%)" 처럼
 // 같은 회사라도 괄호(원료비율·구분 등)가 달라서 서로 다른 문자열로 들어옴.
 // 필터 목록에서는 이런 변형을 하나로 묶기 위해 대표 이름(그룹핑 키)을 뽑아낸다.
+// 발주파일에 다르게 찍혀 오는 표기(오타·약칭)를 정식명으로 묶기 위한 별칭
+const SUPPLIER_ALIASES = { "뚠뚠푸드(락컴퍼니)": ["뚠뚠", "뜬뜬"] };
 function supplierGroupKey(supplier) {
   const s = String(supplier || "").trim();
   if (!s) return "미지정";
-  const idx = SUPPLIER_ORDER_LIST.findIndex((name) => s.includes(name));
+  const idx = SUPPLIER_ORDER_LIST.findIndex((name) => s.includes(name) || (SUPPLIER_ALIASES[name] || []).some((a) => s.includes(a)));
   if (idx !== -1) return SUPPLIER_ORDER_LIST[idx]; // 고정 순서표에 있는 이름이면 그걸 대표명으로
   // 순서표에 없는 공급사는 괄호(비율·구분 표기)와 법인격 접두어를 떼어 대표명 추정
   const cleaned = s
@@ -1509,6 +1543,34 @@ function WMSApp() {
     if (authToken) loadCoreData();
   }, [authToken]); // eslint-disable-line
 
+  // 전산팀이 저장해 둔 피킹지 순서 설정을 로그인 후 한 번 불러온다 (저장된 게 없으면 기본 순서)
+  const [orderCfg, setOrderCfg] = useState({ suppliers: null, products: {} });
+  const applyOrderCfg = useCallback((value) => {
+    setPickingOrderConfig(value);
+    setOrderCfg({ suppliers: PICKING_ORDER_CONFIG.suppliers, products: PICKING_ORDER_CONFIG.products });
+  }, []);
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    (async () => {
+      let value = null;
+      try {
+        const res = await apiFetch("/settings/picking_order", authToken);
+        value = res.value;
+      } catch (e) {
+        try {
+          value = JSON.parse(localStorage.getItem("wms-picking-order") || "null");
+        } catch (e2) {
+          value = null;
+        }
+      }
+      if (!cancelled) applyOrderCfg(value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, applyOrderCfg]);
+
   function doLogin(token, user) {
     setAuthToken(token);
     setAuthUser(user);
@@ -1966,13 +2028,14 @@ function WMSApp() {
       ],
     },
     {
-      label: "VIII~XII  기준정보",
+      label: "VIII~XIII  기준정보",
       items: [
         { key: "masdatacheck", label: "VIII. 기준정보체크", icon: ShieldCheck },
         { key: "vehiclemap", label: "IX. 차량/매장 매핑", icon: MapPinned },
         { key: "productmaster", label: "X. 상품마스터", icon: Tag },
         { key: "cell", label: "XI. 창고CELL", icon: Grid3x3 },
         { key: "course", label: "XII. 배송코스차수", icon: Route },
+        { key: "orderset", label: "XIII. 피킹지 순서 설정", icon: ListOrdered },
       ],
     },
   ];
@@ -2175,12 +2238,13 @@ function WMSApp() {
         {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
-        {tab === "pickinginspection" && <PickingInspection orders={orders} />}
+        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} />}
 
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
         {tab === "invoice" && <InvoiceView orders={orders} />}
+        {tab === "orderset" && <PickingOrderSettings orders={orders} authToken={authToken} config={orderCfg} onSaved={applyOrderCfg} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
@@ -4874,18 +4938,18 @@ const DANGCHAK_PRODUCTS = {
   "고단백저당)카스테라(플레인": { style: "full" },
   "고단백저당)쿠키(다크초코아몬드": { style: "full" },
   "고단백저당)쿠키(말차마카다미아": { style: "full" },
-  // 참맛나라와 맛요일은 한 시트("맛요일-참맛나라(오전현장-지역)")에 같이 묶여 나간다 (실물 파일 기준)
+  // 참맛나라와 맛요일은 각자 따로 시트로 나간다 ("참맛나라(오전현장-청주)", "맛요일(오전현장-청주)")
   // region: 당착 몫으로 빠지는 지역 하나 - 이 상품이 실제로는 다른 지역에도 정상적으로 나갈 수 있어서,
   // 평소 피킹지시서는 그대로 만들고(이 지역만 기존 0고정 규칙으로 빠짐), 이 지역 몫만 따로 당착 시트로 나간다.
-  "두끼)치즈즉석라볶이633G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)스팸치즈부대찌개298G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)3900소고기미역국밥480G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)3900치즈미역국468G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)간장불고기덮밥366G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)대파육개장480G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)떠먹는얼큰국물파스타": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "맛요일)스팸참기름김치덮밥345G": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
-  "오뚜기마요)참치마요간장계란밥": { style: "combined", group: "맛요일-참맛나라", region: "VV34" },
+  "두끼)치즈즉석라볶이633G": { style: "combined", group: "참맛나라", region: "VV34" },
+  "맛요일)스팸치즈부대찌개298G": { style: "combined", group: "참맛나라", region: "VV34" }, // 상품명은 맛요일이지만 당착리스트상 참맛나라 소속
+  "맛요일)3900소고기미역국밥480G": { style: "combined", group: "맛요일", region: "VV34" },
+  "맛요일)3900치즈미역국468G": { style: "combined", group: "맛요일", region: "VV34" },
+  "맛요일)간장불고기덮밥366G": { style: "combined", group: "맛요일", region: "VV34" },
+  "맛요일)대파육개장480G": { style: "combined", group: "맛요일", region: "VV34" },
+  "맛요일)떠먹는얼큰국물파스타": { style: "combined", group: "맛요일", region: "VV34" },
+  "맛요일)스팸참기름김치덮밥345G": { style: "combined", group: "맛요일", region: "VV34" },
+  "오뚜기마요)참치마요간장계란밥": { style: "combined", group: "맛요일", region: "VV34" },
   "노포식당)김치찌개406G": { style: "combined", group: "H2글로벌", region: "VV34" },
   "노포식당)된장찌개420G": { style: "combined", group: "H2글로벌", region: "VV34" },
   "서청미역)소고기미역국480G": { style: "combined", group: "H2글로벌", region: "VV34" },
@@ -5664,14 +5728,220 @@ function buildProductsForDate(orders, activeDate) {
     // 당착(현장출고) 상품은 그 공급사 맨 끝으로 몰아서 나온다. 당착끼리는 상품명 가나다순.
     .sort(
       (a, b) =>
-        pickingSupplierPriority(supplierGroupKey(a.supplier)) - pickingSupplierPriority(supplierGroupKey(b.supplier)) ||
+        pickingSupplierPriority(pickingSupplierKey(a.supplier)) - pickingSupplierPriority(pickingSupplierKey(b.supplier)) ||
+        pickingSupplierKey(a.supplier).localeCompare(pickingSupplierKey(b.supplier), "ko") ||
         isDangchakProduct(a.name) - isDangchakProduct(b.name) ||
-        pickingNameCompare(a.baseName, b.baseName) ||
+        pickingProductCompare(pickingSupplierKey(a.supplier), a.baseName, b.baseName) ||
         a.part - b.part
     );
 }
 
-function PickingInspection({ orders }) {
+/* ================= XIII. 피킹지 순서 설정 (전산팀용) ================= */
+// 공급사(시트) 순서와, 공급사 안에서의 상품 순서를 화면에서 직접 바꿔 저장한다. 저장하면 피킹지시서 화면·엑셀에 바로 반영된다.
+function PickingOrderSettings({ orders, authToken, config, onSaved }) {
+  const [draft, setDraft] = useState(() => ({ suppliers: config.suppliers, products: { ...config.products } }));
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [selDate, setSelDate] = useState(null);
+  const [selSupplier, setSelSupplier] = useState(null);
+
+  // 서버에서 저장값을 새로 불러오거나 저장이 끝나면 초안도 그 값으로 맞춘다
+  useEffect(() => {
+    setDraft({ suppliers: config.suppliers, products: { ...config.products } });
+    setDirty(false);
+  }, [config]);
+
+  const dates = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt))).sort().reverse(), [orders]);
+  const activeDate = selDate && dates.includes(selDate) ? selDate : dates[0] || null;
+  const dayProducts = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, config]);
+
+  const baseList = draft.suppliers || SUPPLIER_PICKING_ORDER;
+  const detectedSuppliers = useMemo(() => Array.from(new Set(dayProducts.map((p) => pickingSupplierKey(p.supplier)))), [dayProducts]);
+  const extra = detectedSuppliers.filter((k) => !baseList.includes(k)); // 순서표에 없던 공급사는 맨 뒤에 붙여서 보여줌
+  const supplierList = [...baseList, ...extra];
+
+  function updateSuppliers(list) {
+    setDraft((d) => ({ ...d, suppliers: list }));
+    setDirty(true);
+  }
+  function moveSupplier(from, to) {
+    if (to < 0 || to >= supplierList.length || from === to) return;
+    const list = [...supplierList];
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+    updateSuppliers(list);
+  }
+
+  // 상품 순서 편집 대상 공급사 (기본: 이 날짜에 발주가 있는 첫 공급사)
+  const productSupplier = selSupplier && supplierList.includes(selSupplier) ? selSupplier : supplierList.find((k) => detectedSuppliers.includes(k)) || supplierList[0];
+  const detectedNames = useMemo(() => {
+    const out = [];
+    dayProducts.filter((p) => pickingSupplierKey(p.supplier) === productSupplier).forEach((p) => {
+      if (!out.includes(p.baseName)) out.push(p.baseName);
+    });
+    return out;
+  }, [dayProducts, productSupplier]);
+  const savedNames = draft.products[productSupplier];
+  const productNames = savedNames && savedNames.length ? [...savedNames, ...detectedNames.filter((n) => !savedNames.includes(n))] : detectedNames;
+
+  function updateProducts(list) {
+    setDraft((d) => ({ ...d, products: { ...d.products, [productSupplier]: list } }));
+    setDirty(true);
+  }
+  function moveProduct(from, to) {
+    if (to < 0 || to >= productNames.length || from === to) return;
+    const list = [...productNames];
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+    updateProducts(list);
+  }
+
+  async function save() {
+    const value = { suppliers: draft.suppliers, products: draft.products };
+    setBusy(true);
+    setMsg("");
+    try {
+      await apiFetch("/settings/picking_order", authToken, { method: "PUT", body: { value } });
+      onSaved(value);
+      setMsg("저장했어요. 피킹지시서 화면과 엑셀에 바로 반영돼요.");
+    } catch (e) {
+      try {
+        localStorage.setItem("wms-picking-order", JSON.stringify(value));
+      } catch (e2) {
+        /* 무시 */
+      }
+      onSaved(value);
+      setMsg(`서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${e.message})`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rowBtn = { ...smallBtnStyle, padding: "3px 9px", minWidth: 30, justifyContent: "center" };
+  return (
+    <div>
+      <PageHeader title="XIII. 피킹지 순서 설정" sub="피킹지시서(시트)에 나오는 공급사 순서와, 공급사 안의 상품 순서를 직접 정해요. 저장하면 바로 반영돼요." />
+
+      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
+          {busy ? "저장 중..." : dirty ? "변경 내용 저장" : "저장할 변경 없음"}
+        </button>
+        <button
+          onClick={() => {
+            setDraft({ suppliers: null, products: {} });
+            setDirty(true);
+          }}
+          style={smallBtnStyle}
+        >
+          전부 기본 순서로 되돌리기
+        </button>
+        <span style={{ fontSize: 12.5, color: T.inkSoft }}>
+          {dirty ? "저장 전 변경이 있어요." : ""} 아래 목록은 {activeDate ? fmtDate(activeDate) : "-"} 발주 기준으로 발주가 있는 공급사·상품을 표시해요.
+        </span>
+        <select style={{ ...inputStyle, marginLeft: "auto" }} value={activeDate || ""} onChange={(e) => setSelDate(e.target.value)}>
+          {dates.length === 0 && <option value="">발주 없음</option>}
+          {dates.map((d) => (
+            <option key={d} value={d}>
+              {fmtDate(d)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {msg && <div style={{ marginBottom: 12, fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16, alignItems: "start" }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>1. 공급사(시트) 순서</div>
+          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>위에 있을수록 먼저 나와요. ▲▼로 한 칸씩, 번호 칸으로 원하는 자리로 옮겨요.</div>
+          {supplierList.map((k, i) => {
+            const has = detectedSuppliers.includes(k);
+            const isExtra = extra.includes(k);
+            return (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${T.border}` }}>
+                <select style={{ ...inputStyle, padding: "3px 4px", width: 62, fontSize: 12.5 }} value={i + 1} onChange={(e) => moveSupplier(i, Number(e.target.value) - 1)}>
+                  {supplierList.map((_, n) => (
+                    <option key={n} value={n + 1}>
+                      {n + 1}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: has ? 700 : 500, color: has ? T.ink : T.inkSoft }}>
+                  {k}
+                  {isExtra && <span style={{ marginLeft: 6, fontSize: 11, color: T.clay, fontWeight: 600 }}>순서표에 없던 공급사</span>}
+                  {has && !isExtra && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>발주 있음</span>}
+                </span>
+                <button style={rowBtn} onClick={() => moveSupplier(i, i - 1)} disabled={i === 0} title="위로">
+                  ▲
+                </button>
+                <button style={rowBtn} onClick={() => moveSupplier(i, i + 1)} disabled={i === supplierList.length - 1} title="아래로">
+                  ▼
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>2. 공급사 안의 상품 순서</div>
+          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>
+            따로 정하지 않은 공급사는 영문→가나다순이에요. 당착 상품은 항상 그 공급사 맨 끝에 나와요. 1편·2편은 같은 상품끼리 붙어서 나가요.
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <select style={{ ...inputStyle, flex: 1, minWidth: 180 }} value={productSupplier || ""} onChange={(e) => setSelSupplier(e.target.value)}>
+              {supplierList.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                  {detectedSuppliers.includes(k) ? "" : " (이 날짜 발주 없음)"}
+                </option>
+              ))}
+            </select>
+            <button
+              style={smallBtnStyle}
+              onClick={() => {
+                setDraft((d) => {
+                  const next = { ...d.products };
+                  delete next[productSupplier];
+                  return { ...d, products: next };
+                });
+                setDirty(true);
+              }}
+            >
+              이 공급사 가나다순으로
+            </button>
+          </div>
+          {productNames.length === 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, padding: "14px 0" }}>이 날짜엔 이 공급사의 상품 발주가 없어요. 다른 날짜를 고르거나 다른 공급사를 선택해 주세요.</div>}
+          {productNames.map((n, i) => {
+            const today = detectedNames.includes(n);
+            return (
+              <div key={n} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${T.border}` }}>
+                <span style={{ width: 28, fontSize: 12, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{i + 1}</span>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: today ? 600 : 500, color: today ? T.ink : T.inkSoft }}>
+                  {n}
+                  {!today && <span style={{ marginLeft: 6, fontSize: 11 }}>(이 날짜 발주 없음)</span>}
+                </span>
+                <button style={rowBtn} onClick={() => moveProduct(i, 0)} disabled={i === 0} title="맨 위로">
+                  ⤒
+                </button>
+                <button style={rowBtn} onClick={() => moveProduct(i, i - 1)} disabled={i === 0} title="위로">
+                  ▲
+                </button>
+                <button style={rowBtn} onClick={() => moveProduct(i, i + 1)} disabled={i === productNames.length - 1} title="아래로">
+                  ▼
+                </button>
+                <button style={rowBtn} onClick={() => moveProduct(i, productNames.length - 1)} disabled={i === productNames.length - 1} title="맨 아래로">
+                  ⤓
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PickingInspection({ orders, orderCfg }) {
   const [selectedSku, setSelectedSku] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [printMode, setPrintMode] = useState(null); // null | "single" | "all"
@@ -5702,7 +5972,7 @@ function PickingInspection({ orders }) {
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
-  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate]);
+  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg]);
 
 
   // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 같은 회사는 하나로 묶어서, 고정 순서표 순으로)
