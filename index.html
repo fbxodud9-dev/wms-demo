@@ -491,6 +491,7 @@ const SUPPLIER_ORDER_LIST = [
   "(네고)맛요일",
   "(네고)H2글로벌",
   "데어리젠",
+  "대신에프에스",
 ];
 // GS 발주파일마다 "입수"가 다르게 찍혀 들어오는 상품들 (gs_입수_조사 자료 기준).
 // 파일에 뭐라고 찍혀오든 여기 있는 SKU는 실제(더원 피킹지) 입수량으로 강제 고정한다.
@@ -549,6 +550,25 @@ const INVOICE_EDGE_SPEC = {"blue": {"H": {"top": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
 
 // 공급사별 거래명세서에 실리는 상품 목록(=소비기한 자료에 있는 상품)과 순서. 여기 없는 상품은 1·2편 명세서에 안 찍힘.
 const SUPPLIER_INVOICE_CATALOG = {
+ // 대신에프에스 - 실물 명세서(대신_거래명세서_0630) 품목 순서 그대로
+ "대신에프에스": {
+  "1": [
+   "2300원굿딜)매콤불고기1",
+   "2300원굿딜)불갈비버거1",
+   "NEW직화석쇠불고기버거1편",
+   "매콤직화석쇠불고기버거1편",
+   "치즈왕돈까스버거1편",
+   "황치즈직화석쇠불고기버거1편"
+  ],
+  "2": [
+   "2300원굿딜)매콤불고기2",
+   "2300원굿딜)불갈비버거2",
+   "NEW직화석쇠불고기버거2편",
+   "매콤직화석쇠불고기버거2편",
+   "치즈왕돈까스버거2편",
+   "황치즈직화석쇠불고기버거2편"
+  ]
+ },
  "영진베이커리": {
   "1": [
    "오든든)대만식햄치즈샌드1편",
@@ -832,6 +852,16 @@ const SUPPLIER_INVOICE_INFO = {
     bizItem: "식품제조가공업",
     agent: "",
   },
+  // 대신에프에스 - 2026-10-06 받은 공급자 정보 캡처 기준 (기존 명세서 파일의 869-81-01708은 태항 번호가 잘못 복사된 것)
+  "대신에프에스": {
+    regNo: "397-85-00686",
+    name: "㈜대신에프에스",
+    ceo: "신판철",
+    address: "전라북도 부안군 행안면 옥여길 32-76",
+    bizType: "도매및 소매업",
+    bizItem: "빵 과자류",
+    agent: THREE_PL_AGENT,
+  },
   "대광푸드": {
     regNo: "206-86-55878",
     name: "㈜대광푸드",
@@ -856,6 +886,9 @@ function expiryDaysOf(name) {
   return expiryOverrideOf(name) ?? PRODUCT_EXPIRY_DELTA[name] ?? 3;
 }
 const PRODUCT_EXPIRY_DELTA = {
+  // 대신에프에스: 실물 명세서 비고가 1편(당일)+4일, 2편(익일)+3일 → 두 편 모두 같은 날짜
+  "2300원굿딜)매콤불고기1": 4, "2300원굿딜)불갈비버거1": 4, "NEW직화석쇠불고기버거1편": 4, "매콤직화석쇠불고기버거1편": 4, "치즈왕돈까스버거1편": 4, "황치즈직화석쇠불고기버거1편": 4,
+  "2300원굿딜)매콤불고기2": 3, "2300원굿딜)불갈비버거2": 3, "NEW직화석쇠불고기버거2편": 3, "매콤직화석쇠불고기버거2편": 3, "치즈왕돈까스버거2편": 3, "황치즈직화석쇠불고기버거2편": 3,
   "오든든)대만식햄치즈샌드2편": 3,
   "오든든)더블햄샌드2편": 3,
   "오든든)치즈포테이토피타브레드2": 3,
@@ -1106,7 +1139,7 @@ function supplierPriority(supplier) {
 // 같은 회사라도 괄호(원료비율·구분 등)가 달라서 서로 다른 문자열로 들어옴.
 // 필터 목록에서는 이런 변형을 하나로 묶기 위해 대표 이름(그룹핑 키)을 뽑아낸다.
 // 발주파일에 다르게 찍혀 오는 표기(오타·약칭)를 정식명으로 묶기 위한 별칭
-const SUPPLIER_ALIASES = { "뚠뚠푸드(락컴퍼니)": ["뚠뚠", "뜬뜬"] };
+const SUPPLIER_ALIASES = { "뚠뚠푸드(락컴퍼니)": ["뚠뚠", "뜬뜬"], "대신에프에스": ["대신"] };
 function supplierGroupKey(supplier) {
   const s = String(supplier || "").trim();
   if (!s) return "미지정";
@@ -5294,8 +5327,15 @@ function getInvoiceSkippedProducts(products, supplierKey) {
   };
 }
 
+// 1편 거래명세서는 모든 공급사 공통으로 신제주·곤지암·곤지암2 센터만 발행 (2026-10-06 요청). 발주가 없어도 수량 0으로 3곳 다 나간다.
+// 다른 지역의 1편 발주는 명세서를 만들지 않는다. 2편·DC·당착은 발주 있는 지역 전부 그대로.
+// "1편발주량" 요약표는 실물처럼 전 지역 수량을 그대로 보여준다.
+const INVOICE_PART1_REGIONS = ["VV92", "VV93", "VV94"];
+
 // 그날 발주가 한 건도 없어서 주문 데이터에서 입수를 못 읽는 상품용 (실물 명세서에 적혀있던 입수)
 const INVOICE_KNOWN_PACK = {
+  // 대신에프에스 (실물 명세서 입수 36)
+  "2300원굿딜)매콤불고기1": 36, "2300원굿딜)불갈비버거1": 36, "NEW직화석쇠불고기버거1편": 36, "매콤직화석쇠불고기버거1편": 36, "치즈왕돈까스버거1편": 36, "황치즈직화석쇠불고기버거1편": 36, "2300원굿딜)매콤불고기2": 36, "2300원굿딜)불갈비버거2": 36, "NEW직화석쇠불고기버거2편": 36, "매콤직화석쇠불고기버거2편": 36, "치즈왕돈까스버거2편": 36, "황치즈직화석쇠불고기버거2편": 36,
   "오든든)대만식햄치즈샌드1편": 60, "오든든)더블햄샌드1편": 60, "오든든)치즈포테이토피타브레드1": 36, "오든든)페퍼로니피자피타브레드1": 36, "오든든)햄치즈에그피타브레드1편": 36,
   "오든든)대만식햄치즈샌드2편": 60, "오든든)더블햄샌드2편": 60, "오든든)치즈포테이토피타브레드2": 36, "오든든)페퍼로니피자피타브레드2": 36, "오든든)햄치즈에그피타브레드2편": 36,
   "든든두부샐러드2편": 25, "듬뿍)스모크치킨샐러드2편": 30, "듬뿍)케이준치킨샐러드2편": 30, "에너지샐러드2편": 25, "리치샐러드2편": 25,
@@ -5393,12 +5433,14 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   };
   const regions = [];
   const sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
+  const onlyRegions = part === 1 ? INVOICE_PART1_REGIONS : null;
   sheetOrder.forEach((code) => {
     if (!REGION_ORDER_MAP[code]) return;
+    if (onlyRegions && !onlyRegions.includes(code)) return; // 1편은 신제주·곤지암·곤지암2만 명세서 발행
     const rowItems = items.map((it) => ({ name: it.name, packQty: it.packQty, qty: qtyOf(it, code) }));
     const totalQty = rowItems.reduce((a, r) => a + r.qty, 0);
-    // 실제로 뭐라도 나간(총수량 > 0) 지역만 명세서 발행
-    if (totalQty > 0) regions.push({ code, shortName: REGION_ORDER_MAP[code].shortName, items: rowItems, totalQty });
+    // 실제로 뭐라도 나간(총수량 > 0) 지역만 명세서 발행. 단 1편 신제주·곤지암·곤지암2는 발주가 없어도 0으로 항상 발행
+    if (totalQty > 0 || onlyRegions) regions.push({ code, shortName: REGION_ORDER_MAP[code].shortName, items: rowItems, totalQty });
   });
   return { items, regions, qtyOf };
 }
@@ -5413,6 +5455,8 @@ const INV_FONT = "굴림체";
 const INV_COLOR = { blue: { argb: "FF0000FF" }, red: { argb: "FFFF0000" }, black: { argb: "FF000000" } };
 const INV_WHITE_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFFFF" } };
 const INV_NF_ACCT = '_-* #,##0_-;\\-* #,##0_-;_-* "-"_-;_-@_-';
+// 명세서 수량·총수량 칸: 실물과 같은 회계 서식이되 0은 "-" 대신 0으로 보이게 (발주 없으면 0 표시 요청)
+const INV_NF_QTY = '_-* #,##0_-;\\-* #,##0_-;_-* 0_-;_-@_-';
 const INV_NF_AMOUNT = "#,##0_ ;[Red]\\-#,##0\\ ";
 // 실물 파일의 열 너비를 픽셀로 환산한 값 (A~AJ, 그 뒤 열은 21px).
 // 실물은 기본 글꼴이 돋움 11pt(숫자 1칸 = 9px)라 '2.33' 같은 숫자가 21px인데, 이 파일은 Calibri 11pt(숫자 1칸 = 7px) 기준으로 저장되므로
@@ -5563,7 +5607,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
       }
       put(ir, 5, it ? displayNameOf(it.name) : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
       put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
-      put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_ACCT }); mc(ir, 18, ir, 21);
+      put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_QTY }); mc(ir, 18, ir, 21);
       // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
       const remark = hasQty && (part === 1 || part === 2 || expiryOverrideOf(it.name) != null) ? invDate(addDaysStr(invoiceDate, expiryDaysOf(it.name))) : null;
       put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
@@ -5574,7 +5618,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
     put(tr, 2, "총수량", { name: INV_FONT, size: 9, bold: true, color: black }, { h: "center" }); mc(tr, 2, tr, 4);
     mc(tr, 5, tr, 12);
     mc(tr, 13, tr, 17);
-    put(tr, 18, region.totalQty, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_ACCT }); mc(tr, 18, tr, 21);
+    put(tr, 18, region.totalQty, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_QTY }); mc(tr, 18, tr, 21);
     mc(tr, 22, tr, 34);
 
     // 하단: 3자물류 담당자 / 받는 센터 주소
@@ -6662,7 +6706,7 @@ function InvoiceView({ orders, productInfo }) {
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 14 }}>
-          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일, 2편은 익일 날짜로 나갑니다. 유통기한이 상품마다 다른 DC 취급 상품은 1편/2편에서 빠지고 아래 “DC 거래명세서” 카드에서 따로 받아요. 총수량은 피킹지시서와 항상 일치합니다.
+          선택한 날짜에 그 공급사 상품을 받은 지역마다 거래명세서(공급받는자/공급자 보관용 2부)를 만들어요. 1편은 발주 당일 날짜로 신제주·곤지암·곤지암2 센터만, 2편은 익일 날짜로 발주 있는 지역 전부 나갑니다. 유통기한이 상품마다 다른 DC 취급 상품은 1편/2편에서 빠지고 아래 “DC 거래명세서” 카드에서 따로 받아요. 총수량은 피킹지시서와 항상 일치합니다.
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="날짜">
