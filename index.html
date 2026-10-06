@@ -4849,7 +4849,8 @@ const PYEONSU_DANGCHAK_ROWS = [
 ];
 const PYEONSU_DC_ROWS = [
   { row: 10, key: "대광푸드" },
-  { row: 11, key: "삼경MNS", bySupplier: true }, // DC 공급사 목록에 아직 없어 발주파일 공급사명으로 센다
+  // DC 공급사 목록에 아직 없어 발주파일 공급사명으로 센다 (발주파일엔 "삼경엠앤에스"로 찍혀 옴, 예전 표기 삼경MNS도 같이 인정)
+  { row: 11, key: "삼경엠앤에스", bySupplier: true, aliases: ["삼경엠앤에스", "삼경MNS", "삼경mns"] }, // 대소문자·띄어쓰기 상관없이 비교
   { row: 12, key: "골든" },
   { row: 13, key: "흥선" },
   { row: 14, key: "뚠뚠" },
@@ -4876,11 +4877,12 @@ function computePyeonsuCounts(products) {
       return p.regionRows.some((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0);
     }).length;
   });
-  PYEONSU_DC_ROWS.forEach(({ row, key, bySupplier }) => {
+  PYEONSU_DC_ROWS.forEach(({ row, key, bySupplier, aliases }) => {
     counts[row] = products.filter((p) => {
       const dk = getDangchakInfo(p.name);
       if (dk && dk.style === "full") return false;
-      const match = bySupplier ? pyeonsuNorm(pickingSupplierKey(p.supplier || "")) === pyeonsuNorm(key) : dcVendorKey(p.name) === key;
+      const sup = pyeonsuNorm(p.supplier);
+      const match = bySupplier ? (aliases || [key]).some((a) => sup.includes(pyeonsuNorm(a))) : dcVendorKey(p.name) === key;
       if (!match) return false;
       return p.regionRows.some((r) => !(dk && dangchakHasRegion(dk, r.key)) && r.qty > 0);
     }).length;
