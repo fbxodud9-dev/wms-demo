@@ -4655,8 +4655,8 @@ const DANGCHAK_ACCT_FMT = '_-* #,##0_-;\\-* #,##0_-;_-* "-"_-;_-@_-'; // 0은 "-
 function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, date) {
   const regionNames = new Set();
   products.forEach((p) => {
-    const onlyRegion = (getDangchakInfo(p.name) || {}).region;
-    p.regionRows.forEach((r) => (!onlyRegion || r.key === onlyRegion) && (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName));
+    const dk = getDangchakInfo(p.name);
+    p.regionRows.forEach((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName));
   });
   const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
   const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
@@ -4681,9 +4681,9 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     const pack = product.packQty || 0;
     const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
     // 당착 몫은 그 상품에 지정된 지역 하나만 (나머지 지역 주문은 평소 피킹지시서로 정상적으로 나감)
-    const onlyRegion = (getDangchakInfo(product.name) || {}).region;
+    const dk = getDangchakInfo(product.name);
     const rows = product.regionRows
-      .filter((r) => (!onlyRegion || r.key === onlyRegion) && (r.rawQty ?? r.qty) > 0)
+      .filter((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0)
       .map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
     if (rows.length === 0) return;
     const totalQty = rows.reduce((a, r) => a + r.qty, 0);
@@ -5118,7 +5118,10 @@ function getDangchakInfo(name) {
   if (ov && ov.dangchak !== undefined) {
     const d = ov.dangchak;
     if (!d || !d.style) return null;
-    if (d.style === "combined") return { style: "combined", region: d.region || "VV34", group: String(d.group || "").trim() || dcVendorKey(name) || "당착" };
+    if (d.style === "combined") {
+      const regions = (Array.isArray(d.regions) && d.regions.length ? d.regions : [d.region || "VV34"]).filter(Boolean);
+      return { style: "combined", regions, region: regions[0], group: String(d.group || "").trim() || dcVendorKey(name) || "당착" };
+    }
     return { style: "full" };
   }
   return getDangchakInfoBase(name);
@@ -5126,7 +5129,15 @@ function getDangchakInfo(name) {
 function getDangchakInfoBase(name) {
   const n = String(name || "").trim();
   const key = Object.keys(DANGCHAK_PRODUCTS).find((d) => n.startsWith(d));
-  return key ? DANGCHAK_PRODUCTS[key] : null;
+  if (!key) return null;
+  const info = DANGCHAK_PRODUCTS[key];
+  return info.style === "combined" ? { ...info, regions: [info.region] } : info;
+}
+// 이 지역이 당착(오전현장)으로 빠지는 지역인가. 전 지역 당착이면 항상 true.
+function dangchakHasRegion(dk, code) {
+  if (!dk) return false;
+  if (dk.style === "full") return true;
+  return (dk.regions || [dk.region]).includes(code);
 }
 function getDangchakStyle(name) {
   const info = getDangchakInfo(name);
@@ -5265,11 +5276,11 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     const dk = getDangchakInfo(it.name);
     if (part === "당착") {
       if (!dk) return 0;
-      if (dk.style === "combined" && code !== dk.region) return 0; // 당착 지역 한 곳만
+      if (!dangchakHasRegion(dk, code)) return 0; // 당착으로 지정된 지역만
       return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
     }
     if (dk && dk.style === "full") return 0; // 전 지역 당착 상품은 당착 명세서에서만
-    if (dk && dk.style === "combined" && code === dk.region) return 0; // 당착 지역 몫은 1편·2편·DC에서 제외
+    if (dk && dk.style === "combined" && dangchakHasRegion(dk, code)) return 0; // 당착 지역 몫은 1편·2편·DC에서 제외
     return rr.qty;
   };
   const regions = [];
@@ -5860,7 +5871,7 @@ const PICKING_QTY_ZERO_BY_NAME = [
 function isQtyZeroByName(name, regionCode) {
   // 당착(오전현장)으로 따로 빠지는 지역은 평소 피킹지시서에서도 0으로 고정 (중복 집계 방지) - 상품마스터에서 바꾼 당착 분류도 그대로 따름
   const dk = getDangchakInfo(name);
-  if (dk && dk.style === "combined" && dk.region === regionCode) return true;
+  if (dk && dk.style === "combined" && dangchakHasRegion(dk, regionCode)) return true;
   return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === name && o.regionCode === regionCode);
 }
 
@@ -7041,10 +7052,13 @@ function VehicleStoreMap({ stores, vehicles, onAddVehicle, onMap }) {
 /* ================= XIII. 상품 정보 관리 ================= */
 // 발주파일로 들어온 상품들의 입수·소비기한·표시 상품명·명세서 구분(일반/DC/당착)을 직원이 직접 바꾸는 화면.
 // 저장값은 서버 /settings/product_info 에 상품명 기준으로 저장되고, 피킹지시서·거래명세서를 만들 때마다 먼저 적용된다.
-const DANGCHAK_REGION_CHOICES = [
-  { value: "VV34", label: "청주만" },
-  { value: "VV92", label: "신제주만" },
-];
+// 지역코드 목록 -> "청주·신제주" 같은 짧은 이름 (피킹지 1편 지역 순서대로)
+function regionNamesOf(codes) {
+  const set = new Set(codes || []);
+  const names = REGION_ORDER_TABLE.filter((r) => set.has(r.code)).map((r) => r.name);
+  (codes || []).forEach((c) => !REGION_ORDER_MAP[c] && names.push(c));
+  return names.length > 3 ? `${names.slice(0, 3).join("·")} 외 ${names.length - 3}곳` : names.join("·");
+}
 const PI_CAT_COLOR = {
   일반: { bg: "#EEF1F4", fg: "#3E4750" },
   DC: { bg: "#E4F2EE", fg: "#0E4F3F" },
@@ -7073,7 +7087,7 @@ function buildProductInfoRows(orders) {
 }
 
 function piCategoryOf(dc, dk) {
-  if (dk) return { cat: "당착", detail: dk.style === "full" ? "전 지역" : (DANGCHAK_REGION_CHOICES.find((c) => c.value === dk.region) || { label: dk.region }).label };
+  if (dk) return { cat: "당착", detail: dk.style === "full" ? "전 지역" : regionNamesOf(dk.regions || [dk.region]) };
   if (dc) return { cat: "DC", detail: dc.group.label };
   return { cat: "일반", detail: "" };
 }
@@ -7227,7 +7241,8 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
     displayName: cur.displayName ?? "",
     cat: effCat,
     dcKey: effDc ? effDc.group.key : (baseDc && baseDc.group.key) || DC_VENDOR_GROUPS[0].key,
-    dkScope: effDk ? (effDk.style === "full" ? "full" : effDk.region) : "VV34",
+    dkScope: effDk && effDk.style === "full" ? "full" : "regions",
+    dkRegions: effDk && effDk.style === "combined" ? effDk.regions || [effDk.region] : [],
     dkGroup: (effDk && effDk.group) || defaultGroup,
   }));
   const [busy, setBusy] = useState(false);
@@ -7293,8 +7308,13 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
       if (!baseDc || baseDc.group.key !== f.dcKey) entry.dc = f.dcKey;
       if (baseDk) entry.dangchak = null;
     } else {
-      const want = f.dkScope === "full" ? { style: "full" } : { style: "combined", region: f.dkScope, group: String(f.dkGroup).trim() || defaultGroup };
-      const same = baseDk && baseDk.style === want.style && (want.style === "full" || (baseDk.region === want.region && baseDk.group === want.group));
+      if (f.dkScope !== "full" && f.dkRegions.length === 0) return setMsg("당착으로 뺄 지역을 하나 이상 골라주세요.");
+      const regions = REGION_ORDER_TABLE.map((r) => r.code).filter((c) => f.dkRegions.includes(c));
+      const want = f.dkScope === "full" ? { style: "full" } : { style: "combined", regions, group: String(f.dkGroup).trim() || defaultGroup };
+      const same =
+        baseDk &&
+        baseDk.style === want.style &&
+        (want.style === "full" || (baseDk.group === want.group && [...(baseDk.regions || [])].sort().join() === [...want.regions].sort().join()));
       if (!same) entry.dangchak = want;
     }
     persist(entry);
@@ -7338,7 +7358,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
   const catHelp = {
     일반: `평소 피킹지시서와 ${row.part}편 거래명세서로 나가요.`,
     DC: "DC 거래명세서 카드에서 선택한 DC 공급사로 나가요.",
-    당착: f.dkScope === "full" ? "모든 지역이 당착으로, 당착 피킹 시트와 당착 거래명세서로만 나가요." : "선택한 지역 몫만 당착(오전현장)으로 빠지고, 나머지 지역은 평소대로 나가요.",
+    당착: f.dkScope === "full" ? "모든 지역이 당착으로, 당착 피킹 시트와 당착 거래명세서로만 나가요." : "고른 지역 몫만 당착(오전현장)으로 빠지고, 나머지 지역은 평소대로 나가요.",
   }[f.cat];
 
   return createPortal(
@@ -7417,21 +7437,45 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
             )}
             {f.cat === "당착" && (
               <div style={{ marginTop: 10 }}>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  <button onClick={() => set("dkScope", "full")} style={chip(f.dkScope === "full")}>
-                    전 지역
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => set("dkScope", "regions")} style={chip(f.dkScope === "regions")}>
+                    지역 골라서 빼기
                   </button>
-                  {DANGCHAK_REGION_CHOICES.map((c) => (
-                    <button key={c.value} onClick={() => set("dkScope", c.value)} style={chip(f.dkScope === c.value)}>
-                      {c.label}
-                    </button>
-                  ))}
+                  <button onClick={() => set("dkScope", "full")} style={chip(f.dkScope === "full")}>
+                    전 지역 당착
+                  </button>
                 </div>
-                {f.dkScope !== "full" && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-                    <span style={{ fontSize: 12.5, color: T.inkSoft, whiteSpace: "nowrap" }}>당착 시트 이름</span>
-                    <input style={{ ...inputStyle, flex: 1 }} value={f.dkGroup} onChange={(e) => set("dkGroup", e.target.value)} />
-                    <span style={{ fontSize: 12, color: T.inkSoft, whiteSpace: "nowrap" }}>(오전현장-{(DANGCHAK_REGION_CHOICES.find((c) => c.value === f.dkScope) || {}).label.replace("만", "")})</span>
+                {f.dkScope === "regions" && (
+                  <div style={{ marginTop: 10, border: `1px solid ${T.border}`, borderRadius: 10, padding: 12 }}>
+                    <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 8 }}>
+                      당착으로 뺄 지역을 누르세요 ({f.dkRegions.length}곳 선택). 고른 지역은 평소 피킹지·명세서에서 빠지고 당착 피킹지·당착 명세서로 나가요.
+                    </div>
+                    {["A", "B"].map((zone) => (
+                      <div key={zone} style={{ marginBottom: zone === "A" ? 10 : 0 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, marginBottom: 5 }}>{zone}구역</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                          {REGION_ORDER_TABLE.filter((r) => r.zone === zone).map((r) => {
+                            const on = f.dkRegions.includes(r.code);
+                            return (
+                              <button
+                                key={r.code}
+                                onClick={() => set("dkRegions", on ? f.dkRegions.filter((c) => c !== r.code) : [...f.dkRegions, r.code])}
+                                style={{ ...chip(on), padding: "5px 10px", fontSize: 12, ...(on ? { borderColor: T.clay, background: "#FBE9DF", color: T.clayDeep } : {}) }}
+                              >
+                                {r.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                    {f.dkRegions.length > 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+                        <span style={{ fontSize: 12.5, color: T.inkSoft, whiteSpace: "nowrap" }}>당착 시트 이름</span>
+                        <input style={{ ...inputStyle, flex: 1 }} value={f.dkGroup} onChange={(e) => set("dkGroup", e.target.value)} />
+                        <span style={{ fontSize: 12, color: T.inkSoft, whiteSpace: "nowrap" }}>(오전현장{f.dkRegions.length === 1 ? `-${regionNamesOf(f.dkRegions)}` : ""})</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
