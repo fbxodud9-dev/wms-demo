@@ -4596,17 +4596,28 @@ const XL_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const emartNorm = (s) => String(s == null ? "" : s).replace(/[\s/]/g, "").toLowerCase();
 
 // ---------- 발주파일 읽기 ----------
+// 머리글 비교용: 공백·줄바꿈·특수공백·<BR> 제거
+const emartHead = (v) => String(v == null ? "" : v).replace(/<br\s*\/?>/gi, "").replace(/[\s\u00a0\u200b\ufeff]/g, "");
 function parseEmartOrderRows(rows) {
   // rows: 2차원 배열(SheetJS sheet_to_json header:1). 1행 머리글 + 2행 하위 머리글(박스수량/낱개수량)
-  let h = rows.findIndex((r) => r && r.some((v) => String(v).trim() === "입고센터") && r.some((v) => String(v).trim() === "상품명"));
-  if (h === -1) throw new Error("이마트 발주파일 형식이 아니에요 (입고센터·상품명 머리글을 찾지 못했어요).");
-  const top = rows[h].map((v) => String(v == null ? "" : v).trim());
-  const sub = (rows[h + 1] || []).map((v) => String(v == null ? "" : v).trim());
+  const h = rows.findIndex((r) => r && r.some((v) => emartHead(v) === "입고센터") && r.some((v) => emartHead(v) === "상품명"));
+  if (h === -1) {
+    const first = rows.find((r) => r && r.some((v) => emartHead(v)));
+    const seen = first ? first.map(emartHead).filter(Boolean).slice(0, 6).join(", ") : "(빈 시트)";
+    const isPicking = rows.some((r) => r && r.some((v) => emartHead(v) === "행레이블"));
+    throw new Error(
+      isPicking
+        ? "피킹검수 파일이에요. 발주파일(출고관리-발주조회_납품등록)을 올려주세요."
+        : `이마트 발주파일 형식이 아니에요 (입고센터·상품명 머리글을 찾지 못했어요). 첫 줄: ${seen}`
+    );
+  }
+  const top = rows[h].map(emartHead);
+  const sub = (rows[h + 1] || []).map(emartHead);
   const col = (name) => top.findIndex((v) => v === name);
   const orderCol = col("발주");
   let qtyCol = -1;
   for (let j = Math.max(orderCol, 0); j < sub.length; j++) if (sub[j] === "낱개수량") { qtyCol = j; break; }
-  const c = { vendor: col("거래처"), center: col("입고센터"), date: col("발주일자"), due: col("납품예정일"), name: col("상품명"), code: col("상품코드"), box: col("BOX 입수량") };
+  const c = { vendor: col("거래처"), center: col("입고센터"), date: col("발주일자"), due: col("납품예정일"), name: col("상품명"), code: col("상품코드"), box: col("BOX입수량") };
   if (qtyCol === -1 || c.center === -1 || c.name === -1) throw new Error("발주 낱개수량 칸을 찾지 못했어요.");
   const out = [];
   for (let i = h + 2; i < rows.length; i++) {
@@ -5332,10 +5343,21 @@ function EmartOrderPage() {
     const names = [];
     try {
       for (const f of Array.from(list)) {
-        const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
-        const sh = wb.Sheets[wb.SheetNames[0]];
-        const r = XLSX.utils.sheet_to_json(sh, { header: 1, defval: "", raw: true });
-        all.push(...parseEmartOrderRows(r));
+        const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: "array" });
+        // 시트가 여러 개여도 발주 머리글이 있는 시트를 찾는다
+        let parsed = null;
+        let firstErr = null;
+        for (const sn of wb.SheetNames) {
+          const r = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: "", raw: true });
+          try {
+            parsed = parseEmartOrderRows(r);
+            break;
+          } catch (e) {
+            if (!firstErr) firstErr = e;
+          }
+        }
+        if (!parsed) throw new Error(`${f.name}: ${firstErr ? firstErr.message : "읽을 수 있는 시트가 없어요."}`);
+        all.push(...parsed);
         names.push(f.name);
       }
       if (all.length === 0) throw new Error("발주 수량이 있는 줄이 없어요.");
