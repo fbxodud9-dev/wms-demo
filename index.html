@@ -5842,8 +5842,10 @@ function InspectionPrintSheet({ product, pageBreak, date }) {
 const PICKING_QTY_ZERO_OVERRIDES = [
   { supplierKey: "탭스", regionCode: "VV92" }, // 탭스 - 신제주
   // 네고(참맛나라/맛요일/효성/h2 글로벌) - 김해/김해2/진주/CVS/경산/경산2/경산3
-  // 김해/김해2/진주/CVS/경산/경산2/경산3/청주
-  ...["참맛나라", "맛요일", "효성", "h2 글로벌"].flatMap((s) => ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97", "VV34"].map((r) => ({ supplierKey: s, regionCode: r }))),
+  // 김해/김해2/진주/CVS/경산/경산2/경산3/청주 (청주는 당착 오전현장으로 빠지는 참맛나라·맛요일·h2 글로벌만)
+  ...["참맛나라", "맛요일", "h2 글로벌"].flatMap((s) => ["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97", "VV34"].map((r) => ({ supplierKey: s, regionCode: r }))),
+  // 효성앤에프(네고)는 당착이 아니라 청주를 평소대로 내보낸다 (2026-10-06 현장 요청: 피킹지에서 청주가 계속 빠져 있었음)
+  ...["VV57", "VV58", "VV25", "VV20", "VV83", "VV84", "VV97"].map((r) => ({ supplierKey: "효성", regionCode: r })),
 ];
 function isQtyZeroOverride(supplierKey, regionCode) {
   return PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === supplierKey && o.regionCode === regionCode);
