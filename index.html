@@ -1666,6 +1666,7 @@ function WMSApp() {
 
   const [emartOrders, setEmartOrders] = useState([]);
   const [pickChannel, setPickChannel] = useState("gs"); // 피킹지시서 출력 화면의 브랜드 탭
+  const [invChannel, setInvChannel] = useState("gs"); // 거래명세서 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
     if (!authToken) return;
     try {
@@ -2498,7 +2499,16 @@ function WMSApp() {
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
         {tab === "gsdaily" && <GsDailyPage orders={orders} authToken={authToken} productInfo={productInfo} />}
-        {tab === "invoice" && <InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
+        {tab === "invoice" && (
+          <BrandTabs
+            channel={invChannel}
+            onChannel={setInvChannel}
+            title="거래명세서"
+            renderReady={(c) =>
+              c === "gs" ? <InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} /> : null
+            }
+          />
+        )}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
@@ -5191,6 +5201,16 @@ async function cloneEmartSheet(tpl, srcName, newName, mutate) {
   const idx = tpl.sheets.findIndex((s) => s.name === anchor);
   tpl.sheets.splice(idx + 1, 0, sheet);
   tpl.lastSheetOfPivot[mutate.pivot] = newName;
+  // 원본 시트의 인쇄 영역도 복제
+  (tpl.definedNames || [])
+    .filter((d) => d.sheet === src.name && d.el.getAttribute("name") === "_xlnm.Print_Area")
+    .forEach((d) => {
+      const el = d.el.cloneNode(true);
+      const q = (n) => `'${n.replace(/'/g, "''")}'`;
+      el.textContent = d.el.textContent.replace(/('(?:[^']|'')*'|[^'!,]+)!/g, `${q(newName)}!`);
+      d.el.parentNode.appendChild(el);
+      tpl.definedNames.push({ el, sheet: newName });
+    });
   tpl.newParts.push({ part: "/" + path, type: "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" });
   return sheet;
 }
@@ -5204,9 +5224,14 @@ function safeEmartSheetName(name, used) {
 }
 
 // ---------- 메인: 발주 줄들 -> 피킹검수 엑셀 ----------
-async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, activeName) {
+async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, activeName, opts = {}) {
   const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer));
   tpl.newParts = [];
+  // 이름 정의(인쇄 영역 등)는 시트 "순서 번호"로 붙어 있어서, 시트를 넣고 빼면 번호를 다시 맞춰야 한다 -> 시트 이름으로 기억
+  tpl.definedNames = Array.from(tpl.wbXml.getElementsByTagName("definedName")).map((el) => {
+    const id = el.getAttribute("localSheetId");
+    return { el, sheet: id != null && tpl.sheets[Number(id)] ? tpl.sheets[Number(id)].name : null };
+  });
   tpl.lastSheetOfPivot = {};
   tpl.products.forEach((p) => (tpl.lastSheetOfPivot[p.pivot] = p.sheet));
   const report = { matched: [], added: [], unknown: [], missingRegions: [] };
@@ -5327,6 +5352,77 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     });
   });
 
+  // 발주가 있는 상품 시트 + 그 상품들이 참조하는 피벗 시트만 남긴다 (GS 피킹지처럼 그날 상품만). opts.keepAll이면 전체 유지
+  if (!opts.keepAll) {
+    const keep = new Set();
+    links.forEach(({ prod }) => {
+      keep.add(prod.sheet);
+      keep.add(prod.pivot);
+    });
+    if (keep.size === 0) throw new Error("이 날짜 발주 중에 피킹지 시트에 들어갈 상품이 없어요.");
+    let ct = await tpl.zip.file("[Content_Types].xml").async("string");
+    for (const sh of tpl.sheets.filter((x) => !keep.has(x.name))) {
+      const relPath = sh.path.replace("worksheets/", "worksheets/_rels/") + ".rels";
+      if (tpl.zip.file(relPath)) {
+        const rels = await tpl.zip.file(relPath).async("string");
+        const dm = /Target="\.\.\/drawings\/(drawing\d+\.xml)"/.exec(rels);
+        if (dm) {
+          tpl.zip.remove(`xl/drawings/${dm[1]}`);
+          tpl.zip.remove(`xl/drawings/_rels/${dm[1]}.rels`);
+          ct = ct.replace(new RegExp(`<Override PartName="/xl/drawings/${dm[1].replace(".", "\\.")}"[^>]*/>`), "");
+        }
+        const pm = /Target="\.\.\/printerSettings\/(printerSettings\d+\.bin)"/.exec(rels);
+        if (pm) tpl.zip.remove(`xl/printerSettings/${pm[1]}`);
+        tpl.zip.remove(relPath);
+      }
+      tpl.zip.remove(sh.path);
+      ct = ct.replace(new RegExp(`<Override PartName="/${sh.path.replace(".", "\\.")}"[^>]*/>`), "");
+      tpl.newParts = tpl.newParts.filter((np) => np.part !== "/" + sh.path);
+      const rid = sh.el.getAttribute("r:id") || sh.el.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+      Array.from(tpl.relsXml.getElementsByTagName("Relationship"))
+        .filter((r) => r.getAttribute("Id") === rid)
+        .forEach((r) => r.parentNode.removeChild(r));
+      sh.el.parentNode.removeChild(sh.el);
+    }
+    tpl.sheets = tpl.sheets.filter((x) => keep.has(x.name));
+    tpl.zip.file("[Content_Types].xml", ct);
+    // 문서 속성의 시트 목록(선택 항목)은 지워서 엑셀이 다시 만들게 한다
+    if (tpl.zip.file("docProps/app.xml")) {
+      let app = await tpl.zip.file("docProps/app.xml").async("string");
+      app = app.replace(/<HeadingPairs>[\s\S]*?<\/HeadingPairs>/, "").replace(/<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/, "");
+      tpl.zip.file("docProps/app.xml", app);
+    }
+  }
+  // 이름 정의(인쇄 영역 등)의 시트 번호를 최종 시트 순서에 맞게 다시 매기기
+  const finalOrder = Array.from(tpl.wbXml.getElementsByTagName("sheet")).map((el) => el.getAttribute("name"));
+  (tpl.definedNames || []).forEach((d) => {
+    if (d.sheet == null) return;
+    const idx = finalOrder.indexOf(d.sheet);
+    if (idx === -1) {
+      if (d.el.parentNode) d.el.parentNode.removeChild(d.el);
+    } else d.el.setAttribute("localSheetId", String(idx));
+  });
+  const dnWrap = tpl.wbXml.getElementsByTagName("definedNames")[0];
+  if (dnWrap && dnWrap.getElementsByTagName("definedName").length === 0) dnWrap.parentNode.removeChild(dnWrap);
+  // 처음 열릴 시트: 화면에서 보고 있던 상품, 없으면 첫 상품 시트
+  let activeIdx = 0;
+  const pAct = activeName ? tpl.products.find((x) => emartNorm(x.title) === emartNorm(activeName) || x.keys.includes(emartNorm(activeName))) : null;
+  if (pAct && finalOrder.includes(pAct.sheet)) activeIdx = finalOrder.indexOf(pAct.sheet);
+  else {
+    const firstProd = finalOrder.findIndex((n) => tpl.products.some((x) => x.sheet === n));
+    activeIdx = Math.max(0, firstProd);
+  }
+  const wv = tpl.wbXml.getElementsByTagName("workbookView")[0];
+  if (wv) {
+    wv.setAttribute("activeTab", String(activeIdx));
+    wv.setAttribute("firstSheet", "0");
+  }
+  const sheetByName = new Map(tpl.sheets.map((x) => [x.name, x]));
+  finalOrder.forEach((n, i) => {
+    const sh = sheetByName.get(n);
+    if (sh) Array.from(sh.doc.getElementsByTagName("sheetView")).forEach((v) => (i === activeIdx ? v.setAttribute("tabSelected", "1") : v.removeAttribute("tabSelected")));
+  });
+
   // 저장: 바뀐 XML 다시 쓰기 + 엑셀이 열 때 전체 재계산
   const ser = new XMLSerializer();
   const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
@@ -5335,23 +5431,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     return x.startsWith("<?xml") ? x : XML_DECL + x;
   };
   tpl.sheets.forEach((s) => tpl.zip.file(s.path, out(s.doc)));
-  // 화면에서 보고 있던 상품 시트가 열자마자 보이도록
-  if (activeName) {
-    const p = tpl.products.find((x) => emartNorm(x.title) === emartNorm(activeName) || x.keys.includes(emartNorm(activeName)));
-    const idx = p ? tpl.sheets.findIndex((x) => x.name === p.sheet) : -1;
-    if (idx >= 0) {
-      const wv = tpl.wbXml.getElementsByTagName("workbookView")[0];
-      if (wv) {
-        wv.setAttribute("activeTab", String(idx));
-        wv.setAttribute("firstSheet", String(Math.max(0, idx - 2)));
-      }
-      tpl.sheets.forEach((x, i) =>
-        Array.from(x.doc.getElementsByTagName("sheetView")).forEach((v) => (i === idx ? v.setAttribute("tabSelected", "1") : v.removeAttribute("tabSelected")))
-      );
-      tpl.zip.file(tpl.sheets[idx].path, out(tpl.sheets[idx].doc));
-      tpl.sheets.forEach((x) => tpl.zip.file(x.path, out(x.doc)));
-    }
-  }
+  report.sheetCount = finalOrder.length;
   const calc = tpl.wbXml.getElementsByTagName("calcPr")[0];
   if (calc) calc.setAttribute("fullCalcOnLoad", "1");
   tpl.zip.file("xl/workbook.xml", out(tpl.wbXml));
@@ -5362,7 +5442,16 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     ct = ct.replace("</Types>", add + "</Types>");
     tpl.zip.file("[Content_Types].xml", ct);
   }
-  if (tpl.zip.file("xl/calcChain.xml")) tpl.zip.remove("xl/calcChain.xml");
+  // 계산 순서 캐시(calcChain)는 시트·수식이 바뀌면 깨지므로 지우고, 목록·연결에서도 같이 뺀다 (안 빼면 엑셀이 "복구" 경고)
+  if (tpl.zip.file("xl/calcChain.xml")) {
+    tpl.zip.remove("xl/calcChain.xml");
+    let ct2 = await tpl.zip.file("[Content_Types].xml").async("string");
+    ct2 = ct2.replace(/<Override PartName="\/xl\/calcChain\.xml"[^>]*\/>/, "");
+    tpl.zip.file("[Content_Types].xml", ct2);
+    let wr = await tpl.zip.file("xl/_rels/workbook.xml.rels").async("string");
+    wr = wr.replace(/<Relationship [^>]*Target="calcChain\.xml"[^>]*\/>/, "");
+    tpl.zip.file("xl/_rels/workbook.xml.rels", wr);
+  }
   const blob = await tpl.zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   return { bytes: blob, report };
 }
@@ -5655,11 +5744,24 @@ function EmartPickingView({ emartOrders }) {
   });
   const selected = filtered.find((p) => p.name === selectedName) || filtered[0] || null;
 
+  const filterOn = vendorFilter !== "all" || !!searchQuery.trim();
+  // 엑셀에 들어갈 시트 수: 발주 있는 상품 시트 + 그 공급사 피벗 (GS처럼 그날 상품만)
+  const sheetCountFor = (list) => {
+    const set = new Set();
+    list.forEach((p) => {
+      if (p.tpl) {
+        set.add(p.tpl.sheet);
+        set.add(p.tpl.pivot);
+      } else set.add("new:" + p.name);
+    });
+    return set.size;
+  };
   async function exportAll(activeName) {
     setExporting(true);
     setErr("");
     try {
-      setReport(await downloadEmartPickingFile(rows, activeDate, customTpl, activeName));
+      const names = new Set((filterOn ? filtered : products).map((p) => p.name));
+      setReport(await downloadEmartPickingFile(rows.filter((r) => names.has(r.name)), activeDate, customTpl, activeName));
     } catch (e) {
       setErr(`피킹지를 만들지 못했어요: ${e.message}`);
     } finally {
@@ -5791,7 +5893,12 @@ function EmartPickingView({ emartOrders }) {
                   className="primary-btn"
                   style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: exporting || products.length === 0 ? 0.7 : 1 }}
                 >
-                  <Download size={15} /> {exporting ? "생성 중..." : `이마트24 피킹검수 엑셀 (${tplInfo ? tplInfo.sheets.length : "…"}개 시트)`}
+                  <Download size={15} />{" "}
+                  {exporting
+                    ? "생성 중..."
+                    : filterOn
+                    ? `필터 결과만 엑셀 (${sheetCountFor(filtered)}개 시트)`
+                    : `이마트24 피킹검수 엑셀 (${sheetCountFor(products)}개 시트)`}
                 </button>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
@@ -5914,7 +6021,10 @@ const PICKING_CHANNELS = [
   { key: "bgf", label: "BGF" },
   { key: "seven", label: "세븐일레븐" },
 ];
-function PickingCenter({ channel, onChannel, gsView, emartOrders }) {
+// 브랜드 탭 공통: 준비된 브랜드는 renderReady가 화면을 돌려주고, 아니면 "준비 중"
+function BrandTabs({ channel, onChannel, title, renderReady }) {
+  const label = PICKING_CHANNELS.find((c) => c.key === channel).label;
+  const view = renderReady(channel);
   return (
     <div>
       <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 16, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content" }}>
@@ -5931,20 +6041,20 @@ function PickingCenter({ channel, onChannel, gsView, emartOrders }) {
           </button>
         ))}
       </div>
-      {channel === "gs" && gsView}
-      {channel === "emart" && <EmartPickingView emartOrders={emartOrders} />}
-      {(channel === "gssuper" || channel === "bgf" || channel === "seven") && (
+      {view || (
         <div>
-          <PageHeader title="피킹지시서 출력" sub={`${PICKING_CHANNELS.find((c) => c.key === channel).label} 피킹지시서`} />
+          <PageHeader title={title} sub={`${label} ${title}`} />
           <div style={cardStyle}>
-            <EmptyRow text={`${PICKING_CHANNELS.find((c) => c.key === channel).label}는 아직 준비 중이에요. 발주파일과 실물 피킹지를 보내주시면 같은 방식으로 만들어 드릴게요.`} />
+            <EmptyRow text={`${label} ${title} 화면은 아직 준비 중이에요. 그 브랜드 발주파일과 실물 양식(엑셀)을 보내주시면 같은 방식으로 만들어 드릴게요.`} />
           </div>
         </div>
       )}
     </div>
   );
 }
-
+function PickingCenter({ channel, onChannel, gsView, emartOrders }) {
+  return <BrandTabs channel={channel} onChannel={onChannel} title="피킹지시서 출력" renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} /> : null)} />;
+}
 /* ================= II. 상품할당 ================= */
 function Allocation({ items, orders, onAllocate }) {
   const newOrders = orders.filter((o) => o.status === "NEW");
