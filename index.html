@@ -1715,6 +1715,35 @@ function WMSApp() {
     };
   }, [authToken, applyProductInfo]);
 
+  // GS 일별 발주 집계: 발주가 남아 있는 날짜마다 상품별 총수량을 계산해서 서버에 스냅샷으로 저장한다.
+  // (발주 원본은 14일 뒤 지워지지만, 스냅샷은 남아서 월별 집계에 쓰인다) 바뀐 날짜만 저장.
+  const gsDailySavedRef = useRef(new Map()); // 날짜 -> 마지막으로 저장한 JSON
+  const gsDailyMonthsLoaded = useRef(new Set());
+  useEffect(() => {
+    if (!authToken || !orders.length) return;
+    const timer = setTimeout(async () => {
+      try {
+        const dates = Array.from(new Set(orders.map((o) => o.createdAt).filter(Boolean)));
+        for (const m of new Set(dates.map((d) => d.slice(0, 7)))) {
+          if (gsDailyMonthsLoaded.current.has(m)) continue;
+          const r = await apiFetch(`/gs-daily?month=${m}`, authToken);
+          (r.days || []).forEach((d) => gsDailySavedRef.current.set(String(d.date).slice(0, 10), JSON.stringify(d.data)));
+          gsDailyMonthsLoaded.current.add(m);
+        }
+        for (const d of dates) {
+          const snap = computeGsDailySnapshot(orders, d);
+          const json = JSON.stringify(snap);
+          if (gsDailySavedRef.current.get(d) === json) continue;
+          await apiFetch(`/gs-daily/${d}`, authToken, { method: "PUT", body: { data: snap } });
+          gsDailySavedRef.current.set(d, json);
+        }
+      } catch (e) {
+        console.warn("GS 일별 집계 저장 실패:", e.message);
+      }
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [orders, productInfo, authToken]);
+
   // 거래명세서 설정(사업자 정보·발행 지역·명세서용 상품명/입수/소비기한)을 로그인 후 한 번 불러온다
   const [invoiceSettings, setInvoiceSettingsState] = useState({ suppliers: {} });
   const applyInvoiceSettings = useCallback((value) => {
@@ -2113,6 +2142,9 @@ function WMSApp() {
     async (date) => {
       try {
         await apiFetch(`/orders/by-date/${date}`, authToken, { method: "DELETE" });
+        // GS 일별 발주 집계 스냅샷도 같이 삭제 (재업로드하면 다시 계산돼서 저장됨)
+        await apiFetch(`/gs-daily/${date}`, authToken, { method: "DELETE" }).catch(() => {});
+        gsDailySavedRef.current.delete(date);
         await loadCoreData();
       } catch (e) {
         setApiErr(e.message);
@@ -2225,6 +2257,7 @@ function WMSApp() {
       items: [
         { key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" },
         { key: "invoice", label: "거래명세서", icon: FileText },
+        { key: "gsdaily", label: "GS 일별 발주 집계", icon: ListChecks },
       ],
     },
     {
@@ -2443,6 +2476,7 @@ function WMSApp() {
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
+        {tab === "gsdaily" && <GsDailyPage orders={orders} authToken={authToken} productInfo={productInfo} />}
         {tab === "invoice" && <InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
@@ -4212,6 +4246,344 @@ function resolveNamePackOverride(name) {
   );
 }
 
+/* ================= GS 일별 발주 집계 (편의점 일별 발주 내역 - GS / GS재고 시트 구조) ================= */
+// 날짜마다 상품별 총수량 = 피킹지시서 총수량(0고정 지역은 0 그대로) + 당착으로 빠진 지역 수량(원래 발주 수량)
+//   예: 피킹지 총 500ea + 당착 청주 6ea = 506
+// 발주 원본은 14일 뒤 자동 삭제되므로, 날짜별 결과를 서버(/gs-daily)에 스냅샷으로 저장해 월별 집계에 쓴다.
+// - GS 시트: TC(일반) 상품 열. 일일물동량/1편/2편/냉장은 GS 전체(GS재고 포함) 합계 (실물 10월 파일 숫자로 확인: B = C + D + E)
+// - GS재고 시트: DC 상품 열 (조인앤조인 고단백저당은 실물처럼 GS 시트에)
+// - 냉장: 아래 목록에 있는 상품만 1편에서 빼서 냉장으로 (목록은 화주사 냉장 상품 파일 받으면 채움)
+const GS_COLD_PRODUCTS = [];
+function isColdProduct(name) {
+  const n = String(name || "").trim();
+  return GS_COLD_PRODUCTS.some((p) => n.startsWith(p));
+}
+const gsBaseName = (name) => String(name || "").replace(/(\d)\s*편?\s*$/, "").trim(); // 1편·2편을 나란히 정렬하기 위한 기본 이름
+function gsDailySheetOf(name) {
+  const k = dcVendorKey(name);
+  return k && k !== "조인앤조인" ? "GS재고" : "GS";
+}
+// 그날 상품별 총수량 스냅샷 (일시중지·삭제한 상품은 buildProductsForDate에서 이미 빠짐)
+function computeGsDailySnapshot(orders, date) {
+  const products = buildProductsForDate(orders, date);
+  const list = [];
+  products.forEach((p) => {
+    const dk = getDangchakInfo(p.name);
+    const qty = p.regionRows.reduce((a, r) => a + (dangchakHasRegion(dk, r.key) ? r.rawQty ?? r.qty : r.qty), 0);
+    if (qty > 0) list.push({ name: p.name, supplier: pickingSupplierKey(p.supplier || ""), qty });
+  });
+  list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { products: list };
+}
+
+// 한 달치 표 데이터 만들기. days: { "YYYY-MM-DD": { products: [...] } }
+function buildGsDailyTable(month, days) {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
+  const cols = { GS: new Map(), GS재고: new Map() }; // name -> { name, supplier }
+  Object.values(days).forEach((d) =>
+    (d.products || []).forEach((p) => {
+      const sheet = gsDailySheetOf(p.name);
+      if (!cols[sheet].has(p.name)) {
+        const g = dcGroupOf(p.name);
+        cols[sheet].set(p.name, { name: p.name, supplier: sheet === "GS재고" && g ? g.group.label : p.supplier || "미지정", dcIdx: g ? DC_VENDOR_GROUPS.indexOf(g.group) * 1000 + g.idx : 0 });
+      }
+    })
+  );
+  const sortCols = (sheet) =>
+    Array.from(cols[sheet].values()).sort((a, b) => {
+      if (sheet === "GS재고") return a.dcIdx - b.dcIdx || a.name.localeCompare(b.name, "ko");
+      return (
+        pickingSupplierPriority(a.supplier) - pickingSupplierPriority(b.supplier) ||
+        a.supplier.localeCompare(b.supplier, "ko") ||
+        pickingNameCompare(gsBaseName(a.name), gsBaseName(b.name)) ||
+        detectPart(a.name) - detectPart(b.name)
+      );
+    });
+  const sheets = {};
+  ["GS", "GS재고"].forEach((sheet) => {
+    const columns = sortCols(sheet);
+    const rows = dates.map((date) => {
+      const d = days[date];
+      const qtyBy = new Map(((d && d.products) || []).map((p) => [p.name, p.qty]));
+      const all = (d && d.products) || [];
+      const scope = sheet === "GS" ? all : all.filter((p) => gsDailySheetOf(p.name) === "GS재고");
+      const sum = (f) => scope.filter(f).reduce((a, p) => a + p.qty, 0);
+      return {
+        date,
+        inDate: addDaysStr(date, 1),
+        has: !!d,
+        total: sum(() => true),
+        p1: sum((p) => detectPart(p.name) === 1 && !isColdProduct(p.name)),
+        p2: sum((p) => detectPart(p.name) === 2 && !isColdProduct(p.name)),
+        cold: sum((p) => isColdProduct(p.name)),
+        cells: columns.map((c) => qtyBy.get(c.name) || 0),
+      };
+    });
+    const totals = {
+      total: rows.reduce((a, r) => a + r.total, 0),
+      p1: rows.reduce((a, r) => a + r.p1, 0),
+      p2: rows.reduce((a, r) => a + r.p2, 0),
+      cold: rows.reduce((a, r) => a + r.cold, 0),
+      cells: columns.map((_, i) => rows.reduce((a, r) => a + r.cells[i], 0)),
+    };
+    sheets[sheet] = { columns, rows, totals };
+  });
+  return { year: y, month: m, sheets };
+}
+
+const GS_WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
+const gsWeekday = (ymd) => {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return GS_WEEKDAY[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+};
+
+async function downloadGsDailyExcel(table, setBusy) {
+  if (setBusy) setBusy(true);
+  try {
+    const wb = new ExcelJS.Workbook();
+    const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
+    const box = { top: thin, bottom: thin, left: thin, right: thin };
+    const orange = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF79646" } };
+    const green = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD8E4BC" } };
+    const blue = { type: "pattern", pattern: "solid", fgColor: { argb: "FFB8CCE4" } };
+    const gray = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
+    const font = { name: "맑은 고딕", size: 10 };
+    const bold = { ...font, bold: true };
+    ["GS", "GS재고"].forEach((sheetName) => {
+      const sh = table.sheets[sheetName];
+      const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 9, ySplit: 5 }] });
+      ws.getColumn(1).width = 3;
+      [2, 3, 4, 5].forEach((c) => (ws.getColumn(c).width = 12));
+      [6, 8].forEach((c) => (ws.getColumn(c).width = 11));
+      [7, 9].forEach((c) => (ws.getColumn(c).width = 5));
+      sh.columns.forEach((_, i) => (ws.getColumn(10 + i).width = 13));
+      ws.getCell("A2").value = "년도";
+      ws.getCell("B2").value = "달";
+      ws.getCell("A3").value = table.year;
+      ws.getCell("B3").value = table.month;
+      ["A2", "B2", "A3", "B3"].forEach((a) => {
+        ws.getCell(a).font = bold;
+        ws.getCell(a).alignment = { horizontal: "center" };
+        ws.getCell(a).fill = a.endsWith("3") ? green : gray;
+        ws.getCell(a).border = box;
+      });
+      const heads = [`일일물동량\n${sheetName === "GS" ? "GS" : "GS재고"}`, "1편수량", "2편수량", "냉장", "발주일자", "요일", "센터\n입고일자", "요일"];
+      heads.forEach((h, i) => {
+        const c = ws.getCell(4, 2 + i);
+        c.value = h;
+        ws.mergeCells(4, 2 + i, 5, 2 + i);
+        c.font = bold;
+        c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        c.fill = i < 4 ? orange : gray;
+        c.border = box;
+      });
+      // 공급사 머리글(3행, 같은 공급사 상품 열을 병합) + 상품명(5행)
+      let start = 0;
+      sh.columns.forEach((col, i) => {
+        const cell = ws.getCell(5, 10 + i);
+        cell.value = col.name;
+        cell.font = { ...font, size: 9 };
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        cell.border = box;
+        cell.fill = gray;
+        const next = sh.columns[i + 1];
+        if (!next || next.supplier !== col.supplier) {
+          const c3 = ws.getCell(3, 10 + start);
+          c3.value = col.supplier;
+          if (i > start) ws.mergeCells(3, 10 + start, 4, 10 + i);
+          else ws.mergeCells(3, 10 + i, 4, 10 + i);
+          c3.font = bold;
+          c3.alignment = { horizontal: "center", vertical: "middle" };
+          c3.fill = blue;
+          c3.border = box;
+          start = i + 1;
+        }
+      });
+      ws.getRow(4).height = 30;
+      ws.getRow(5).height = 42;
+      sh.rows.forEach((r, k) => {
+        const rr = 6 + k;
+        const vals = [r.total, r.p1, sheetName === "GS재고" && r.p2 === 0 ? null : r.p2, r.cold];
+        vals.forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
+        ws.getCell(rr, 6).value = invDate(r.date);
+        ws.getCell(rr, 7).value = gsWeekday(r.date);
+        ws.getCell(rr, 8).value = invDate(r.inDate);
+        ws.getCell(rr, 9).value = gsWeekday(r.inDate);
+        r.cells.forEach((v, i) => (ws.getCell(rr, 10 + i).value = v || null));
+        for (let c = 2; c < 10 + sh.columns.length; c++) {
+          const cell = ws.getCell(rr, c);
+          cell.font = font;
+          cell.border = box;
+          cell.alignment = { horizontal: c >= 6 && c <= 9 ? "center" : "right" };
+          if (c === 6 || c === 8) cell.numFmt = "m/d";
+          else if (c < 6 || c >= 10) cell.numFmt = "#,##0";
+        }
+      });
+      const tr = 6 + sh.rows.length;
+      ws.getCell(tr, 6).value = "합계";
+      [sh.totals.total, sh.totals.p1, sheetName === "GS재고" && sh.totals.p2 === 0 ? null : sh.totals.p2, sh.totals.cold].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v));
+      sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = v));
+      for (let c = 2; c < 10 + sh.columns.length; c++) {
+        const cell = ws.getCell(tr, c);
+        cell.font = bold;
+        cell.border = box;
+        cell.fill = green;
+        cell.numFmt = "#,##0";
+        cell.alignment = { horizontal: c === 6 ? "center" : "right" };
+      }
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `GS_일별발주내역_${table.year}-${String(table.month).padStart(2, "0")}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (setBusy) setBusy(false);
+  }
+}
+
+function GsDailyPage({ orders, authToken, productInfo }) {
+  const orderDates = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt).filter(Boolean))).sort(), [orders]);
+  const [months, setMonths] = useState([]);
+  const defaultMonth = (orderDates[orderDates.length - 1] || todayStr()).slice(0, 7);
+  const [month, setMonth] = useState(defaultMonth);
+  const [stored, setStored] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [sheet, setSheet] = useState("GS");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    apiFetch("/gs-daily/months", authToken)
+      .then((r) => setMonths(r.months || []))
+      .catch(() => setMonths([]));
+  }, [authToken]);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr("");
+    apiFetch(`/gs-daily?month=${month}`, authToken)
+      .then((r) => {
+        if (cancelled) return;
+        const m = {};
+        (r.days || []).forEach((d) => (m[String(d.date).slice(0, 10)] = d.data));
+        setStored(m);
+      })
+      .catch((e) => !cancelled && setErr(`저장된 집계를 불러오지 못했어요 (${e.message}). 지금 남아 있는 발주로만 보여줘요.`))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [month, authToken]);
+
+  // 아직 남아 있는 발주 날짜는 지금 계산값(최신), 지워진 지난 날짜는 저장된 스냅샷
+  const days = useMemo(() => {
+    const d = { ...stored };
+    orderDates.filter((x) => x.startsWith(month)).forEach((x) => (d[x] = computeGsDailySnapshot(orders, x)));
+    return d;
+  }, [stored, orders, orderDates, month, productInfo]);
+  const table = useMemo(() => buildGsDailyTable(month, days), [month, days]);
+  const sh = table.sheets[sheet];
+  const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
+  const nf = (v) => (v ? v.toLocaleString() : "-");
+  const th = { position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 };
+  const summaryHead = sheet === "GS" ? ["일일물동량", "1편수량", "2편수량", "냉장"] : ["일일물동량", "1편수량", "2편수량", "냉장"];
+
+  return (
+    <div>
+      <PageHeader
+        title="GS 일별 발주 집계"
+        sub="날짜별 상품 총수량 = 피킹지시서 총수량(0고정 지역은 0) + 당착 수량. 일별로 쌓여서 월별 합계까지 나와요."
+        action={
+          <button onClick={() => downloadGsDailyExcel(table, setBusy)} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
+            <Download size={15} /> {busy ? "생성 중..." : "엑셀 다운로드"}
+          </button>
+        }
+      />
+      <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
+          {monthOptions.map((m) => (
+            <option key={m} value={m}>
+              {m.replace("-", "년 ")}월
+            </option>
+          ))}
+        </select>
+        {["GS", "GS재고"].map((s) => (
+          <button
+            key={s}
+            onClick={() => setSheet(s)}
+            style={{ ...smallBtnStyle, padding: "8px 14px", background: sheet === s ? T.steel : T.surface, color: sheet === s ? "#fff" : T.ink, borderColor: sheet === s ? T.steel : T.border }}
+          >
+            {s === "GS" ? "GS (일반)" : "GS재고 (DC)"}
+          </button>
+        ))}
+        <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
+          {loading ? "불러오는 중..." : `월 합계 ${nf(sh.totals.total)}ea · 상품 ${sh.columns.length}종`}
+          {GS_COLD_PRODUCTS.length === 0 ? " · 냉장 상품 목록 받기 전이라 냉장은 0" : ""}
+        </span>
+      </div>
+      {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "auto", maxHeight: "70vh" }}>
+        <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, left: 0, zIndex: 3 }}>발주일자</th>
+              {summaryHead.map((h) => (
+                <th key={h} style={{ ...th, textAlign: "right", background: "#FCE4CF" }}>
+                  {h}
+                </th>
+              ))}
+              {sh.columns.map((c, i) => (
+                <th key={c.name} style={{ ...th, textAlign: "right", minWidth: 96, whiteSpace: "normal", lineHeight: 1.3 }}>
+                  {(i === 0 || sh.columns[i - 1].supplier !== c.supplier) && <div style={{ color: T.teal, fontSize: 11 }}>{c.supplier}</div>}
+                  <div>{c.name}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sh.rows.map((r) => (
+              <tr key={r.date} style={{ opacity: r.has ? 1 : 0.45 }}>
+                <td style={{ position: "sticky", left: 0, background: T.surface, whiteSpace: "nowrap", fontFamily: "'JetBrains Mono', monospace" }}>
+                  {r.date.slice(5).replace("-", "/")} ({gsWeekday(r.date)})
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700 }}>{nf(r.total)}</td>
+                <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>
+                <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>
+                <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>
+                {r.cells.map((v, i) => (
+                  <td key={i} style={{ textAlign: "right" }}>
+                    {nf(v)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            <tr style={{ background: "#EEF6E8", fontWeight: 700 }}>
+              <td style={{ position: "sticky", left: 0, background: "#EEF6E8" }}>합계</td>
+              <td style={{ textAlign: "right" }}>{nf(sh.totals.total)}</td>
+              <td style={{ textAlign: "right" }}>{nf(sh.totals.p1)}</td>
+              <td style={{ textAlign: "right" }}>{nf(sh.totals.p2)}</td>
+              <td style={{ textAlign: "right" }}>{nf(sh.totals.cold)}</td>
+              {sh.totals.cells.map((v, i) => (
+                <td key={i} style={{ textAlign: "right" }}>
+                  {nf(v)}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ================= II. 상품할당 ================= */
 function Allocation({ items, orders, onAllocate }) {
   const newOrders = orders.filter((o) => o.status === "NEW");
@@ -5181,6 +5553,11 @@ const DC_VENDOR_GROUPS = [
     "즉석피자)파마산치즈(증정용)",
     "즉석피자)핫소스4G(증정용)",
     "프리미엄두바이초콜릿(냉장)",
+  ] },
+  // 삼경MNS (발주파일 공급사명 "(주)삼경에프에스") - 실물 GS재고 시트에서 DC로 관리 (2026-10-06 DB 상품명 확인)
+  { key: "삼경MNS", label: "삼경MNS", prefixes: [
+    "오리히로)제로곤약젤리복숭아130",
+    "오리히로)제로곤약젤리포도130G",
   ] },
   { key: "골든", label: "골든", prefixes: [
     "골든)전통추어탕300G",
