@@ -1715,6 +1715,34 @@ function WMSApp() {
     };
   }, [authToken, applyProductInfo]);
 
+  // 거래명세서 설정(사업자 정보·발행 지역·명세서용 상품명/입수/소비기한)을 로그인 후 한 번 불러온다
+  const [invoiceSettings, setInvoiceSettingsState] = useState({ suppliers: {} });
+  const applyInvoiceSettings = useCallback((value) => {
+    setInvoiceSettings(value);
+    setInvoiceSettingsState({ ...INVOICE_SETTINGS });
+  }, []);
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    (async () => {
+      let value = null;
+      try {
+        const res = await apiFetch("/settings/invoice_settings", authToken);
+        value = res.value;
+      } catch (e) {
+        try {
+          value = JSON.parse(localStorage.getItem("wms-invoice-settings") || "null");
+        } catch (e2) {
+          value = null;
+        }
+      }
+      if (!cancelled) applyInvoiceSettings(value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, applyInvoiceSettings]);
+
   // 전산팀이 저장해 둔 피킹지 순서 설정을 로그인 후 한 번 불러온다 (저장된 게 없으면 기본 순서)
   const [orderCfg, setOrderCfg] = useState({ suppliers: null, products: {} });
   const applyOrderCfg = useCallback((value) => {
@@ -2415,7 +2443,7 @@ function WMSApp() {
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
-        {tab === "invoice" && <InvoiceView orders={orders} productInfo={productInfo} />}
+        {tab === "invoice" && <InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
@@ -5330,10 +5358,56 @@ function realZoneOf(code) {
 }
 
 // 사업자 정보가 아직 없는 공급사(대부분의 DC 공급사)는 상호에 이름만 넣고 나머지는 공란으로 발행
-function getInvoiceInfo(key) {
+// ===== 거래명세서 설정 (거래명세서 화면 오른쪽 위 "거래명세서 설정"에서 직원이 바꾼 값, 서버 /settings/invoice_settings) =====
+// { suppliers: { [공급사키]: { info?: {regNo,name,ceo,address,bizType,bizItem,agent},
+//                               regions?: { "1"|"2": { mode: "all"|"selected", codes: [...] } },
+//                               products?: { [상품명]: { displayName?, packQty?, expiryDays? } } } } }
+// 여기서 바꾼 입수·상품명·소비기한은 거래명세서에만 적용된다 (피킹지시서는 그대로).
+let INVOICE_SETTINGS = { suppliers: {} };
+function setInvoiceSettings(v) {
+  INVOICE_SETTINGS = v && typeof v === "object" && v.suppliers && typeof v.suppliers === "object" ? v : { suppliers: {} };
+}
+function invSupplierSettings(key) {
+  return INVOICE_SETTINGS.suppliers[key] || {};
+}
+function invProductOv(key, name) {
+  const ps = invSupplierSettings(key).products || {};
+  return ps[name] || null;
+}
+function invoiceLabelOf(key, name) {
+  const ov = invProductOv(key, name);
+  return (ov && String(ov.displayName || "").trim()) || displayNameOf(name);
+}
+function invoicePackOf(key, name, fallback) {
+  const ov = invProductOv(key, name);
+  return ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : fallback;
+}
+function invoiceExpiryOverrideOf(key, name) {
+  const ov = invProductOv(key, name);
+  if (ov && ov.expiryDays !== undefined && ov.expiryDays !== null && ov.expiryDays !== "" && Number.isFinite(Number(ov.expiryDays))) return Number(ov.expiryDays);
+  return expiryOverrideOf(name);
+}
+function invoiceExpiryDaysOf(key, name) {
+  return invoiceExpiryOverrideOf(key, name) ?? expiryDaysOf(name);
+}
+// 공급사·편별 명세서 발행 지역. 기본: 1편은 신제주·곤지암·곤지암2만(발주 없어도 0으로 발행), 2편은 발주 있는 지역 전부
+function invoiceRegionDefault(part) {
+  return part === 1 ? { mode: "selected", codes: [...INVOICE_PART1_REGIONS] } : { mode: "all", codes: [] };
+}
+function invoiceRegionConfig(key, part) {
+  const cfg = (invSupplierSettings(key).regions || {})[String(part)];
+  if (cfg && (cfg.mode === "all" || (cfg.mode === "selected" && Array.isArray(cfg.codes)))) return cfg;
+  return invoiceRegionDefault(part);
+}
+function getInvoiceInfoBase(key) {
   if (SUPPLIER_INVOICE_INFO[key]) return SUPPLIER_INVOICE_INFO[key];
   const g = DC_VENDOR_GROUPS.find((x) => x.key === key);
   return { regNo: "", name: g ? g.label : key, ceo: "", address: "", bizType: "", bizItem: "", agent: "" };
+}
+function getInvoiceInfo(key) {
+  const base = getInvoiceInfoBase(key);
+  const ov = invSupplierSettings(key).info;
+  return ov ? { ...base, ...ov } : base;
 }
 
 // ===== 거래명세서 데이터: 공급사 + 편(1/2/DC) 기준으로 "지역별 명세서"에 들어갈 내용 만들기 =====
@@ -5447,7 +5521,14 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   }
   const items = names.map((name) => {
     const p = byName.get(name) || null;
-    return { name, packQty: (p && p.packQty) || INVOICE_KNOWN_PACK[name] || "", product: p };
+    return {
+      name,
+      label: invoiceLabelOf(supplierKey, name),
+      packQty: invoicePackOf(supplierKey, name, (p && p.packQty) || INVOICE_KNOWN_PACK[name] || ""),
+      expiryDays: invoiceExpiryDaysOf(supplierKey, name),
+      expiryFixed: invoiceExpiryOverrideOf(supplierKey, name) != null,
+      product: p,
+    };
   });
   const qtyOf = (it, code) => {
     const rr = it.product ? it.product.regionRows.find((r) => r.key === code) : null;
@@ -5464,11 +5545,12 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   };
   const regions = [];
   const sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
-  const onlyRegions = part === 1 ? INVOICE_PART1_REGIONS : null;
+  const regionCfg = part === 1 || part === 2 ? invoiceRegionConfig(supplierKey, part) : { mode: "all" };
+  const onlyRegions = regionCfg.mode === "selected" ? regionCfg.codes : null; // 선택한 지역만, 발주 없어도 0으로 발행
   sheetOrder.forEach((code) => {
     if (!REGION_ORDER_MAP[code]) return;
-    if (onlyRegions && !onlyRegions.includes(code)) return; // 1편은 신제주·곤지암·곤지암2만 명세서 발행
-    const rowItems = items.map((it) => ({ name: it.name, packQty: it.packQty, qty: qtyOf(it, code) }));
+    if (onlyRegions && !onlyRegions.includes(code)) return; // 거래명세서 설정의 발행 지역 (기본: 1편은 신제주·곤지암·곤지암2만)
+    const rowItems = items.map((it) => ({ name: it.name, label: it.label, packQty: it.packQty, expiryDays: it.expiryDays, expiryFixed: it.expiryFixed, qty: qtyOf(it, code) }));
     const totalQty = rowItems.reduce((a, r) => a + r.qty, 0);
     // 실제로 뭐라도 나간(총수량 > 0) 지역만 명세서 발행. 단 1편 신제주·곤지암·곤지암2는 발주가 없어도 0으로 항상 발행
     if (totalQty > 0 || onlyRegions) regions.push({ code, shortName: REGION_ORDER_MAP[code].shortName, items: rowItems, totalQty });
@@ -5636,11 +5718,11 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
         put(ir, 2, invDate(invoiceDate), BLK9, { h: "center", nf: "mm-dd-yy" });
         mc(ir, 2, ir, 4);
       }
-      put(ir, 5, it ? displayNameOf(it.name) : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
+      put(ir, 5, it ? it.label || displayNameOf(it.name) : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
       put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
       put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_QTY }); mc(ir, 18, ir, 21);
       // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
-      const remark = hasQty && (part === 1 || part === 2 || expiryOverrideOf(it.name) != null) ? invDate(addDaysStr(invoiceDate, expiryDaysOf(it.name))) : null;
+      const remark = hasQty && (part === 1 || part === 2 || it.expiryFixed) ? invDate(addDaysStr(invoiceDate, it.expiryDays ?? expiryDaysOf(it.name))) : null;
       put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
     }
 
@@ -5713,7 +5795,7 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
   ws.getCell(1, 1).font = hdrFont;
   ws.getCell(2, 1).value = "행 레이블";
   data.items.forEach((it, i) => {
-    ws.getCell(2, 2 + i).value = displayNameOf(it.name);
+    ws.getCell(2, 2 + i).value = it.label || displayNameOf(it.name);
   });
   const totalCol = 2 + data.items.length;
   for (let c = 1; c <= totalCol; c++) {
@@ -6635,7 +6717,409 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
 }
 
 /* ================= 거래명세서 ================= */
-function InvoiceView({ orders, productInfo }) {
+// ===== 거래명세서 설정 창 (거래명세서 화면 오른쪽 위 "거래명세서 설정") =====
+// 공급사마다 [사업자 정보] [발행 지역] [상품] 탭. 저장하면 서버에 고정값으로 저장되고 다음 명세서부터 바로 반영.
+const INV_INFO_FIELDS = [
+  { key: "regNo", label: "등록번호" },
+  { key: "name", label: "상호 (법인명)" },
+  { key: "ceo", label: "성명 (대표자)" },
+  { key: "address", label: "사업장 주소" },
+  { key: "bizType", label: "업태" },
+  { key: "bizItem", label: "종목" },
+  { key: "agent", label: "하단 문구 (3자물류·담당자)", multiline: true },
+];
+
+function invoiceSettingsSupplierList() {
+  const keys = [];
+  Object.keys(SUPPLIER_INVOICE_INFO).forEach((k) => !keys.includes(k) && keys.push(k));
+  DC_VENDOR_GROUPS.forEach((g) => !keys.includes(g.key) && keys.push(g.key));
+  return keys.map((k) => {
+    const g = DC_VENDOR_GROUPS.find((x) => x.key === k);
+    const isDcOnly = !SUPPLIER_INVOICE_CATALOG[k] && !!g;
+    return { key: k, label: g && !SUPPLIER_INVOICE_INFO[k] ? `${g.label}` : k, isDcOnly };
+  });
+}
+
+// 그 공급사 명세서에 나올 수 있는 상품: 소비기한 자료(1편/2편) + DC 목록 + 실제 발주에 나온 상품
+function invoiceSettingsProducts(key, orders) {
+  const out = [];
+  const add = (name, part) => {
+    if (!name || out.some((x) => x.name === name)) return;
+    out.push({ name, part });
+  };
+  const cat = SUPPLIER_INVOICE_CATALOG[key] || {};
+  (cat["1"] || []).forEach((n) => add(n, 1));
+  (cat["2"] || []).forEach((n) => add(n, 2));
+  const g = DC_VENDOR_GROUPS.find((x) => x.key === key);
+  if (g) g.prefixes.forEach((n) => add(n, "DC"));
+  const seen = new Map();
+  orders.forEach((o) =>
+    o.lines.forEach((l) => {
+      const name = String(l.name || "").replace(/\n/g, "").trim();
+      if (!name) return;
+      if (supplierGroupKey(o.supplier) === key || dcVendorKey(name) === key) {
+        const prev = seen.get(name);
+        if (!prev || prev.date < o.createdAt) seen.set(name, { date: o.createdAt, pack: Number(l.packQty) || 0 });
+      }
+    })
+  );
+  seen.forEach((_, name) => add(name, isDcProduct(name) ? "DC" : detectPart(name)));
+  return out
+    .filter((x) => !isProductInactive(x.name))
+    .map((x) => {
+      const fromOrder = seen.get(x.name);
+      const basePack = packQtyOverrideOf(x.name) ?? ((fromOrder && fromOrder.pack) || Number(INVOICE_KNOWN_PACK[x.name]) || 0);
+      return { ...x, basePack, baseLabel: displayNameOf(x.name), baseExpiry: expiryOverrideOf(x.name) ?? (x.part === "DC" ? null : PRODUCT_EXPIRY_DELTA[x.name] ?? 3) };
+    });
+}
+
+function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onClose }) {
+  const suppliers = useMemo(() => invoiceSettingsSupplierList(), []);
+  const [selKey, setSelKey] = useState(suppliers[0] ? suppliers[0].key : null);
+  const [tab, setTab] = useState("info");
+  const [q, setQ] = useState("");
+  const [form, setForm] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const sel = suppliers.find((x) => x.key === selKey);
+  const products = useMemo(() => (selKey ? invoiceSettingsProducts(selKey, orders) : []), [selKey, orders, invoiceSettings]);
+
+  // 공급사를 고를 때마다 현재 적용 중인 값으로 폼을 채운다
+  useEffect(() => {
+    if (!selKey) return;
+    const cur = (invoiceSettings.suppliers || {})[selKey] || {};
+    const base = getInvoiceInfoBase(selKey);
+    const info = {};
+    INV_INFO_FIELDS.forEach((f) => (info[f.key] = (cur.info && cur.info[f.key] !== undefined ? cur.info[f.key] : base[f.key]) || ""));
+    const regions = {};
+    [1, 2].forEach((p) => {
+      const c = (cur.regions || {})[String(p)] || invoiceRegionDefault(p);
+      regions[p] = { mode: c.mode, codes: [...(c.codes || [])] };
+    });
+    const prod = {};
+    Object.entries(cur.products || {}).forEach(([n, v]) => (prod[n] = { displayName: v.displayName ?? "", packQty: v.packQty ?? "", expiryDays: v.expiryDays ?? "" }));
+    setForm({ info, regions, products: prod });
+    setDirty(false);
+    setMsg("");
+  }, [selKey, invoiceSettings]);
+
+  const confirmLeave = () => !dirty || window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 넘어갈까요?");
+  const pick = (k) => {
+    if (k === selKey || !confirmLeave()) return;
+    setSelKey(k);
+    setTab("info");
+  };
+  const close = () => confirmLeave() && onClose();
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && close();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const upd = (fn) => {
+    setForm((f) => {
+      const n = JSON.parse(JSON.stringify(f));
+      fn(n);
+      return n;
+    });
+    setDirty(true);
+  };
+  const prodVal = (name, field) => (form && form.products[name] ? form.products[name][field] : "") ?? "";
+  const setProd = (name, field, v) =>
+    upd((f) => {
+      f.products[name] = f.products[name] || { displayName: "", packQty: "", expiryDays: "" };
+      f.products[name][field] = v;
+    });
+
+  async function persist(entry) {
+    setBusy(true);
+    setMsg("");
+    let latest = invoiceSettings || { suppliers: {} };
+    try {
+      const res = await apiFetch("/settings/invoice_settings", authToken);
+      if (res && res.value && res.value.suppliers) latest = res.value;
+    } catch (e) {
+      /* 서버를 못 읽으면 화면 값 기준 */
+    }
+    const next = { ...latest, suppliers: { ...(latest.suppliers || {}) } };
+    if (entry && Object.keys(entry).length) next.suppliers[selKey] = entry;
+    else delete next.suppliers[selKey];
+    try {
+      await apiFetch("/settings/invoice_settings", authToken, { method: "PUT", body: { value: next } });
+      onSaved(next);
+      setMsg("저장했어요. 다음에 만드는 거래명세서부터 이 값으로 나가요.");
+    } catch (e) {
+      try {
+        localStorage.setItem("wms-invoice-settings", JSON.stringify(next));
+      } catch (e2) {
+        /* 무시 */
+      }
+      onSaved(next);
+      setMsg(`서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${e.message})`);
+    } finally {
+      setBusy(false);
+      setDirty(false);
+    }
+  }
+
+  function save() {
+    const entry = {};
+    const base = getInvoiceInfoBase(selKey);
+    const info = {};
+    INV_INFO_FIELDS.forEach((f) => {
+      const v = String(form.info[f.key] ?? "");
+      if (v !== String(base[f.key] || "")) info[f.key] = v;
+    });
+    if (Object.keys(info).length) entry.info = info;
+    if (!sel.isDcOnly) {
+      const regions = {};
+      for (const p of [1, 2]) {
+        const r = form.regions[p];
+        if (r.mode === "selected" && r.codes.length === 0) return setMsg(`${p}편 발행 지역을 하나 이상 고르거나 "발주 있는 지역 전부"로 바꿔주세요.`);
+        const d = invoiceRegionDefault(p);
+        const same = r.mode === d.mode && (r.mode === "all" || [...r.codes].sort().join() === [...d.codes].sort().join());
+        if (!same) regions[String(p)] = { mode: r.mode, codes: r.mode === "selected" ? REGION_ORDER_TABLE.map((x) => x.code).filter((c) => r.codes.includes(c)) : [] };
+      }
+      if (Object.keys(regions).length) entry.regions = regions;
+    }
+    const prodOut = {};
+    for (const pr of products) {
+      const v = form.products[pr.name];
+      if (!v) continue;
+      const o = {};
+      const dn = String(v.displayName || "").trim();
+      if (dn && dn !== pr.baseLabel) o.displayName = dn;
+      const pq = String(v.packQty ?? "").trim();
+      if (pq !== "") {
+        if (!(Number(pq) > 0)) return setMsg(`"${pr.name}" 입수는 1 이상의 숫자로 넣어주세요.`);
+        if (Number(pq) !== pr.basePack) o.packQty = Number(pq);
+      }
+      const ex = String(v.expiryDays ?? "").trim();
+      if (ex !== "") {
+        if (!Number.isFinite(Number(ex))) return setMsg(`"${pr.name}" 소비기한은 숫자(일수)로 넣어주세요.`);
+        if (Number(ex) !== pr.baseExpiry) o.expiryDays = Number(ex);
+      }
+      if (Object.keys(o).length) prodOut[pr.name] = o;
+    }
+    if (Object.keys(prodOut).length) entry.products = prodOut;
+    persist(entry);
+  }
+  function resetSupplier() {
+    if (!window.confirm(`${sel.label}의 거래명세서 설정을 모두 기본값으로 되돌릴까요?`)) return;
+    persist(null);
+  }
+
+  const hint = { fontSize: 11.5, color: T.inkSoft, marginTop: 4 };
+  const tabBtn = (k, label) => (
+    <button
+      key={k}
+      onClick={() => setTab(k)}
+      style={{ padding: "9px 14px", border: "none", borderBottom: `2.5px solid ${tab === k ? T.steel : "transparent"}`, background: "transparent", fontWeight: tab === k ? 700 : 500, color: tab === k ? T.ink : T.inkSoft, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}
+    >
+      {label}
+    </button>
+  );
+  const chip = (on) => ({
+    padding: "5px 10px",
+    borderRadius: 999,
+    border: `1.5px solid ${on ? T.teal : T.border}`,
+    background: on ? "#E4F2EE" : T.surface,
+    color: on ? T.tealDeep : T.ink,
+    fontWeight: 600,
+    fontSize: 12,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  });
+  const changedSet = new Set(Object.keys((invoiceSettings && invoiceSettings.suppliers) || {}));
+  const shownSuppliers = suppliers.filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()));
+
+  return createPortal(
+    <div onClick={close} style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth: 1080, height: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "16px 22px", borderBottom: `1px solid ${T.border}` }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>거래명세서 설정</div>
+            <div style={hint}>공급사별 사업자 정보·발행 지역·명세서용 상품명/입수/소비기한. 저장하면 고정값으로 남아요. 여기서 바꾼 입수·상품명은 거래명세서에만 적용돼요.</div>
+          </div>
+          <button onClick={close} title="닫기" style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: T.inkSoft }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ width: 220, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: "#FBFAF7" }}>
+            <div style={{ padding: 10 }}>
+              <input style={{ ...inputStyle, width: "100%" }} placeholder="공급사 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+            </div>
+            <div style={{ overflowY: "auto", flex: 1, padding: "0 8px 10px" }}>
+              {shownSuppliers.map((x) => (
+                <button
+                  key={x.key}
+                  onClick={() => pick(x.key)}
+                  style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 6, padding: "9px 10px", marginBottom: 2, border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, background: x.key === selKey ? T.steel : "transparent", color: x.key === selKey ? "#fff" : T.ink, fontWeight: x.key === selKey ? 700 : 500 }}
+                >
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.label}</span>
+                  {x.isDcOnly && <span style={{ fontSize: 10.5, fontWeight: 700, opacity: 0.75 }}>DC</span>}
+                  {changedSet.has(x.key) && <span style={{ width: 7, height: 7, borderRadius: 99, background: T.amber, flexShrink: 0 }} title="변경됨" />}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+            {!sel || !form ? null : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 18px", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginRight: 14 }}>{sel.label}</div>
+                  {tabBtn("info", "사업자 정보")}
+                  {!sel.isDcOnly && tabBtn("regions", "발행 지역")}
+                  {tabBtn("products", `상품 (${products.length})`)}
+                </div>
+
+                <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+                  {tab === "info" && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 720 }}>
+                      {INV_INFO_FIELDS.map((f) => {
+                        const base = String(getInvoiceInfoBase(selKey)[f.key] || "");
+                        const changed = String(form.info[f.key] ?? "") !== base;
+                        return (
+                          <div key={f.key} style={{ gridColumn: f.key === "address" || f.multiline ? "1 / -1" : "auto" }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>
+                              {f.label}
+                              {changed && (
+                                <button onClick={() => upd((n) => (n.info[f.key] = base))} style={{ border: "none", background: "none", color: T.teal, fontSize: 12, fontWeight: 600, cursor: "pointer", marginLeft: 8, padding: 0 }}>
+                                  원래대로
+                                </button>
+                              )}
+                            </div>
+                            {f.multiline ? (
+                              <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                            ) : (
+                              <input style={{ ...inputStyle, width: "100%", borderColor: changed ? T.amber : undefined }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                            )}
+                            {changed && <div style={hint}>원래 값: {base || "(없음)"}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {tab === "regions" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+                      {[1, 2].map((p) => {
+                        const r = form.regions[p];
+                        return (
+                          <div key={p} style={{ border: `1px solid ${T.border}`, borderRadius: 10, padding: 14 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                              <div style={{ fontWeight: 700, fontSize: 14, marginRight: 8 }}>{p}편 명세서</div>
+                              <button onClick={() => upd((n) => (n.regions[p].mode = "all"))} style={chip(r.mode === "all")}>
+                                발주 있는 지역 전부
+                              </button>
+                              <button onClick={() => upd((n) => (n.regions[p].mode = "selected"))} style={chip(r.mode === "selected")}>
+                                선택한 지역만
+                              </button>
+                              <button
+                                onClick={() => upd((n) => (n.regions[p] = invoiceRegionDefault(p)))}
+                                style={{ marginLeft: "auto", border: "none", background: "none", color: T.teal, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                              >
+                                기본값으로 ({p === 1 ? "신제주·곤지암·곤지암2" : "발주 있는 지역 전부"})
+                              </button>
+                            </div>
+                            {r.mode === "all" ? (
+                              <div style={hint}>그날 이 공급사 {p}편 발주가 있는 지역마다 명세서가 나가요.</div>
+                            ) : (
+                              <>
+                                <div style={{ ...hint, marginTop: 0, marginBottom: 8 }}>고른 지역만 명세서가 나가고, 발주가 없는 날도 수량 0으로 나가요 ({r.codes.length}곳 선택).</div>
+                                {["A", "B"].map((zone) => (
+                                  <div key={zone} style={{ marginBottom: 8 }}>
+                                    <div style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, marginBottom: 5 }}>{zone}구역</div>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                                      {REGION_ORDER_TABLE.filter((x) => x.zone === zone).map((x) => {
+                                        const on = r.codes.includes(x.code);
+                                        return (
+                                          <button key={x.code} onClick={() => upd((n) => (n.regions[p].codes = on ? n.regions[p].codes.filter((c) => c !== x.code) : [...n.regions[p].codes, x.code]))} style={chip(on)}>
+                                            {x.name}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {tab === "products" && (
+                    <div>
+                      <div style={{ ...hint, marginTop: 0, marginBottom: 10 }}>
+                        비워두면 기본값(회색 글씨)을 써요. 여기서 바꾼 상품명·입수는 거래명세서에만 적용되고 피킹지시서는 그대로예요. 입수를 피킹지까지 바꾸려면 XIII. 상품 정보 관리에서 바꾸세요.
+                      </div>
+                      {products.length === 0 ? (
+                        <EmptyRow text="이 공급사 상품이 아직 없어요." />
+                      ) : (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th style={{ width: 52 }}>구분</th>
+                              <th>명세서 상품명</th>
+                              <th style={{ width: 96, textAlign: "center" }}>입수</th>
+                              <th style={{ width: 116, textAlign: "center" }}>소비기한 (+일)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {products.map((pr) => {
+                              const changed = !!form.products[pr.name] && ["displayName", "packQty", "expiryDays"].some((k) => String(form.products[pr.name][k] ?? "").trim() !== "");
+                              return (
+                                <tr key={pr.name}>
+                                  <td style={{ fontSize: 12, color: T.inkSoft, fontWeight: 600 }}>{pr.part === "DC" ? "DC" : `${pr.part}편`}</td>
+                                  <td>
+                                    <input style={{ ...inputStyle, width: "100%", borderColor: String(prodVal(pr.name, "displayName")).trim() ? T.amber : undefined }} value={prodVal(pr.name, "displayName")} placeholder={pr.baseLabel} onChange={(e) => setProd(pr.name, "displayName", e.target.value)} />
+                                    {changed && <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 3 }}>원래 이름: {pr.name}</div>}
+                                  </td>
+                                  <td>
+                                    <input style={{ ...inputStyle, width: "100%", textAlign: "center", borderColor: String(prodVal(pr.name, "packQty")).trim() ? T.amber : undefined }} type="number" min="1" value={prodVal(pr.name, "packQty")} placeholder={pr.basePack ? String(pr.basePack) : "-"} onChange={(e) => setProd(pr.name, "packQty", e.target.value)} />
+                                  </td>
+                                  <td>
+                                    <input style={{ ...inputStyle, width: "100%", textAlign: "center", borderColor: String(prodVal(pr.name, "expiryDays")).trim() ? T.amber : undefined }} type="number" value={prodVal(pr.name, "expiryDays")} placeholder={pr.baseExpiry == null ? "공란" : String(pr.baseExpiry)} onChange={(e) => setProd(pr.name, "expiryDays", e.target.value)} />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7" }}>
+                  {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+                  {changedSet.has(selKey) && (
+                    <button onClick={resetSupplier} disabled={busy} style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger + "55" }}>
+                      이 공급사 전부 기본값으로
+                    </button>
+                  )}
+                  <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, marginLeft: changedSet.has(selKey) ? 0 : "auto", opacity: busy || !dirty ? 0.55 : 1 }}>
+                    <Check size={14} /> {busy ? "저장 중..." : dirty ? "저장" : "저장할 변경 없음"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoiceSettingsSaved }) {
+  const [showInvSettings, setShowInvSettings] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const invoiced = orders.filter((o) => o.invoiceIssued);
@@ -6649,7 +7133,7 @@ function InvoiceView({ orders, productInfo }) {
   }, [orders]);
   const [invoiceDate, setInvoiceDate] = useState(null);
   const activeInvoiceDate = invoiceDate && dateOptions.includes(invoiceDate) ? invoiceDate : dateOptions[0] || null;
-  const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate, productInfo]);
+  const invoiceProducts = useMemo(() => buildProductsForDate(orders, activeInvoiceDate), [orders, activeInvoiceDate, productInfo, invoiceSettings]);
   const invoiceSupplierOptions = useMemo(() => {
     // 사업자 정보가 등록된 공급사만 (DC 공급사는 아래 "DC 거래명세서" 카드에서 따로)
     const set = new Set(invoiceProducts.map((p) => supplierGroupKey(p.supplier)));
@@ -6674,7 +7158,7 @@ function InvoiceView({ orders, productInfo }) {
   // ===== DC 거래명세서 (일반 1편/2편과 완전히 분리된 카드) =====
   const [dcDate, setDcDate] = useState(null);
   const activeDcDate = dcDate && dateOptions.includes(dcDate) ? dcDate : dateOptions[0] || null;
-  const dcProducts = useMemo(() => buildProductsForDate(orders, activeDcDate), [orders, activeDcDate, productInfo]);
+  const dcProducts = useMemo(() => buildProductsForDate(orders, activeDcDate), [orders, activeDcDate, productInfo, invoiceSettings]);
   const dcVendorOptions = useMemo(
     () =>
       DC_VENDOR_GROUPS.map((g) => ({ key: g.key, label: g.label, regions: buildInvoiceRegionsForSupplier(dcProducts, g.key, "DC") })).filter(
@@ -6699,7 +7183,7 @@ function InvoiceView({ orders, productInfo }) {
   // ===== 당착 거래명세서 (DC와 같은 방식, 당착 상품만 따로 분류) =====
   const [dkDate, setDkDate] = useState(null);
   const activeDkDate = dkDate && dateOptions.includes(dkDate) ? dkDate : dateOptions[0] || null;
-  const dkProducts = useMemo(() => buildProductsForDate(orders, activeDkDate), [orders, activeDkDate, productInfo]);
+  const dkProducts = useMemo(() => buildProductsForDate(orders, activeDkDate), [orders, activeDkDate, productInfo, invoiceSettings]);
   const dkVendorOptions = useMemo(() => dangchakVendorOptions(dkProducts), [dkProducts]);
   const [dkVendor, setDkVendor] = useState(null);
   const activeDkVendor = dkVendorOptions.some((v) => v.key === dkVendor) ? dkVendor : dkVendorOptions[0]?.key || null;
@@ -6733,7 +7217,19 @@ function InvoiceView({ orders, productInfo }) {
 
   return (
     <div>
-      <PageHeader title="거래명세서" sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)" />
+      <PageHeader
+        title="거래명세서"
+        sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)"
+        action={
+          <button onClick={() => setShowInvSettings(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="사업자 정보·발행 지역·상품명·입수·소비기한">
+            <SettingsGear size={15} />
+            거래명세서 설정
+          </button>
+        }
+      />
+      {showInvSettings && (
+        <InvoiceSettingsModal orders={orders} authToken={authToken} invoiceSettings={invoiceSettings} onSaved={onInvoiceSettingsSaved} onClose={() => setShowInvSettings(false)} />
+      )}
 
       <div style={{ ...cardStyle, marginBottom: 18 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>공급사별 거래명세서 일괄 생성</div>
