@@ -1084,6 +1084,37 @@ function packQtyOverrideOf(name) {
   const ov = productInfoOf(name);
   return ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : null;
 }
+// 상품 정보 관리에서 "일시중지"(paused) 또는 "삭제"(discontinued, 단종) 처리한 상품은
+// 피킹지시서·거래명세서·편수리스트·당착 어디에도 나가지 않는다 (발주파일에 찍혀 와도 무시).
+function isProductInactive(name) {
+  const ov = productInfoOf(name);
+  return !!(ov && (ov.paused || ov.discontinued));
+}
+// 저장 직전 서버 최신값을 받아 이 상품 항목만 바꿔 저장 (다른 직원이 그사이 바꾼 다른 상품은 유지)
+async function saveProductInfoEntry(authToken, fallback, name, updater) {
+  let latest = fallback || {};
+  try {
+    const res = await apiFetch("/settings/product_info", authToken);
+    if (res && res.value && typeof res.value === "object") latest = res.value;
+  } catch (e) {
+    /* 서버를 못 읽으면 화면 값 기준 */
+  }
+  const next = { ...latest };
+  const entry = updater({ ...(latest[name] || {}) });
+  if (entry && Object.keys(entry).length) next[name] = entry;
+  else delete next[name];
+  try {
+    await apiFetch("/settings/product_info", authToken, { method: "PUT", body: { value: next } });
+    return { value: next, ok: true };
+  } catch (e) {
+    try {
+      localStorage.setItem("wms-product-info", JSON.stringify(next));
+    } catch (e2) {
+      /* 무시 */
+    }
+    return { value: next, ok: false, error: e.message };
+  }
+}
 function displayNameOf(name) {
   const ov = productInfoOf(name);
   return (ov && String(ov.displayName || "").trim()) || name;
@@ -5400,7 +5431,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     });
     const cat = SUPPLIER_INVOICE_CATALOG[supplierKey];
     // DC 상품과 당착 상품은 1편/2편 명세서에 절대 들어가지 않는다 (각각 DC·당착 카드에서만 나감)
-    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n) && getDangchakStyle(n) !== "full");
+    const catalogNames = ((cat && cat[String(part)]) || []).filter((n) => !isDcProduct(n) && getDangchakStyle(n) !== "full" && !isProductInactive(n));
     // 소비기한 자료(카탈로그)에 아직 없는 신제품도 빠지지 않도록, 그 편에 실제로 나간 상품을 뒤에 자동으로 덧붙인다.
     // (카탈로그 순서 먼저 -> 신제품은 업로드 순서로 맨 뒤에)
     const catalogSet = new Set(catalogNames);
@@ -6052,6 +6083,7 @@ function buildProductsForDate(orders, activeDate) {
       // 발주 수량(수정된 값이 있으면 그 값)을 그대로 쓴다 - 할당 상태 때문에 수량이 안 보이는 일이 없도록.
       const qty = Number(l.changedQty ?? l.qty) || 0;
       if (qty <= 0) return;
+      if (isProductInactive(l.name)) return; // 일시중지·삭제(단종)한 상품은 피킹지·명세서에서 제외
       // 이 상품이 DC 상품이면 DC 공급사 기준으로, 아니면 발주서 공급사 기준으로 0고정 여부를 판단 (상품마다 다를 수 있음)
       const zeroKey = dcVendorKey(l.name) || supplierKey;
       const zeroed = regionKey && (isQtyZeroOverride(zeroKey, regionKey) || isQtyZeroByName(l.name, regionKey));
@@ -7220,12 +7252,20 @@ const PI_CAT_COLOR = {
 // 발주 기록에서 상품 목록과 "기본값"(발주파일·기존 코드 설정으로 들어온 입수)을 뽑는다. 가장 최근 날짜 값 기준.
 function buildProductInfoRows(orders) {
   const map = new Map();
+  // 거래명세서 상품 목록(소비기한 자료)에 있는 상품도 발주가 없어도 목록에 나오게 (단종 처리할 수 있도록)
+  Object.entries(SUPPLIER_INVOICE_CATALOG).forEach(([sup, parts]) => {
+    Object.values(parts || {}).forEach((names) =>
+      (names || []).forEach((name) => {
+        if (!map.has(name)) map.set(name, { name, sku: "", supplier: pickingSupplierKey(sup), basePack: Number(INVOICE_KNOWN_PACK[name]) || 0, lastDate: "" });
+      })
+    );
+  });
   orders.forEach((o) => {
     o.lines.forEach((l) => {
       const name = String(l.name || "").replace(/\n/g, "").trim();
       if (!name) return;
       const prev = map.get(name);
-      if (prev && prev.lastDate > o.createdAt) return;
+      if (prev && prev.lastDate && prev.lastDate > o.createdAt) return;
       map.set(name, {
         name,
         sku: l.sku,
@@ -7258,7 +7298,49 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
   const [q, setQ] = useState("");
   const [supplier, setSupplier] = useState("all");
   const [onlyChanged, setOnlyChanged] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [rowBusy, setRowBusy] = useState(null);
+  const [pageMsg, setPageMsg] = useState("");
+  async function updateStatus(name, updater, doneMsg) {
+    setRowBusy(name);
+    setPageMsg("");
+    const r = await saveProductInfoEntry(authToken, productInfo, name, updater);
+    onSaved(r.value);
+    setRowBusy(null);
+    setPageMsg(r.ok ? doneMsg : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  const togglePause = (r) =>
+    updateStatus(
+      r.name,
+      (e) => {
+        if (e.paused) delete e.paused;
+        else e.paused = true;
+        return e;
+      },
+      r.paused ? `"${r.displayName}" 다시 나가요.` : `"${r.displayName}" 일시중지했어요. 다시 누르면 재개돼요.`
+    );
+  const deleteProduct = (r) => {
+    if (!window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n\n피킹지시서·거래명세서·편수리스트에 더 이상 나오지 않고 이 목록에서도 사라져요.\n실수로 지웠으면 위 "삭제된 상품"에서 복구할 수 있어요.`)) return;
+    updateStatus(
+      r.name,
+      (e) => {
+        delete e.paused;
+        e.discontinued = true;
+        return e;
+      },
+      `"${r.displayName}" 삭제했어요.`
+    );
+  };
+  const restoreProduct = (r) =>
+    updateStatus(
+      r.name,
+      (e) => {
+        delete e.discontinued;
+        return e;
+      },
+      `"${r.displayName}" 복구했어요.`
+    );
 
   const rows = useMemo(() => {
     const base = buildProductInfoRows(orders);
@@ -7273,20 +7355,24 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
         const dc = dcGroupOf(r.name);
         const dk = getDangchakInfo(r.name);
         const expiry = dc && expiryOverrideOf(r.name) == null ? null : expiryDaysOf(r.name);
-        return { ...r, ov, changed: !!ov, pack, expiry, displayName: displayNameOf(r.name), category: piCategoryOf(dc, dk), part: detectPart(r.name) };
+        const changed = !!ov && Object.keys(ov).some((k) => k !== "paused" && k !== "discontinued");
+        return { ...r, ov, changed, paused: !!(ov && ov.paused), deleted: !!(ov && ov.discontinued), pack, expiry, displayName: displayNameOf(r.name), category: piCategoryOf(dc, dk), part: detectPart(r.name) };
       })
       .sort((a, b) => pickingSupplierPriority(a.supplier) - pickingSupplierPriority(b.supplier) || a.supplier.localeCompare(b.supplier, "ko") || a.name.localeCompare(b.name, "ko"));
   }, [orders, productInfo]);
 
   const suppliers = useMemo(() => Array.from(new Set(rows.map((r) => r.supplier))), [rows]);
+  const deletedCount = rows.filter((r) => r.deleted).length;
+  const pausedCount = rows.filter((r) => r.paused && !r.deleted).length;
   const filtered = rows.filter((r) => {
+    if (showDeleted !== r.deleted) return false; // 평소엔 삭제된 상품 숨김, "삭제된 상품" 보기에선 그것만
     if (supplier !== "all" && r.supplier !== supplier) return false;
     if (onlyChanged && !r.changed) return false;
     const k = q.trim().toLowerCase();
     if (k && !r.name.toLowerCase().includes(k) && !String(r.sku).toLowerCase().includes(k) && !r.displayName.toLowerCase().includes(k)) return false;
     return true;
   });
-  const changedCount = rows.filter((r) => r.changed).length;
+  const changedCount = rows.filter((r) => r.changed && !r.deleted).length;
   const shown = filtered.slice(0, 400);
 
   return (
@@ -7312,11 +7398,21 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
         >
           변경한 상품만 ({changedCount})
         </button>
+        <button
+          onClick={() => setShowDeleted((v) => !v)}
+          style={{ ...smallBtnStyle, padding: "8px 12px", background: showDeleted ? T.danger : T.surface, color: showDeleted ? "#fff" : T.ink, borderColor: showDeleted ? T.danger : T.border }}
+        >
+          삭제된 상품 ({deletedCount})
+        </button>
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
-          상품 {filtered.length}개{filtered.length > shown.length ? ` (앞 ${shown.length}개 표시 - 검색으로 좁혀주세요)` : ""}
+          {pausedCount > 0 && !showDeleted ? `일시중지 ${pausedCount}개 · ` : ""}상품 {filtered.length}개{filtered.length > shown.length ? ` (앞 ${shown.length}개 표시 - 검색으로 좁혀주세요)` : ""}
         </span>
       </div>
 
+      {pageMsg && <div style={{ fontSize: 12.5, fontWeight: 600, color: pageMsg.startsWith("서버에") ? T.danger : T.teal, margin: "-4px 0 12px 2px" }}>{pageMsg}</div>}
+      {showDeleted && (
+        <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "-4px 0 12px 2px" }}>삭제(단종)한 상품이에요. 피킹지·명세서에 나가지 않아요. 다시 판매되면 [복구]를 누르세요.</div>
+      )}
       <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
         <table>
           <thead>
@@ -7333,14 +7429,14 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
             {shown.length === 0 ? (
               <tr>
                 <td colSpan={6}>
-                  <EmptyRow text={rows.length === 0 ? "발주파일을 올리면 상품이 여기에 나와요." : "조건에 맞는 상품이 없어요."} />
+                  <EmptyRow text={showDeleted ? "삭제한 상품이 없어요." : rows.length === 0 ? "발주파일을 올리면 상품이 여기에 나와요." : "조건에 맞는 상품이 없어요."} />
                 </td>
               </tr>
             ) : (
               shown.map((r) => {
                 const packChanged = r.ov && r.ov.packQty != null;
                 return (
-                  <tr key={r.name} className="rowhover" style={{ cursor: "pointer" }} onClick={() => setEditing(r.name)}>
+                  <tr key={r.name} className="rowhover" style={{ cursor: "pointer", opacity: r.paused || r.deleted ? 0.55 : 1 }} onClick={() => !r.deleted && setEditing(r.name)}>
                     <td style={{ color: T.inkSoft, fontSize: 12.5, whiteSpace: "nowrap" }}>{r.supplier}</td>
                     <td>
                       <div style={{ fontWeight: 600 }}>{r.displayName}</div>
@@ -7354,11 +7450,36 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
                     <td>
                       <PiCatBadge {...r.category} />
                     </td>
-                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                      {r.changed && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>변경됨</span>}
-                      <span style={{ ...smallBtnStyle, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        <Pencil size={13} /> 수정
-                      </span>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                      {r.paused && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#fff", background: T.inkSoft, padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>일시중지</span>}
+                      {r.changed && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>변경됨</span>}
+                      {r.deleted ? (
+                        <button disabled={rowBusy === r.name} onClick={() => restoreProduct(r)} style={{ ...smallBtnStyle, padding: "6px 10px", color: T.teal, borderColor: T.teal + "66" }}>
+                          복구
+                        </button>
+                      ) : (
+                        <span style={{ display: "inline-flex", gap: 6 }}>
+                          <button onClick={() => setEditing(r.name)} style={{ ...smallBtnStyle, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <Pencil size={13} /> 수정
+                          </button>
+                          <button
+                            disabled={rowBusy === r.name}
+                            onClick={() => togglePause(r)}
+                            title={r.paused ? "다시 피킹지·명세서에 나가게 해요" : "일시단종 - 잠깐 피킹지·명세서에서 빼요"}
+                            style={{ ...smallBtnStyle, padding: "6px 10px", ...(r.paused ? { background: T.teal, color: "#fff", borderColor: T.teal } : { color: T.amberDeep, borderColor: T.amber + "99" }) }}
+                          >
+                            {r.paused ? "재개" : "일시중지"}
+                          </button>
+                          <button
+                            disabled={rowBusy === r.name}
+                            onClick={() => deleteProduct(r)}
+                            title="단종 - 목록과 피킹지·명세서에서 삭제"
+                            style={{ ...smallBtnStyle, padding: "6px 10px", color: T.danger, borderColor: T.danger + "55", display: "inline-flex", alignItems: "center", gap: 4 }}
+                          >
+                            <Trash2 size={13} /> 삭제
+                          </button>
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -7408,6 +7529,10 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
   }, []);
 
   async function persist(entry) {
+    // 일시중지·삭제 상태는 이 창에서 다루지 않으니 그대로 유지
+    if (entry && cur.paused) entry.paused = true;
+    if (entry && cur.discontinued) entry.discontinued = true;
+    if (!entry && cur.paused) entry = { paused: true };
     // 다른 직원이 그사이 다른 상품을 저장했을 수 있으니, 저장 직전에 서버 최신 값을 받아 이 상품만 바꿔서 저장한다
     let latest = productInfo || {};
     try {
