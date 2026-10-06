@@ -1665,6 +1665,7 @@ function WMSApp() {
   }, [stores, vehicles, courses, cells, replenishedSkus]);
 
   const [emartOrders, setEmartOrders] = useState([]);
+  const [pickChannel, setPickChannel] = useState("gs"); // 피킹지시서 출력 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
     if (!authToken) return;
     try {
@@ -2484,7 +2485,14 @@ function WMSApp() {
         {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
-        {tab === "pickinginspection" && <PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
+        {tab === "pickinginspection" && (
+          <PickingCenter
+            channel={pickChannel}
+            onChannel={setPickChannel}
+            emartOrders={emartOrders}
+            gsView={<PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
+          />
+        )}
 
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
@@ -4985,11 +4993,32 @@ function analyzeEmartTemplate(tpl) {
       if (c && typeof c.v === "string" && c.v.trim() && c.v !== "입수") { title = c.v; break; }
     }
     const regions = [];
+    const regionRows = []; // 화면 미리보기용: [{ label, short }] (시트에 적힌 순서 그대로, 합계 줄 포함)
+    let pack = 0;
     for (let r = 1; r <= s.maxRow; r++) {
       const c = s.cells.get("A" + r);
-      if (c && typeof c.v === "string" && /\(저온\)|\(상온\)|\(냉동\)/.test(c.v)) regions.push(c.v);
+      if (!c || typeof c.v !== "string") continue;
+      if (/\(저온\)|\(상온\)|\(냉동\)/.test(c.v)) {
+        regions.push(c.v);
+        let short = "";
+        for (const col of ["B", "C", "D", "E", "F"]) {
+          const x = s.cells.get(col + r);
+          if (!x) continue;
+          if (!x.f && typeof x.v === "string" && x.v.trim()) { short = x.v.trim(); break; }
+        }
+        for (const col of ["B", "C"]) {
+          const x = s.cells.get(col + r);
+          if (!pack && x && !x.f && typeof x.v === "number" && x.v > 0) pack = x.v;
+        }
+        regionRows.push({ label: c.v, short });
+      } else if (/합계$/.test(c.v.trim()) && c.v.trim() !== "총합계") regionRows.push({ label: c.v.trim(), subtotal: true });
     }
-    products.push({ sheet: s.name, pivot: link.pivot, k: link.k, col: link.col, title, keys: [emartNorm(title), emartNorm(s.name)], regions });
+    let sheetTitle = "";
+    for (const ref of ["C2", "B2", "C1"]) {
+      const x = s.cells.get(ref);
+      if (x && !x.f && typeof x.v === "string" && x.v.trim()) { sheetTitle = x.v.trim(); break; }
+    }
+    products.push({ sheet: s.name, pivot: link.pivot, k: link.k, col: link.col, title, keys: [emartNorm(title), emartNorm(s.name)], regions, regionRows, pack, sheetTitle });
   });
   // 피벗 머리글(2행)도 이름 후보로
   products.forEach((p) => {
@@ -5175,7 +5204,7 @@ function safeEmartSheetName(name, used) {
 }
 
 // ---------- 메인: 발주 줄들 -> 피킹검수 엑셀 ----------
-async function buildEmartPickingWorkbook(templateBuffer, orderRows, date) {
+async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, activeName) {
   const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer));
   tpl.newParts = [];
   tpl.lastSheetOfPivot = {};
@@ -5306,6 +5335,23 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date) {
     return x.startsWith("<?xml") ? x : XML_DECL + x;
   };
   tpl.sheets.forEach((s) => tpl.zip.file(s.path, out(s.doc)));
+  // 화면에서 보고 있던 상품 시트가 열자마자 보이도록
+  if (activeName) {
+    const p = tpl.products.find((x) => emartNorm(x.title) === emartNorm(activeName) || x.keys.includes(emartNorm(activeName)));
+    const idx = p ? tpl.sheets.findIndex((x) => x.name === p.sheet) : -1;
+    if (idx >= 0) {
+      const wv = tpl.wbXml.getElementsByTagName("workbookView")[0];
+      if (wv) {
+        wv.setAttribute("activeTab", String(idx));
+        wv.setAttribute("firstSheet", String(Math.max(0, idx - 2)));
+      }
+      tpl.sheets.forEach((x, i) =>
+        Array.from(x.doc.getElementsByTagName("sheetView")).forEach((v) => (i === idx ? v.setAttribute("tabSelected", "1") : v.removeAttribute("tabSelected")))
+      );
+      tpl.zip.file(tpl.sheets[idx].path, out(tpl.sheets[idx].doc));
+      tpl.sheets.forEach((x) => tpl.zip.file(x.path, out(x.doc)));
+    }
+  }
   const calc = tpl.wbXml.getElementsByTagName("calcPr")[0];
   if (calc) calc.setAttribute("fullCalcOnLoad", "1");
   tpl.zip.file("xl/workbook.xml", out(tpl.wbXml));
@@ -5350,13 +5396,47 @@ function writeCachedValue(doc, c, v) {
 }
 
 
+// 기본 템플릿(index.html 안에 넣어둔 base64) 또는 직접 고른 템플릿 -> ArrayBuffer
+async function getEmartTemplateBuffer(customTpl) {
+  if (customTpl) return customTpl.buffer.slice(0);
+  if (window.EMART_TPL_B64) {
+    const bin = atob(window.EMART_TPL_B64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8.buffer;
+  }
+  const res = await fetch(EMART_TEMPLATE_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error("피킹지 템플릿 파일을 불러오지 못했어요 (emart24_picking_template.xlsx).");
+  return res.arrayBuffer();
+}
+// 화면 미리보기용 템플릿 분석 결과 (한 번만 계산해서 재사용)
+let EMART_TPL_INFO_CACHE = null;
+async function getEmartTemplateInfo() {
+  if (!EMART_TPL_INFO_CACHE) EMART_TPL_INFO_CACHE = loadEmartTemplate(await getEmartTemplateBuffer(null)).then((t) => analyzeEmartTemplate(t));
+  return EMART_TPL_INFO_CACHE;
+}
+async function downloadEmartPickingFile(rows, date, customTpl, activeName) {
+  const buf = await getEmartTemplateBuffer(customTpl);
+  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName);
+  const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return report;
+}
+
 // 저장된 이마트 발주(orders, channel "EMART") -> 피킹지 엔진이 쓰는 줄 형식
 function emartRowsFromOrders(orders) {
   const rows = [];
   orders.forEach((o) =>
     o.lines.forEach((l) => {
       const qty = Number(l.changedQty ?? l.qty) || 0;
-      if (qty > 0) rows.push({ orderNo: o.orderNo, vendor: o.supplier || "", center: o.storeCode || o.customer, name: l.name, box: Number(l.packQty) || 0, qty, date: o.createdAt });
+      if (qty > 0) rows.push({ orderNo: o.orderNo, vendor: o.supplier || "", center: o.storeCode || o.customer, name: l.name, code: l.sku, box: Number(l.packQty) || 0, qty, date: o.createdAt });
     })
   );
   return rows;
@@ -5373,20 +5453,23 @@ function emartOrdersFromRows(rows) {
   });
   return Array.from(map.values());
 }
+// 이마트 거래처명 정리: "[PNB]오뗄[간편식품_월-토]" / "오뗄[간편식품_월-토](TC)" -> "오뗄"
+function emartVendorKey(v) {
+  return String(v || "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .trim() || "미지정";
+}
 
+/* ---------- 주문정보 (E.MART): GS 주문정보와 같은 화면 ---------- */
 function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [busyDate, setBusyDate] = useState(null);
-  const [deleting, setDeleting] = useState(null);
-  const [reports, setReports] = useState({}); // 날짜 -> 마지막 피킹지 결과
-  const [openDate, setOpenDate] = useState(null);
-  const [customTpl, setCustomTpl] = useState(null); // { name, buffer } - 이번에만 다른 템플릿 쓰기
+  const [downloading, setDownloading] = useState(false);
+  const [deletingDate, setDeletingDate] = useState(null);
   const fileRef = useRef(null);
-  const tplRef = useRef(null);
 
-  // 날짜별 묶음 (최근 날짜 먼저)
   const dateGroups = useMemo(() => {
     const m = new Map();
     emartOrders.forEach((o) => {
@@ -5395,25 +5478,13 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
     });
     return Array.from(m.entries())
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([date, orders]) => {
-        const rows = emartRowsFromOrders(orders);
-        const vendors = new Map();
-        rows.forEach((r) => {
-          const v = vendors.get(r.vendor) || new Map();
-          v.set(r.name, (v.get(r.name) || 0) + r.qty);
-          vendors.set(r.vendor, v);
-        });
-        return {
-          date,
-          orders,
-          rows,
-          orderCount: orders.length,
-          centers: new Set(rows.map((r) => r.center)).size,
-          products: new Set(rows.map((r) => r.name)).size,
-          totalQty: rows.reduce((a, r) => a + r.qty, 0),
-          vendors: Array.from(vendors.entries()).map(([vendor, prods]) => ({ vendor, prods: Array.from(prods.entries()), total: Array.from(prods.values()).reduce((a, b) => a + b, 0) })),
-        };
-      });
+      .map(([date, orders]) => ({
+        date,
+        orders,
+        orderCount: orders.length,
+        lineCount: orders.reduce((a, o) => a + o.lines.length, 0),
+        totalQty: orders.reduce((a, o) => a + o.lines.reduce((b, l) => b + (Number(l.changedQty ?? l.qty) || 0), 0), 0),
+      }));
   }, [emartOrders]);
 
   async function handleFiles(list) {
@@ -5446,9 +5517,8 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
       setMsg(
         `${dates.map(fmtDate).join(", ")} 발주 ${res.createdCount ?? 0}건 등록` +
           (res.skippedCount ? ` · 이미 올라와 있던 ${res.skippedCount}건은 건너뜀` : "") +
-          ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개)`
+          ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > 이마트에서 피킹지를 받으세요.`
       );
-      setOpenDate(dates[dates.length - 1]);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -5457,179 +5527,418 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
     }
   }
 
-  async function download(g) {
-    setBusyDate(g.date);
+  return (
+    <div>
+      <PageHeader title="주문정보 (E.MART)" sub="이마트24 발주파일을 업로드해서 발주를 접수합니다" />
+      <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 13, color: T.inkSoft }}>
+            이마트24 발주파일(출고관리-발주조회_납품등록, xlsx)을 업로드하면 자동으로 발주가 등록됩니다. 피킹지시서 출력 &gt; 이마트에서 확인하세요.
+            <br />
+            여러 파일을 한 번에 선택해서 업로드할 수 있어요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요.
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => e.target.files.length > 0 && handleFiles(e.target.files)} />
+            <button onClick={() => fileRef.current && fileRef.current.click()} disabled={uploading} className="primary-btn" style={primaryBtnStyle}>
+              <Upload size={14} /> {uploading ? "읽는 중..." : "발주파일 업로드"}
+            </button>
+          </div>
+        </div>
+        {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginTop: 12 }}>{err}</div>}
+        {msg && <div style={{ fontSize: 13, color: T.teal, fontWeight: 600, marginTop: 12 }}>{msg}</div>}
+      </div>
+
+      <div className="no-print">
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>날짜별 발주 현황</div>
+        {dateGroups.length === 0 ? (
+          <div style={cardStyle}>
+            <EmptyRow text="등록된 발주가 없습니다." />
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {dateGroups.map((g) => (
+              <div
+                key={g.date}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+                  background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "14px 18px",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(g.date)}</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                    발주 {g.orderCount}건 · 품목라인 {g.lineCount}개 · 총수량 {g.totalQty.toLocaleString()}개
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_이마트_${g.date}.xlsx`, setDownloading)}
+                    disabled={downloading}
+                    className="primary-btn"
+                    style={{ ...primaryBtnStyle, opacity: downloading ? 0.7 : 1 }}
+                  >
+                    <Download size={15} /> {downloading ? "생성 중..." : "엑셀로 보기"}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm(`${fmtDate(g.date)} 이마트 발주 ${g.orderCount}건을 삭제합니다. GS 발주와 다른 날짜는 그대로 유지돼요. 계속할까요?`)) return;
+                      setDeletingDate(g.date);
+                      await onDeleteDate(g.date);
+                      setDeletingDate(null);
+                    }}
+                    disabled={deletingDate === g.date}
+                    className="ghost-btn"
+                    style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55", opacity: deletingDate === g.date ? 0.7 : 1 }}
+                  >
+                    <Trash2 size={14} /> {deletingDate === g.date ? "삭제 중..." : "이 날짜 삭제"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 피킹지시서 출력 > 이마트: GS 피킹지시서 출력과 같은 화면 ---------- */
+function EmartPickingView({ emartOrders }) {
+  const dateOptions = useMemo(() => Array.from(new Set(emartOrders.map((o) => o.createdAt))).sort((a, b) => (a < b ? 1 : -1)), [emartOrders]);
+  const [selectedDate, setSelectedDate] = useState(null);
+  const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
+  const [tplInfo, setTplInfo] = useState(null);
+  const [tplErr, setTplErr] = useState("");
+  const [vendorFilter, setVendorFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedName, setSelectedName] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [report, setReport] = useState(null);
+  const [err, setErr] = useState("");
+  const [customTpl, setCustomTpl] = useState(null);
+  const tplRef = useRef(null);
+
+  useEffect(() => {
+    getEmartTemplateInfo()
+      .then(setTplInfo)
+      .catch((e) => setTplErr(`피킹지 템플릿을 읽지 못했어요 (${e.message})`));
+  }, []);
+
+  const rows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate)), [emartOrders, activeDate]);
+  // 상품 목록: 템플릿 시트 순서(공급사별)대로, 템플릿에 없는 상품은 맨 뒤
+  const products = useMemo(() => {
+    const m = new Map();
+    rows.forEach((r) => {
+      const p = m.get(r.name) || { name: r.name, code: r.code, vendor: emartVendorKey(r.vendor), box: r.box, qty: {}, total: 0 };
+      p.qty[r.center] = (p.qty[r.center] || 0) + r.qty;
+      p.total += r.qty;
+      m.set(r.name, p);
+    });
+    const list = Array.from(m.values());
+    if (tplInfo) {
+      const order = new Map(tplInfo.sheets.map((s, i) => [s.name, i]));
+      list.forEach((p) => {
+        p.tpl = matchEmartProduct(tplInfo, p.name);
+        p.pack = (p.tpl && p.tpl.pack) || p.box || 0;
+        p.sort = p.tpl ? order.get(p.tpl.sheet) : 100000;
+      });
+      list.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "ko"));
+    }
+    return list;
+  }, [rows, tplInfo]);
+  const vendorOptions = useMemo(() => Array.from(new Set(products.map((p) => p.vendor))), [products]);
+  const filtered = products.filter((p) => {
+    if (vendorFilter !== "all" && p.vendor !== vendorFilter) return false;
+    const q = searchQuery.trim().toLowerCase();
+    if (q && !p.name.toLowerCase().includes(q) && !String(p.code || "").toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const selected = filtered.find((p) => p.name === selectedName) || filtered[0] || null;
+
+  async function exportAll(activeName) {
+    setExporting(true);
     setErr("");
     try {
-      let buf;
-      if (customTpl) buf = customTpl.buffer.slice(0);
-      else if (window.EMART_TPL_B64) {
-        // index.html 안에 넣어둔 기본 템플릿
-        const bin = atob(window.EMART_TPL_B64);
-        const u8 = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-        buf = u8.buffer;
-      } else {
-        const res = await fetch(EMART_TEMPLATE_URL, { cache: "no-store" });
-        if (!res.ok) throw new Error("피킹지 템플릿 파일을 불러오지 못했어요 (emart24_picking_template.xlsx).");
-        buf = await res.arrayBuffer();
-      }
-      const { bytes, report } = await buildEmartPickingWorkbook(buf, g.rows, g.date);
-      setReports((r) => ({ ...r, [g.date]: report }));
-      setOpenDate(g.date);
-      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `이마트24-피킹검수-${g.date.slice(5, 7)}${g.date.slice(8, 10)}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setReport(await downloadEmartPickingFile(rows, activeDate, customTpl, activeName));
     } catch (e) {
       setErr(`피킹지를 만들지 못했어요: ${e.message}`);
     } finally {
-      setBusyDate(null);
+      setExporting(false);
     }
   }
 
-  const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginTop: 12, lineHeight: 1.6 };
+  // 미리보기 표: 템플릿 시트의 지역 순서 그대로 (합계 줄 포함)
+  const preview = useMemo(() => {
+    if (!selected) return null;
+    const pack = selected.pack || 0;
+    const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+    const out = [];
+    const seen = new Set();
+    let sub = 0;
+    if (selected.tpl) {
+      selected.tpl.regionRows.forEach((r) => {
+        if (r.subtotal) {
+          out.push({ label: r.label, qty: sub, ...bd(sub), subtotal: true });
+          sub = 0;
+          return;
+        }
+        const q = selected.qty[r.label] || 0;
+        seen.add(r.label);
+        sub += q;
+        out.push({ label: r.label, short: r.short, qty: q, ...bd(q) });
+      });
+    }
+    const extra = Object.keys(selected.qty).filter((c) => !seen.has(c));
+    extra.forEach((c) => out.push({ label: c, short: "", qty: selected.qty[c], ...bd(selected.qty[c]), missing: !!selected.tpl }));
+    return { rows: out, total: { qty: selected.total, ...bd(selected.total) }, missingCount: selected.tpl ? extra.length : 0 };
+  }, [selected]);
+
+  const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 12, lineHeight: 1.6 };
+  const mono = { fontFamily: "'JetBrains Mono', monospace" };
 
   return (
     <div>
-      <PageHeader title="주문정보 (E.MART)" sub="이마트24 발주파일(출고관리-발주조회_납품등록)을 올리면 서버에 저장되고, 날짜별로 실물 이마트24 피킹검수 엑셀을 그대로 채워서 받을 수 있어요. 상품명으로 맞춰요." />
-
-      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => e.target.files.length && handleFiles(e.target.files)} />
-        <button onClick={() => fileRef.current && fileRef.current.click()} disabled={uploading} className="primary-btn" style={{ ...primaryBtnStyle, opacity: uploading ? 0.6 : 1 }}>
-          <Upload size={15} /> {uploading ? "올리는 중..." : "발주파일 업로드"}
-        </button>
-        <span style={{ fontSize: 12.5, color: T.inkSoft }}>여러 파일을 한 번에 골라도 돼요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요.</span>
-        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" }}>
-          <input
-            ref={tplRef}
-            type="file"
-            accept=".xlsx"
-            style={{ display: "none" }}
-            onChange={async (e) => {
-              const f = e.target.files[0];
-              if (f) setCustomTpl({ name: f.name, buffer: await f.arrayBuffer() });
-            }}
-          />
-          {customTpl ? (
-            <>
-              <span style={{ fontSize: 12, color: T.amberDeep, fontWeight: 600 }}>템플릿: {customTpl.name}</span>
-              <button onClick={() => setCustomTpl(null)} style={smallBtnStyle}>
-                기본 템플릿으로
+      <PageHeader
+        title="피킹지시서 출력"
+        sub="이마트24 발주를 실물 이마트24 피킹검수 양식(공급사별 지역·입수·서식) 그대로 정리합니다"
+        action={
+          <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+            <input
+              ref={tplRef}
+              type="file"
+              accept=".xlsx"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const f = e.target.files[0];
+                if (f) setCustomTpl({ name: f.name, buffer: await f.arrayBuffer() });
+              }}
+            />
+            {customTpl ? (
+              <>
+                <span style={{ fontSize: 12, color: T.amberDeep, fontWeight: 600 }}>템플릿: {customTpl.name}</span>
+                <button onClick={() => setCustomTpl(null)} style={smallBtnStyle}>
+                  기본 템플릿으로
+                </button>
+              </>
+            ) : (
+              <button onClick={() => tplRef.current && tplRef.current.click()} style={{ ...smallBtnStyle, padding: "7px 13px", fontSize: 13 }} title="시트를 추가·수정한 피킹지 원본으로 이번에만 만들기">
+                다른 템플릿으로 만들기
               </button>
-            </>
-          ) : (
-            <button onClick={() => tplRef.current && tplRef.current.click()} style={smallBtnStyle} title="시트를 추가·수정한 피킹지 원본으로 이번에만 만들기">
-              다른 템플릿으로 만들기
-            </button>
-          )}
-        </span>
-      </div>
-
+            )}
+          </span>
+        }
+      />
+      {tplErr && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
       {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
-      {msg && <div style={{ fontSize: 13, color: T.teal, fontWeight: 600, marginBottom: 12 }}>{msg}</div>}
-
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>날짜별 이마트 발주 현황</div>
-      {dateGroups.length === 0 ? (
+      {dateOptions.length === 0 ? (
         <div style={cardStyle}>
-          <EmptyRow text="올라온 이마트 발주가 없어요. 위에서 발주파일을 올려주세요." />
+          <EmptyRow text="이마트 발주가 없습니다. 먼저 주문정보 (E.MART)에서 발주파일을 업로드해주세요." />
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {dateGroups.map((g) => {
-            const report = reports[g.date];
-            const open = openDate === g.date;
-            return (
-              <div key={g.date} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "14px 18px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-                  <div style={{ cursor: "pointer" }} onClick={() => setOpenDate(open ? null : g.date)}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'JetBrains Mono', monospace" }}>
-                      {fmtDate(g.date)} <span style={{ fontSize: 12, color: T.inkSoft, fontFamily: "inherit" }}>{open ? "▲ 접기" : "▼ 상품 보기"}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
-                      발주 {g.orderCount}건 · 센터 {g.centers}곳 · 상품 {g.products}종 · 총수량 {g.totalQty.toLocaleString()}개
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => download(g)} disabled={!!busyDate} className="primary-btn" style={{ ...primaryBtnStyle, background: T.teal, opacity: busyDate ? 0.6 : 1 }}>
-                      <Download size={15} /> {busyDate === g.date ? "만드는 중..." : "이마트24 피킹검수"}
-                    </button>
-                    <button
-                      onClick={async () => {
-                        if (!window.confirm(`${fmtDate(g.date)} 이마트 발주 ${g.orderCount}건을 삭제할까요? GS 발주는 그대로예요.`)) return;
-                        setDeleting(g.date);
-                        await onDeleteDate(g.date);
-                        setDeleting(null);
-                      }}
-                      disabled={deleting === g.date}
-                      className="ghost-btn"
-                      style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}
-                    >
-                      <Trash2 size={14} /> {deleting === g.date ? "삭제 중..." : "이 날짜 삭제"}
-                    </button>
-                  </div>
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>피킹 날짜</span>
+            <select
+              style={{ ...inputStyle, width: 200 }}
+              value={activeDate || ""}
+              onChange={(e) => {
+                setSelectedDate(e.target.value);
+                setSelectedName(null);
+                setReport(null);
+              }}
+            >
+              {dateOptions.map((d) => (
+                <option key={d} value={d}>
+                  {fmtDate(d)}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 발주만 집계합니다 (다른 날짜와 섞이지 않음)</span>
+          </div>
+
+          {report && (report.added.length > 0 || report.unknown.length > 0 || report.missingRegions.length > 0) && (
+            <div>
+              {report.added.length > 0 && (
+                <div style={warnBox}>
+                  <b>템플릿에 없던 상품이라 같은 공급사 첫 시트를 복사해서 새로 만들었어요.</b> 입수는 발주파일 BOX 입수량으로 넣었으니 확인해 주세요.
+                  <br />
+                  {report.added.map((a) => `${a.name} (${a.pivot})`).join(", ")}
                 </div>
+              )}
+              {report.unknown.length > 0 && (
+                <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
+                  <b>어느 공급사 피킹지에 넣어야 할지 몰라서 빠진 상품이 있어요.</b> (템플릿에 그 거래처 상품이 하나도 없음)
+                  <br />
+                  {report.unknown.map((u) => `${u.name} [${u.vendor}] ${Object.values(u.qty).reduce((a, b) => a + b, 0)}개`).join(", ")}
+                </div>
+              )}
+              {report.missingRegions.length > 0 && (
+                <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
+                  <b>피킹지 시트에 없는 센터로 발주가 들어왔어요 (그 줄은 시트에 안 보여요).</b>
+                  <br />
+                  {report.missingRegions.map((m) => `${m.sheet} - ${m.region} ${m.qty}개`).join(", ")}
+                </div>
+              )}
+            </div>
+          )}
 
-                {open && (
-                  <table style={{ marginTop: 12 }}>
-                    <thead>
-                      <tr>
-                        <th>거래처</th>
-                        <th>상품명</th>
-                        <th style={{ textAlign: "right" }}>수량</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {g.vendors.map((v) =>
-                        v.prods.map(([name, q], i) => (
-                          <tr key={v.vendor + name}>
-                            <td style={{ color: T.inkSoft, fontSize: 12.5 }}>{i === 0 ? v.vendor : ""}</td>
-                            <td>{name}</td>
-                            <td style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>{q.toLocaleString()}</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                )}
-
-                {report && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12.5 }}>
-                      피킹지에 들어간 상품 <b>{report.matched.length}종</b>
-                      {report.added.length > 0 ? ` · 새 시트 추가 ${report.added.length}종` : ""}
-                    </div>
-                    {report.added.length > 0 && (
-                      <div style={warnBox}>
-                        <b>템플릿에 없던 상품이라 같은 공급사 첫 시트를 복사해서 새로 만들었어요.</b> 입수는 발주파일 BOX 입수량으로 넣었으니 확인해 주세요.
-                        <br />
-                        {report.added.map((a) => `${a.name} (${a.pivot})`).join(", ")}
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div style={{ flex: "1 1 260px" }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <button
+                  onClick={() => exportAll(selected && selected.name)}
+                  disabled={exporting || products.length === 0}
+                  className="primary-btn"
+                  style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: exporting || products.length === 0 ? 0.7 : 1 }}
+                >
+                  <Download size={15} /> {exporting ? "생성 중..." : `이마트24 피킹검수 엑셀 (${tplInfo ? tplInfo.sheets.length : "…"}개 시트)`}
+                </button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                <select style={{ ...inputStyle, width: "100%" }} value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)}>
+                  <option value="all">전체 공급사 ({products.length})</option>
+                  {vendorOptions.map((v) => (
+                    <option key={v} value={v}>
+                      {v} ({products.filter((p) => p.vendor === v).length})
+                    </option>
+                  ))}
+                </select>
+                <div style={{ position: "relative" }}>
+                  <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
+                  <input style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} placeholder="상품명 또는 상품코드 검색" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                </div>
+              </div>
+              <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
+                {filtered.length === 0 ? (
+                  <EmptyRow text="조건에 맞는 상품이 없습니다." />
+                ) : (
+                  filtered.map((p) => (
+                    <button
+                      key={p.name}
+                      onClick={() => setSelectedName(p.name)}
+                      className="rowhover"
+                      style={{
+                        display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none",
+                        background: selected && selected.name === p.name ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FDF1DC", color: T.amberDeep }}>이마트</span>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                        {tplInfo && !p.tpl && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FCE8E8", color: T.danger }}>새 상품</span>}
                       </div>
-                    )}
-                    {report.unknown.length > 0 && (
-                      <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
-                        <b>어느 공급사 피킹지에 넣어야 할지 몰라서 빠진 상품이 있어요.</b> (템플릿에 그 거래처 상품이 하나도 없음)
-                        <br />
-                        {report.unknown.map((u) => `${u.name} [${u.vendor}] ${Object.values(u.qty).reduce((a, b) => a + b, 0)}개`).join(", ")}
+                      <div style={{ fontSize: 11, color: T.inkSoft, ...mono, marginTop: 2 }}>
+                        {p.vendor} · {p.code} · {Object.keys(p.qty).length}개 센터 · 총 {p.total}개
                       </div>
-                    )}
-                    {report.missingRegions.length > 0 && (
-                      <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
-                        <b>피킹지 시트에 없는 센터로 발주가 들어왔어요 (그 줄은 시트에 안 보여요).</b>
-                        <br />
-                        {report.missingRegions.map((m) => `${m.sheet} - ${m.region} ${m.qty}개`).join(", ")}
-                      </div>
-                    )}
-                  </div>
+                    </button>
+                  ))
                 )}
               </div>
-            );
-          })}
+            </div>
+
+            <div style={{ flex: "2 1 460px" }}>
+              {selected && preview && (
+                <div style={cardStyle}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
+                    <button onClick={() => exportAll(selected.name)} disabled={exporting} className="ghost-btn" style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }} title="전체 피킹검수 파일을 받고, 이 상품 시트가 열리게 해요">
+                      <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
+                    </button>
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
+                  <div style={{ fontSize: 11.5, color: T.inkSoft, ...mono, marginBottom: 10 }}>
+                    {selected.tpl ? `${selected.tpl.sheetTitle || selected.vendor} · 시트 "${selected.tpl.sheet}"` : `${selected.vendor} · 템플릿에 없는 상품`} · 입수 {selected.pack || "-"}
+                  </div>
+                  {!selected.tpl && tplInfo && (
+                    <div style={warnBox}>피킹지 템플릿에 없는 상품이에요. 엑셀을 만들 때 같은 공급사 첫 시트를 복사해서 새 시트로 넣어요 (공급사 상품이 템플릿에 하나도 없으면 빠져요).</div>
+                  )}
+                  {preview.missingCount > 0 && (
+                    <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>이 상품 피킹지 시트에 없는 센터로 발주가 있어요 (아래 빨간 줄). 엑셀에는 안 나와요.</div>
+                  )}
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>행 레이블 (입고센터)</th>
+                          <th>센터명</th>
+                          <th>총수량</th>
+                          <th>박스</th>
+                          <th>낱개</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.rows.map((r, i) =>
+                          r.subtotal ? (
+                            <tr key={"s" + i} style={{ background: T.bg }}>
+                              <td style={{ fontWeight: 700 }}>{r.label}</td>
+                              <td></td>
+                              <td style={{ ...mono, fontWeight: 700 }}>{r.qty}</td>
+                              <td style={{ ...mono, fontWeight: 700 }}>{r.box}</td>
+                              <td style={{ ...mono, fontWeight: 700 }}>{r.rem}</td>
+                            </tr>
+                          ) : (
+                            <tr key={r.label} style={r.missing ? { background: "#FCE8E8" } : undefined}>
+                              <td style={{ fontWeight: 600 }}>{r.label}</td>
+                              <td style={{ ...mono, color: T.inkSoft }}>{r.short || "-"}</td>
+                              <td style={{ ...mono, fontWeight: 700 }}>{r.qty}</td>
+                              <td style={mono}>{r.box}</td>
+                              <td style={mono}>{r.rem}</td>
+                            </tr>
+                          )
+                        )}
+                        <tr style={{ background: T.steel }}>
+                          <td style={{ fontWeight: 700, color: "#fff" }}>총합계</td>
+                          <td></td>
+                          <td style={{ ...mono, fontWeight: 700, color: "#fff" }}>{preview.total.qty}</td>
+                          <td style={{ ...mono, fontWeight: 700, color: "#fff" }}>{preview.total.box}</td>
+                          <td style={{ ...mono, fontWeight: 700, color: "#fff" }}>{preview.total.rem}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>* 센터 순서·입수·센터명은 실물 이마트24 피킹검수 파일의 이 상품 시트를 그대로 따릅니다.</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- 피킹지시서 출력: 브랜드 탭 (GS / GS슈퍼 / 이마트 / BGF / 세븐일레븐) ---------- */
+const PICKING_CHANNELS = [
+  { key: "gs", label: "GS" },
+  { key: "gssuper", label: "GS슈퍼" },
+  { key: "emart", label: "이마트" },
+  { key: "bgf", label: "BGF" },
+  { key: "seven", label: "세븐일레븐" },
+];
+function PickingCenter({ channel, onChannel, gsView, emartOrders }) {
+  return (
+    <div>
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 16, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content" }}>
+        {PICKING_CHANNELS.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => onChannel(c.key)}
+            style={{
+              padding: "8px 18px", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
+              fontWeight: channel === c.key ? 700 : 500, background: channel === c.key ? T.steel : "transparent", color: channel === c.key ? "#fff" : T.inkSoft,
+            }}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      {channel === "gs" && gsView}
+      {channel === "emart" && <EmartPickingView emartOrders={emartOrders} />}
+      {(channel === "gssuper" || channel === "bgf" || channel === "seven") && (
+        <div>
+          <PageHeader title="피킹지시서 출력" sub={`${PICKING_CHANNELS.find((c) => c.key === channel).label} 피킹지시서`} />
+          <div style={cardStyle}>
+            <EmptyRow text={`${PICKING_CHANNELS.find((c) => c.key === channel).label}는 아직 준비 중이에요. 발주파일과 실물 피킹지를 보내주시면 같은 방식으로 만들어 드릴게요.`} />
+          </div>
         </div>
       )}
     </div>
