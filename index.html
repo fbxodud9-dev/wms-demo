@@ -17,6 +17,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -2465,7 +2466,7 @@ function WMSApp() {
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
-        {tab === "orderinfo-emart" && <ComingSoon title="주문정보 (E.MART)" />}
+        {tab === "orderinfo-emart" && <EmartOrderPage />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickingconfirm" && (
@@ -4580,6 +4581,941 @@ function GsDailyPage({ orders, authToken, productInfo }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ================= 이마트24 피킹검수 (실물 엑셀 템플릿을 그대로 채우는 방식) ================= */
+// 실물 "이마트24-피킹검수" 파일을 통째로 템플릿(emart24_picking_template.xlsx)으로 두고,
+// 공급사별 피벗 시트에 그날 발주 수량만 다시 써 넣는다. 상품 시트(지역 순서·입수·서식·수식·그림·인쇄설정)는 원본 그대로라
+// 공급사마다 다른 지역 구성도 100% 실물과 같다. 수식 결과값도 미리 계산해서 넣고, 엑셀이 열 때 한 번 더 재계산하게 한다.
+// 발주파일(출고관리-발주조회_납품등록)은 상품코드가 아니라 "상품명"으로 맞춘다. 수량은 [발주] 낱개수량.
+const EMART_TEMPLATE_URL = "emart24_picking_template.xlsx";
+const EMART_STD_REGIONS = ["원주2(저온)", "김해2(저온)", "양산2(저온)", "세종2(저온)", "장성2(저온)", "김천2(저온)", "경산2(저온)", "화성2(저온)", "청라2(저온)", "평택2(저온)", "포천2(저온)", "양지2(저온)"];
+const XL_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const emartNorm = (s) => String(s == null ? "" : s).replace(/[\s/]/g, "").toLowerCase();
+
+// ---------- 발주파일 읽기 ----------
+function parseEmartOrderRows(rows) {
+  // rows: 2차원 배열(SheetJS sheet_to_json header:1). 1행 머리글 + 2행 하위 머리글(박스수량/낱개수량)
+  let h = rows.findIndex((r) => r && r.some((v) => String(v).trim() === "입고센터") && r.some((v) => String(v).trim() === "상품명"));
+  if (h === -1) throw new Error("이마트 발주파일 형식이 아니에요 (입고센터·상품명 머리글을 찾지 못했어요).");
+  const top = rows[h].map((v) => String(v == null ? "" : v).trim());
+  const sub = (rows[h + 1] || []).map((v) => String(v == null ? "" : v).trim());
+  const col = (name) => top.findIndex((v) => v === name);
+  const orderCol = col("발주");
+  let qtyCol = -1;
+  for (let j = Math.max(orderCol, 0); j < sub.length; j++) if (sub[j] === "낱개수량") { qtyCol = j; break; }
+  const c = { vendor: col("거래처"), center: col("입고센터"), date: col("발주일자"), due: col("납품예정일"), name: col("상품명"), code: col("상품코드"), box: col("BOX 입수량") };
+  if (qtyCol === -1 || c.center === -1 || c.name === -1) throw new Error("발주 낱개수량 칸을 찾지 못했어요.");
+  const out = [];
+  for (let i = h + 2; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const center = String(r[c.center] == null ? "" : r[c.center]).trim();
+    const name = String(r[c.name] == null ? "" : r[c.name]).trim();
+    const qty = Number(r[qtyCol]) || 0;
+    if (!center || !name || qty <= 0) continue;
+    const d = String(r[c.date] == null ? "" : r[c.date]).replace(/\D/g, "");
+    out.push({
+      vendor: c.vendor !== -1 ? String(r[c.vendor] || "").trim() : "",
+      center,
+      name,
+      code: c.code !== -1 ? String(r[c.code] || "").trim() : "",
+      box: c.box !== -1 ? Number(r[c.box]) || 0 : 0,
+      qty,
+      date: d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : "",
+      due: (() => {
+        const x = c.due !== -1 ? String(r[c.due] == null ? "" : r[c.due]).replace(/\D/g, "") : "";
+        return x.length === 8 ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6, 8)}` : "";
+      })(),
+    });
+  }
+  return out;
+}
+
+// ---------- 셀 주소 도우미 ----------
+const colToNum = (s) => s.split("").reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0);
+const numToCol = (n) => {
+  let s = "";
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+};
+const splitRef = (ref) => {
+  const m = /^([A-Z]+)(\d+)$/.exec(ref);
+  return m ? { c: colToNum(m[1]), r: Number(m[2]) } : null;
+};
+// 공유 수식(shared formula)을 다른 셀로 옮길 때 상대 참조만 이동
+function shiftFormula(f, dr, dc) {
+  return f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])/g, (all, sheet, cAbs, col, rAbs, row, off, str) => {
+    // 문자열 리터럴 안은 건드리지 않기 위해 앞의 따옴표 개수 확인
+    const before = str.slice(0, off);
+    if ((before.match(/"/g) || []).length % 2 === 1) return all;
+    const nc = cAbs ? col : numToCol(colToNum(col) + dc);
+    const nr = rAbs ? row : String(Number(row) + dr);
+    return `${sheet || ""}${cAbs}${nc}${rAbs}${nr}`;
+  });
+}
+
+// ---------- 아주 작은 수식 계산기 (이 파일에 쓰이는 함수만) ----------
+const XLERR = (e) => ({ err: e });
+const isErr = (v) => v && typeof v === "object" && v.err;
+function evalFormula(formula, ctx) {
+  const s = formula;
+  let i = 0;
+  const peek = () => s[i];
+  const ws = () => {
+    while (s[i] === " ") i++;
+  };
+  function parseExpr() {
+    let v = parseTerm();
+    ws();
+    while (s[i] === "+" || s[i] === "-" || s[i] === "&") {
+      const op = s[i++];
+      const b = parseTerm();
+      if (op === "&") v = `${scalar(v) ?? ""}${scalar(b) ?? ""}`;
+      else v = arith(v, b, op);
+      ws();
+    }
+    return v;
+  }
+  function parseTerm() {
+    let v = parseFactor();
+    ws();
+    while (s[i] === "*" || s[i] === "/") {
+      const op = s[i++];
+      v = arith(v, parseFactor(), op);
+      ws();
+    }
+    return v;
+  }
+  function scalar(v) {
+    if (v && v.range) return ctx.cell(v.sheet, v.c1, v.r1);
+    return v;
+  }
+  function num(v) {
+    v = scalar(v);
+    if (isErr(v)) return v;
+    if (v === "" || v == null) return 0;
+    if (typeof v === "number") return v;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : XLERR("#VALUE!");
+  }
+  function arith(a, b, op) {
+    const x = num(a), y = num(b);
+    if (isErr(x)) return x;
+    if (isErr(y)) return y;
+    if (op === "+") return x + y;
+    if (op === "-") return x - y;
+    if (op === "*") return x * y;
+    if (y === 0) return XLERR("#DIV/0!");
+    return x / y;
+  }
+  function parseFactor() {
+    ws();
+    if (s[i] === "-") {
+      i++;
+      const v = num(parseFactor());
+      return isErr(v) ? v : -v;
+    }
+    if (s[i] === "(") {
+      i++;
+      const v = parseExpr();
+      ws();
+      i++; // )
+      return v;
+    }
+    if (s[i] === '"') {
+      let j = i + 1, out = "";
+      while (j < s.length) {
+        if (s[j] === '"' && s[j + 1] === '"') { out += '"'; j += 2; continue; }
+        if (s[j] === '"') break;
+        out += s[j++];
+      }
+      i = j + 1;
+      return out;
+    }
+    if (/[0-9.]/.test(s[i])) {
+      const m = /^[0-9.]+/.exec(s.slice(i));
+      i += m[0].length;
+      return Number(m[0]);
+    }
+    if (s.startsWith("#REF!", i)) {
+      i += 5;
+      return XLERR("#REF!");
+    }
+    // 시트 접두어
+    let sheet = null;
+    if (s[i] === "'") {
+      let j = i + 1, nm = "";
+      while (j < s.length) {
+        if (s[j] === "'" && s[j + 1] === "'") { nm += "'"; j += 2; continue; }
+        if (s[j] === "'") break;
+        nm += s[j++];
+      }
+      i = j + 1; // '
+      if (s[i] === "!") i++;
+      sheet = nm;
+    } else {
+      const m = /^(\[\d+\])?([^\s!(),:'"=+\-*/&<>]+)!/.exec(s.slice(i));
+      if (m) {
+        sheet = (m[1] ? "[EXT]" : "") + m[2];
+        i += m[0].length;
+      }
+    }
+    if (sheet && s.startsWith("#REF!", i)) {
+      i += 5;
+      return XLERR("#REF!");
+    }
+    // 범위 / 셀 / 열범위 / 함수
+    const rm = /^\$?([A-Z]{1,3})\$?(\d+)?(?::\$?([A-Z]{1,3})\$?(\d+)?)?/.exec(s.slice(i));
+    const fm = /^([A-Z][A-Z0-9.]*)\(/.exec(s.slice(i));
+    if (fm && !sheet) {
+      i += fm[0].length;
+      const args = [];
+      ws();
+      if (s[i] !== ")") {
+        for (;;) {
+          args.push(parseExpr());
+          ws();
+          if (s[i] === ",") { i++; continue; }
+          break;
+        }
+      }
+      i++; // )
+      return callFn(fm[1], args);
+    }
+    if (rm && rm[0]) {
+      i += rm[0].length;
+      const sh = sheet || ctx.sheet;
+      const c1 = colToNum(rm[1]);
+      const r1 = rm[2] ? Number(rm[2]) : 1;
+      const c2 = rm[3] ? colToNum(rm[3]) : c1;
+      const r2 = rm[4] ? Number(rm[4]) : rm[2] ? r1 : 100000;
+      if (!rm[3] && rm[2]) return { range: true, sheet: sh, c1, r1, c2: c1, r2: r1 };
+      return { range: true, sheet: sh, c1, r1: rm[2] ? r1 : 1, c2, r2 };
+    }
+    // 알 수 없는 토큰 (TRUE/FALSE 등)
+    const wm = /^[A-Z]+/.exec(s.slice(i));
+    if (wm) {
+      i += wm[0].length;
+      if (wm[0] === "TRUE") return true;
+      if (wm[0] === "FALSE") return false;
+    }
+    return XLERR("#NAME?");
+  }
+  function callFn(name, args) {
+    switch (name) {
+      case "IFERROR": {
+        const v = scalar(args[0]);
+        return isErr(v) ? scalar(args[1]) : v;
+      }
+      case "TODAY":
+        return ctx.today;
+      case "ROUNDDOWN": {
+        const v = num(args[0]);
+        if (isErr(v)) return v;
+        const d = Number(num(args[1])) || 0;
+        const p = Math.pow(10, d);
+        return Math.trunc(v * p) / p;
+      }
+      case "SUM": {
+        let t = 0;
+        for (const a of args) {
+          if (a && a.range) {
+            if (a.sheet.startsWith("[EXT]")) return XLERR("#REF!");
+            for (let r = a.r1; r <= Math.min(a.r2, ctx.maxRow(a.sheet)); r++)
+              for (let c = a.c1; c <= a.c2; c++) {
+                const v = ctx.cell(a.sheet, c, r);
+                if (isErr(v)) return v;
+                if (typeof v === "number") t += v;
+              }
+          } else {
+            const v = num(a);
+            if (isErr(v)) return v;
+            t += v;
+          }
+        }
+        return t;
+      }
+      case "VLOOKUP": {
+        const key = scalar(args[0]);
+        const rg = args[1];
+        const k = Number(num(args[2]));
+        if (isErr(key)) return key;
+        if (!rg || !rg.range || rg.sheet.startsWith("[EXT]") || !ctx.hasSheet(rg.sheet)) return XLERR("#REF!");
+        if (!(k >= 1) || rg.c1 + k - 1 > rg.c2) return XLERR("#REF!");
+        const last = Math.min(rg.r2, ctx.maxRow(rg.sheet));
+        for (let r = rg.r1; r <= last; r++) {
+          const v = ctx.cell(rg.sheet, rg.c1, r);
+          if (v != null && String(v) === String(key)) {
+            const out = ctx.cell(rg.sheet, rg.c1 + k - 1, r);
+            return out == null ? 0 : out;
+          }
+        }
+        return XLERR("#N/A");
+      }
+      default:
+        return XLERR("#NAME?");
+    }
+  }
+  try {
+    const v = parseExpr();
+    return scalar(v);
+  } catch (e) {
+    return XLERR("#VALUE!");
+  }
+}
+
+// ---------- 템플릿 열기 ----------
+async function loadEmartTemplate(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const parser = new DOMParser();
+  const readXml = async (p) => parser.parseFromString(await zip.file(p).async("string"), "application/xml");
+  const wbXml = await readXml("xl/workbook.xml");
+  const relsXml = await readXml("xl/_rels/workbook.xml.rels");
+  const relMap = {};
+  Array.from(relsXml.getElementsByTagName("Relationship")).forEach((r) => (relMap[r.getAttribute("Id")] = r.getAttribute("Target")));
+  const sst = [];
+  if (zip.file("xl/sharedStrings.xml")) {
+    const sx = await readXml("xl/sharedStrings.xml");
+    Array.from(sx.getElementsByTagName("si")).forEach((si) => sst.push(Array.from(si.getElementsByTagName("t")).map((t) => t.textContent).join("")));
+  }
+  const sheets = [];
+  for (const el of Array.from(wbXml.getElementsByTagName("sheet"))) {
+    const rid = el.getAttribute("r:id") || el.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+    const target = relMap[rid];
+    const path = "xl/" + target.replace(/^\/?xl\//, "");
+    const doc = await readXml(path);
+    sheets.push({ name: el.getAttribute("name"), path, doc, el });
+  }
+  return { zip, parser, wbXml, relsXml, sst, sheets };
+}
+
+// 시트의 셀 목록 읽기: ref -> { el, v, f(펼친 수식) }
+function readSheetCells(sheet, sst) {
+  const cells = new Map();
+  const shared = {};
+  let maxRow = 0;
+  Array.from(sheet.doc.getElementsByTagName("c")).forEach((c) => {
+    const ref = c.getAttribute("r");
+    const t = c.getAttribute("t");
+    const fEl = c.getElementsByTagName("f")[0];
+    const vEl = c.getElementsByTagName("v")[0];
+    let v = null;
+    if (t === "s" && vEl) v = sst[Number(vEl.textContent)] ?? "";
+    else if (t === "inlineStr") v = Array.from(c.getElementsByTagName("t")).map((x) => x.textContent).join("");
+    else if (t === "str") v = vEl ? vEl.textContent : "";
+    else if (t === "e") v = XLERR(vEl ? vEl.textContent : "#N/A");
+    else if (t === "b") v = vEl ? vEl.textContent === "1" : false;
+    else if (vEl) v = Number(vEl.textContent);
+    let f = null;
+    if (fEl) {
+      if (fEl.getAttribute("t") === "shared") {
+        const si = fEl.getAttribute("si");
+        if (fEl.textContent) {
+          shared[si] = { f: fEl.textContent, ref };
+          f = fEl.textContent;
+        } else if (shared[si]) {
+          const a = splitRef(shared[si].ref), b = splitRef(ref);
+          f = shiftFormula(shared[si].f, b.r - a.r, b.c - a.c);
+        }
+      } else f = fEl.textContent;
+    }
+    const p = splitRef(ref);
+    if (p && p.r > maxRow) maxRow = p.r;
+    cells.set(ref, { el: c, v, f });
+  });
+  sheet.cells = cells;
+  sheet.maxRow = maxRow;
+}
+
+// 상품 시트 정보: 어느 피벗의 몇 번째 열을 보는지, 상품명, 지역 목록
+function analyzeEmartTemplate(tpl) {
+  tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
+  const products = [];
+  tpl.sheets.forEach((s) => {
+    // 수량 칸(VLOOKUP)이 있는 첫 셀
+    let link = null;
+    for (const [ref, c] of s.cells) {
+      if (!c.f) continue;
+      const m = /VLOOKUP\(\$?A\$?\d+,\s*('(?:[^']|'')*'|[^!,]+)!\$?A[^,]*,(\d+),/.exec(c.f);
+      if (m) {
+        const pivot = m[1].replace(/^'|'$/g, "").replace(/''/g, "'");
+        if (!byName.has(pivot)) continue;
+        link = { pivot, k: Number(m[2]), col: splitRef(ref).c };
+        break;
+      }
+    }
+    if (!link) return;
+    // 상품명 칸: 수량 열 머리글 (3행 또는 2행)
+    let title = "";
+    for (const r of [3, 2]) {
+      const c = s.cells.get(numToCol(link.col) + r);
+      if (c && typeof c.v === "string" && c.v.trim() && c.v !== "입수") { title = c.v; break; }
+    }
+    const regions = [];
+    for (let r = 1; r <= s.maxRow; r++) {
+      const c = s.cells.get("A" + r);
+      if (c && typeof c.v === "string" && /\(저온\)|\(상온\)|\(냉동\)/.test(c.v)) regions.push(c.v);
+    }
+    products.push({ sheet: s.name, pivot: link.pivot, k: link.k, col: link.col, title, keys: [emartNorm(title), emartNorm(s.name)], regions });
+  });
+  // 피벗 머리글(2행)도 이름 후보로
+  products.forEach((p) => {
+    const pv = byName.get(p.pivot);
+    const h = pv.cells.get(numToCol(p.k) + "2");
+    if (h && typeof h.v === "string" && h.v.trim()) p.keys.push(emartNorm(h.v));
+  });
+  tpl.products = products;
+  return tpl;
+}
+
+function matchEmartProduct(tpl, name) {
+  const n = emartNorm(name);
+  let hit = tpl.products.find((p) => p.keys.includes(n));
+  if (hit) return hit;
+  // 시트 이름은 31자 제한/특수문자 때문에 잘려 있을 수 있어 앞부분 일치도 허용 (8자 이상)
+  hit = tpl.products.find((p) => p.keys.some((k) => k.length >= 8 && (n.startsWith(k) || k.startsWith(n))));
+  return hit || null;
+}
+
+// ---------- 메모리 안의 셀 쓰기 ----------
+function setCellXml(sheet, ref, value, opts = {}) {
+  const doc = sheet.doc;
+  const sheetData = doc.getElementsByTagName("sheetData")[0];
+  const p = splitRef(ref);
+  let row = Array.from(sheetData.getElementsByTagName("row")).find((r) => Number(r.getAttribute("r")) === p.r);
+  if (!row) {
+    row = doc.createElementNS(XL_NS, "row");
+    row.setAttribute("r", String(p.r));
+    const after = Array.from(sheetData.getElementsByTagName("row")).find((r) => Number(r.getAttribute("r")) > p.r);
+    sheetData.insertBefore(row, after || null);
+  }
+  let c = Array.from(row.getElementsByTagName("c")).find((x) => x.getAttribute("r") === ref);
+  if (!c) {
+    c = doc.createElementNS(XL_NS, "c");
+    c.setAttribute("r", ref);
+    if (opts.s != null) c.setAttribute("s", opts.s);
+    const after = Array.from(row.getElementsByTagName("c")).find((x) => splitRef(x.getAttribute("r")).c > p.c);
+    row.insertBefore(c, after || null);
+  }
+  // 값만 바꾸고 서식(s)은 그대로
+  const keepF = opts.keepFormula ? c.getElementsByTagName("f")[0] : null;
+  while (c.firstChild) c.removeChild(c.firstChild);
+  c.removeAttribute("t");
+  if (keepF) c.appendChild(keepF);
+  if (value == null || value === "") {
+    if (keepF && value === "") {
+      c.setAttribute("t", "str");
+      c.appendChild(doc.createElementNS(XL_NS, "v"));
+    }
+  } else if (typeof value === "number") {
+    const v = doc.createElementNS(XL_NS, "v");
+    v.textContent = String(value);
+    c.appendChild(v);
+  } else if (isErr(value)) {
+    c.setAttribute("t", "e");
+    const v = doc.createElementNS(XL_NS, "v");
+    v.textContent = value.err;
+    c.appendChild(v);
+  } else if (keepF) {
+    c.setAttribute("t", "str");
+    const v = doc.createElementNS(XL_NS, "v");
+    v.textContent = String(value);
+    c.appendChild(v);
+  } else {
+    c.setAttribute("t", "inlineStr");
+    const is = doc.createElementNS(XL_NS, "is");
+    const t = doc.createElementNS(XL_NS, "t");
+    t.textContent = String(value);
+    is.appendChild(t);
+    c.appendChild(is);
+  }
+  return c;
+}
+
+// 피벗 시트 값 영역을 비우고 새로 쓴다 (서식이 있던 칸은 서식 유지)
+function rewritePivot(pv, date, columns, regions) {
+  const sheetData = pv.doc.getElementsByTagName("sheetData")[0];
+  // 기존 값 지우기 (셀 서식은 남기고 값만)
+  Array.from(sheetData.getElementsByTagName("c")).forEach((c) => {
+    while (c.firstChild) c.removeChild(c.firstChild);
+    c.removeAttribute("t");
+  });
+  const [, m, d] = date.split("-").map(Number);
+  setCellXml(pv, "A1", `${m}/${d}`);
+  setCellXml(pv, "B1", "열 레이블");
+  setCellXml(pv, "A2", "행 레이블");
+  const maxK = Math.max(1, ...columns.map((x) => x.k));
+  columns.forEach((col) => setCellXml(pv, numToCol(col.k) + "2", col.header));
+  const totalCol = numToCol(maxK + 1);
+  setCellXml(pv, totalCol + "2", "총합계");
+  const colTotals = {};
+  regions.forEach((reg, i) => {
+    const r = 3 + i;
+    setCellXml(pv, "A" + r, reg);
+    let rowT = 0;
+    columns.forEach((col) => {
+      const q = col.qty[reg] || 0;
+      if (q > 0) {
+        setCellXml(pv, numToCol(col.k) + r, q);
+        rowT += q;
+        colTotals[col.k] = (colTotals[col.k] || 0) + q;
+      }
+    });
+    setCellXml(pv, totalCol + r, rowT);
+  });
+  const tr = 3 + regions.length;
+  setCellXml(pv, "A" + tr, "총합계");
+  let g = 0;
+  columns.forEach((col) => {
+    if (colTotals[col.k]) {
+      setCellXml(pv, numToCol(col.k) + tr, colTotals[col.k]);
+      g += colTotals[col.k];
+    }
+  });
+  setCellXml(pv, totalCol + tr, g);
+}
+
+// ---------- 새 상품: 같은 공급사의 첫 상품 시트를 복제 ----------
+async function cloneEmartSheet(tpl, srcName, newName, mutate) {
+  const src = tpl.sheets.find((s) => s.name === srcName);
+  const ser = new XMLSerializer();
+  const doc = tpl.parser.parseFromString(ser.serializeToString(src.doc), "application/xml");
+  // 복제본이 원본과 같은 고유번호·선택 탭 상태를 갖지 않도록
+  doc.documentElement.removeAttribute("xr:uid");
+  Array.from(doc.getElementsByTagName("sheetView")).forEach((v) => v.removeAttribute("tabSelected"));
+  const nums = Object.keys(tpl.zip.files).map((f) => /^xl\/worksheets\/sheet(\d+)\.xml$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
+  const n = Math.max(...nums) + 1;
+  const path = `xl/worksheets/sheet${n}.xml`;
+  // 시트 rels(그림·프린터 설정)도 복제
+  const srcRels = src.path.replace("worksheets/", "worksheets/_rels/") + ".rels";
+  if (tpl.zip.file(srcRels)) {
+    let rels = await tpl.zip.file(srcRels).async("string");
+    const dm = /Target="\.\.\/drawings\/(drawing\d+)\.xml"/.exec(rels);
+    if (dm) {
+      const dn = Math.max(...Object.keys(tpl.zip.files).map((f) => /drawings\/drawing(\d+)\.xml$/.exec(f)).filter(Boolean).map((m) => Number(m[1]))) + 1;
+      tpl.zip.file(`xl/drawings/drawing${dn}.xml`, await tpl.zip.file(`xl/drawings/${dm[1]}.xml`).async("string"));
+      const drel = `xl/drawings/_rels/${dm[1]}.xml.rels`;
+      if (tpl.zip.file(drel)) tpl.zip.file(`xl/drawings/_rels/drawing${dn}.xml.rels`, await tpl.zip.file(drel).async("string"));
+      rels = rels.replace(`../drawings/${dm[1]}.xml`, `../drawings/drawing${dn}.xml`);
+      tpl.newParts.push({ part: `/xl/drawings/drawing${dn}.xml`, type: "application/vnd.openxmlformats-officedocument.drawing+xml" });
+    }
+    const pm = /Target="\.\.\/printerSettings\/(printerSettings\d+)\.bin"/.exec(rels);
+    if (pm && tpl.zip.file(`xl/printerSettings/${pm[1]}.bin`)) {
+      const pn = Math.max(...Object.keys(tpl.zip.files).map((f) => /printerSettings(\d+)\.bin$/.exec(f)).filter(Boolean).map((m) => Number(m[1]))) + 1;
+      tpl.zip.file(`xl/printerSettings/printerSettings${pn}.bin`, await tpl.zip.file(`xl/printerSettings/${pm[1]}.bin`).async("uint8array"));
+      rels = rels.replace(`../printerSettings/${pm[1]}.bin`, `../printerSettings/printerSettings${pn}.bin`);
+    }
+    tpl.zip.file(`xl/worksheets/_rels/sheet${n}.xml.rels`, rels);
+  }
+  const sheet = { name: newName, path, doc, clone: true };
+  mutate(sheet);
+  // 워크북에 등록 (같은 공급사 마지막 시트 뒤)
+  const rid = "rIdNew" + n;
+  const rel = tpl.relsXml.createElementNS("http://schemas.openxmlformats.org/package/2006/relationships", "Relationship");
+  rel.setAttribute("Id", rid);
+  rel.setAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet");
+  rel.setAttribute("Target", `worksheets/sheet${n}.xml`);
+  tpl.relsXml.documentElement.appendChild(rel);
+  const el = tpl.wbXml.createElementNS(XL_NS, "sheet");
+  el.setAttribute("name", newName);
+  const ids = Array.from(tpl.wbXml.getElementsByTagName("sheet")).map((x) => Number(x.getAttribute("sheetId")));
+  el.setAttribute("sheetId", String(Math.max(...ids) + 1));
+  el.setAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "r:id", rid);
+  const anchor = tpl.lastSheetOfPivot[mutate.pivot] || src.name;
+  const anchorEl = tpl.sheets.find((s) => s.name === anchor).el;
+  anchorEl.parentNode.insertBefore(el, anchorEl.nextSibling);
+  sheet.el = el;
+  const idx = tpl.sheets.findIndex((s) => s.name === anchor);
+  tpl.sheets.splice(idx + 1, 0, sheet);
+  tpl.lastSheetOfPivot[mutate.pivot] = newName;
+  tpl.newParts.push({ part: "/" + path, type: "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" });
+  return sheet;
+}
+
+function safeEmartSheetName(name, used) {
+  let base = String(name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim() || "새 상품";
+  let n = base, i = 2;
+  while (used.has(n.toLowerCase())) n = `${base.slice(0, 28)}(${i++})`;
+  used.add(n.toLowerCase());
+  return n;
+}
+
+// ---------- 메인: 발주 줄들 -> 피킹검수 엑셀 ----------
+async function buildEmartPickingWorkbook(templateBuffer, orderRows, date) {
+  const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer));
+  tpl.newParts = [];
+  tpl.lastSheetOfPivot = {};
+  tpl.products.forEach((p) => (tpl.lastSheetOfPivot[p.pivot] = p.sheet));
+  const report = { matched: [], added: [], unknown: [], missingRegions: [] };
+
+  // 상품별 집계
+  const agg = new Map(); // 상품명 -> { name, vendor, box, qty: {센터: n} }
+  orderRows.forEach((r) => {
+    const a = agg.get(r.name) || { name: r.name, vendor: r.vendor, box: r.box, qty: {} };
+    a.qty[r.center] = (a.qty[r.center] || 0) + r.qty;
+    agg.set(r.name, a);
+  });
+  // 템플릿 상품과 연결. 거래처 -> 피벗 추정용
+  const vendorPivot = {};
+  const links = []; // { prod(템플릿), item }
+  const unmatched = [];
+  agg.forEach((item) => {
+    const p = matchEmartProduct(tpl, item.name);
+    if (p) {
+      links.push({ prod: p, item });
+      if (item.vendor) vendorPivot[item.vendor] = p.pivot;
+    } else unmatched.push(item);
+  });
+  // 새 상품: 같은 거래처 상품이 있는 피벗에 열을 하나 늘리고 시트를 복제
+  const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
+  for (const item of unmatched) {
+    const pivot = vendorPivot[item.vendor];
+    if (!pivot) {
+      report.unknown.push(item);
+      continue;
+    }
+    const sameP = tpl.products.filter((p) => p.pivot === pivot);
+    const k = Math.max(...sameP.map((p) => p.k)) + 1;
+    const srcProd = sameP[0];
+    const newName = safeEmartSheetName(item.name, usedNames);
+    const mutate = (sheet) => {
+      Array.from(sheet.doc.getElementsByTagName("c")).forEach((c) => {
+        const f = c.getElementsByTagName("f")[0];
+        if (f && f.textContent) f.textContent = f.textContent.replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/g, `$1${k}$2`).replace(/!\$?A\$?\d*:\$?[A-Z]{1,3}\$?\d*/g, "!$A:$ZZ");
+      });
+      // 상품명(머리글)과 입수
+      const tmp = { doc: sheet.doc };
+      setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
+      if (item.box > 1) {
+        const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
+        if (b) setCellXml(tmp, "B4", item.box);
+      }
+    };
+    mutate.pivot = pivot;
+    await cloneEmartSheet(tpl, srcProd.sheet, newName, mutate);
+    const np = { sheet: newName, pivot, k, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, isNew: true };
+    tpl.products.push(np);
+    links.push({ prod: np, item });
+    report.added.push({ name: item.name, sheet: newName, pivot });
+  }
+
+  // 피벗 다시 쓰기
+  const byPivot = {};
+  links.forEach(({ prod, item }) => {
+    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: item.name, qty: item.qty });
+    const regSet = new Set(prod.regions);
+    Object.entries(item.qty).forEach(([reg, q]) => {
+      if (!regSet.has(reg)) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
+    });
+    report.matched.push({ name: item.name, sheet: prod.sheet, pivot: prod.pivot, total: Object.values(item.qty).reduce((a, b) => a + b, 0), isNew: !!prod.isNew });
+  });
+  const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
+  pivots.forEach((pn) => {
+    const pv = tpl.sheets.find((s) => s.name === pn);
+    const cols = byPivot[pn] || [];
+    const regs = new Set();
+    tpl.products.filter((p) => p.pivot === pn).forEach((p) => p.regions.forEach((r) => regs.add(r)));
+    cols.forEach((c) => Object.keys(c.qty).forEach((r) => regs.add(r)));
+    const ordered = [...EMART_STD_REGIONS.filter((r) => regs.has(r)), ...[...regs].filter((r) => !EMART_STD_REGIONS.includes(r))];
+    rewritePivot(pv, date, cols, ordered);
+  });
+
+  // 수식 결과값 다시 계산해서 넣기
+  tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
+  const [yy, mm, dd] = date.split("-").map(Number);
+  const todaySerial = Math.round((Date.UTC(yy, mm - 1, dd) - Date.UTC(1899, 11, 30)) / 86400000);
+  const cache = new Map();
+  const ctx = {
+    today: todaySerial,
+    hasSheet: (n) => byName.has(n),
+    maxRow: (n) => (byName.get(n) ? byName.get(n).maxRow : 0),
+    cell(sheetName, c, r) {
+      const s = byName.get(sheetName);
+      if (!s) return XLERR("#REF!");
+      const ref = numToCol(c) + r;
+      const key = sheetName + "!" + ref;
+      if (cache.has(key)) return cache.get(key);
+      const cell = s.cells.get(ref);
+      if (!cell) return null;
+      if (!cell.f) return cell.v;
+      cache.set(key, XLERR("#CIRC"));
+      const v = evalFormula(cell.f, { ...ctx, sheet: sheetName });
+      cache.set(key, v);
+      return v;
+    },
+  };
+  tpl.sheets.forEach((s) => {
+    s.cells.forEach((cell, ref) => {
+      if (!cell.f) return;
+      const p = splitRef(ref);
+      const v = ctx.cell(s.name, p.c, p.r);
+      if (isErr(v) && v.err === "#CIRC") return;
+      writeCachedValue(s.doc, cell.el, v);
+    });
+  });
+
+  // 저장: 바뀐 XML 다시 쓰기 + 엑셀이 열 때 전체 재계산
+  const ser = new XMLSerializer();
+  const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+  const out = (doc) => {
+    const x = ser.serializeToString(doc);
+    return x.startsWith("<?xml") ? x : XML_DECL + x;
+  };
+  tpl.sheets.forEach((s) => tpl.zip.file(s.path, out(s.doc)));
+  const calc = tpl.wbXml.getElementsByTagName("calcPr")[0];
+  if (calc) calc.setAttribute("fullCalcOnLoad", "1");
+  tpl.zip.file("xl/workbook.xml", out(tpl.wbXml));
+  tpl.zip.file("xl/_rels/workbook.xml.rels", out(tpl.relsXml));
+  if (tpl.newParts.length) {
+    let ct = await tpl.zip.file("[Content_Types].xml").async("string");
+    const add = tpl.newParts.map((p) => `<Override PartName="${p.part}" ContentType="${p.type}"/>`).join("");
+    ct = ct.replace("</Types>", add + "</Types>");
+    tpl.zip.file("[Content_Types].xml", ct);
+  }
+  if (tpl.zip.file("xl/calcChain.xml")) tpl.zip.remove("xl/calcChain.xml");
+  const blob = await tpl.zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  return { bytes: blob, report };
+}
+
+function writeCachedValue(doc, c, v) {
+  const vEl = c.getElementsByTagName("v")[0];
+  const setV = (text) => {
+    let el = vEl;
+    if (!el) {
+      el = doc.createElementNS(XL_NS, "v");
+      c.appendChild(el);
+    }
+    el.textContent = text;
+  };
+  if (isErr(v)) {
+    c.setAttribute("t", "e");
+    setV(v.err);
+  } else if (typeof v === "number") {
+    c.removeAttribute("t");
+    setV(String(Math.round(v * 1e9) / 1e9));
+  } else if (typeof v === "boolean") {
+    c.setAttribute("t", "b");
+    setV(v ? "1" : "0");
+  } else if (v == null) {
+    c.removeAttribute("t");
+    setV("0");
+  } else {
+    c.setAttribute("t", "str");
+    setV(String(v));
+  }
+}
+
+
+function EmartOrderPage() {
+  const [rows, setRows] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState(null);
+  const [customTpl, setCustomTpl] = useState(null); // { name, buffer } - 이번에만 다른 템플릿 쓰기
+  const fileRef = useRef(null);
+  const tplRef = useRef(null);
+
+  async function readFiles(list) {
+    setErr("");
+    setReport(null);
+    const all = [];
+    const names = [];
+    try {
+      for (const f of Array.from(list)) {
+        const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+        const sh = wb.Sheets[wb.SheetNames[0]];
+        const r = XLSX.utils.sheet_to_json(sh, { header: 1, defval: "", raw: true });
+        all.push(...parseEmartOrderRows(r));
+        names.push(f.name);
+      }
+      if (all.length === 0) throw new Error("발주 수량이 있는 줄이 없어요.");
+      setRows(all);
+      setFiles(names);
+    } catch (e) {
+      setErr(e.message);
+      setRows([]);
+      setFiles([]);
+    }
+  }
+
+  const dates = Array.from(new Set(rows.map((r) => r.date).filter(Boolean))).sort();
+  const date = dates[dates.length - 1] || todayStr();
+  const dueDates = Array.from(new Set(rows.map((r) => r.due).filter(Boolean)));
+  const centers = Array.from(new Set(rows.map((r) => r.center)));
+  const byVendor = useMemo(() => {
+    const m = new Map();
+    rows.forEach((r) => {
+      const v = m.get(r.vendor) || new Map();
+      v.set(r.name, (v.get(r.name) || 0) + r.qty);
+      m.set(r.vendor, v);
+    });
+    return Array.from(m.entries()).map(([vendor, prods]) => ({ vendor, prods: Array.from(prods.entries()), total: Array.from(prods.values()).reduce((a, b) => a + b, 0) }));
+  }, [rows]);
+  const totalQty = rows.reduce((a, r) => a + r.qty, 0);
+
+  async function download() {
+    setBusy(true);
+    setErr("");
+    try {
+      let buf;
+      if (customTpl) buf = customTpl.buffer.slice(0);
+      else {
+        const res = await fetch(EMART_TEMPLATE_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error("피킹지 템플릿 파일을 불러오지 못했어요 (emart24_picking_template.xlsx).");
+        buf = await res.arrayBuffer();
+      }
+      const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date);
+      setReport(report);
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(`피킹지를 만들지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginTop: 12, lineHeight: 1.6 };
+
+  return (
+    <div>
+      <PageHeader title="주문정보 (E.MART)" sub="이마트24 발주파일(출고관리-발주조회_납품등록)을 올리면 실물 이마트24 피킹검수 엑셀을 그대로 채워서 만들어요. 상품코드가 아니라 상품명으로 맞춰요." />
+
+      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => e.target.files.length && readFiles(e.target.files)} />
+        <button onClick={() => fileRef.current && fileRef.current.click()} className="primary-btn" style={primaryBtnStyle}>
+          <Upload size={15} /> 발주파일 업로드
+        </button>
+        <button onClick={download} disabled={busy || rows.length === 0} className="primary-btn" style={{ ...primaryBtnStyle, background: T.teal, opacity: busy || rows.length === 0 ? 0.5 : 1 }}>
+          <Download size={15} /> {busy ? "만드는 중..." : "이마트24 피킹검수 다운로드"}
+        </button>
+        <span style={{ fontSize: 12.5, color: T.inkSoft }}>여러 파일을 한 번에 골라도 돼요.</span>
+        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" }}>
+          <input
+            ref={tplRef}
+            type="file"
+            accept=".xlsx"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const f = e.target.files[0];
+              if (f) setCustomTpl({ name: f.name, buffer: await f.arrayBuffer() });
+            }}
+          />
+          {customTpl ? (
+            <>
+              <span style={{ fontSize: 12, color: T.amberDeep, fontWeight: 600 }}>템플릿: {customTpl.name}</span>
+              <button onClick={() => setCustomTpl(null)} style={smallBtnStyle}>
+                기본 템플릿으로
+              </button>
+            </>
+          ) : (
+            <button onClick={() => tplRef.current && tplRef.current.click()} style={smallBtnStyle} title="시트를 추가·수정한 피킹지 원본으로 이번에만 만들기">
+              다른 템플릿으로 만들기
+            </button>
+          )}
+        </span>
+      </div>
+
+      {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+
+      {rows.length > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 13 }}>
+            <div>
+              <div style={{ color: T.inkSoft, fontSize: 12 }}>발주일자</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{dates.map(fmtDate).join(", ")}</div>
+            </div>
+            {dueDates.length > 0 && (
+              <div>
+                <div style={{ color: T.inkSoft, fontSize: 12 }}>납품예정일</div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{dueDates.map(fmtDate).join(", ")}</div>
+              </div>
+            )}
+            <div>
+              <div style={{ color: T.inkSoft, fontSize: 12 }}>센터</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{centers.length}곳</div>
+            </div>
+            <div>
+              <div style={{ color: T.inkSoft, fontSize: 12 }}>상품</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{byVendor.reduce((a, v) => a + v.prods.length, 0)}종</div>
+            </div>
+            <div>
+              <div style={{ color: T.inkSoft, fontSize: 12 }}>총수량</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>{totalQty.toLocaleString()}개</div>
+            </div>
+            <div style={{ marginLeft: "auto", fontSize: 12, color: T.inkSoft, alignSelf: "flex-end" }}>{files.join(", ")}</div>
+          </div>
+          {dates.length > 1 && <div style={warnBox}>발주일자가 여러 날짜예요. 피킹지 날짜는 {fmtDate(date)}로 나가고, 수량은 올린 파일 전체를 합쳐요.</div>}
+          <table style={{ marginTop: 14 }}>
+            <thead>
+              <tr>
+                <th>거래처</th>
+                <th>상품명</th>
+                <th style={{ textAlign: "right" }}>수량</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byVendor.map((v) =>
+                v.prods.map(([name, q], i) => (
+                  <tr key={v.vendor + name}>
+                    <td style={{ color: T.inkSoft, fontSize: 12.5 }}>{i === 0 ? v.vendor : ""}</td>
+                    <td>{name}</td>
+                    <td style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>{q.toLocaleString()}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {report && (
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>피킹지 결과</div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>
+            템플릿 시트에 들어간 상품 <b>{report.matched.length}종</b>
+            {report.added.length > 0 ? ` · 새 시트 추가 ${report.added.length}종` : ""}
+          </div>
+          {report.added.length > 0 && (
+            <div style={warnBox}>
+              <b>템플릿에 없던 상품이라 같은 공급사 첫 시트를 복사해서 새로 만들었어요.</b> 입수는 발주파일 BOX 입수량으로 넣었으니 확인해 주세요.
+              <br />
+              {report.added.map((a) => `${a.name} (${a.pivot})`).join(", ")}
+            </div>
+          )}
+          {report.unknown.length > 0 && (
+            <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
+              <b>어느 공급사 피킹지에 넣어야 할지 몰라서 빠진 상품이 있어요.</b> (템플릿에 그 거래처 상품이 하나도 없음)
+              <br />
+              {report.unknown.map((u) => `${u.name} [${u.vendor}] ${Object.values(u.qty).reduce((a, b) => a + b, 0)}개`).join(", ")}
+            </div>
+          )}
+          {report.missingRegions.length > 0 && (
+            <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
+              <b>피킹지 시트에 없는 센터로 발주가 들어왔어요 (그 줄은 시트에 안 보여요).</b>
+              <br />
+              {report.missingRegions.map((m) => `${m.sheet} - ${m.region} ${m.qty}개`).join(", ")}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
