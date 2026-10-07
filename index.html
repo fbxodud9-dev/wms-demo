@@ -7505,7 +7505,10 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   // 전체 지역을 화주사 고정 순서로 한 줄로 나열 (체크포인트 계산이 구역 경계를 넘어 전체를 봄)
   const flat = [];
   zoneList.forEach((zone) => {
-    regionRowsUsed.filter((r) => zoneOf(r) === zone).forEach((r) => flat.push({ ...r, zone }));
+    const rows = regionRowsUsed.filter((r) => zoneOf(r) === zone);
+    // 당착은 1편 순서가 아니라 화주사 당착 피킹지 순서대로
+    if (skipZero) rows.sort((a, b) => dangchakRegionRank(a.key) - dangchakRegionRank(b.key));
+    rows.forEach((r) => flat.push({ ...r, zone }));
   });
   // 체크포인트: 이 지역 "다음"부터 전체 끝까지 남은 낱개(소분) 합계를 박스로 환산 (엑셀 수식의 초기 캐시값 계산용)
   const remAfter = new Array(flat.length + 1).fill(0);
@@ -7620,6 +7623,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   zoneList.forEach((zone) => {
     const rows = regionRowsUsed.filter((r) => zoneOf(r) === zone);
     if (rows.length === 0) return;
+    if (skipZero) rows.sort((a, b) => dangchakRegionRank(a.key) - dangchakRegionRank(b.key));
     const isLastZone = zone === activeZones[activeZones.length - 1];
     const startFlatIdx = flatIdx;
     rows.forEach((r) => {
@@ -8332,6 +8336,18 @@ const REGION_REAL_ZONE = {
 function realZoneOf(code) {
   return REGION_REAL_ZONE[code] || "수도권";
 }
+// 당착(전 지역) 피킹지 지역 순서 - 화주사 실물 조인앤조인 당착 피킹지 기준 (2026-10-07 확인)
+// 영남: 김해·김해2·신제주·진주·CVS·경산·경산2·경산3 / 호남: 신광주·신광주2·익산 /
+// 수도권: 원주·강릉·공주·공주2·청주·아신A·포천·포천2·고촌·고촌2·고양·고양2·고양3·김포2·김포3·도화·도화2·발안·발안2·송파·송파2·곤지암·곤지암2·신오산1·신오산2·신오산3
+const DANGCHAK_REGION_ORDER = [
+  "VV57", "VV58", "VV92", "VV25", "VV20", "VV83", "VV84", "VV97",
+  "VV95", "VV96", "VV65",
+  "VV16", "VV69", "VV04", "VV75", "VV34", "VV03", "VV90", "VV91", "VV98", "VV99", "VV63", "VV64", "VV81", "VV62", "VV70", "VV66", "VV67", "VV17", "VV71", "VV53", "VV55", "VV93", "VV94", "VV85", "VV86", "VV87",
+];
+const dangchakRegionRank = (code) => {
+  const i = DANGCHAK_REGION_ORDER.indexOf(code);
+  return i === -1 ? 1000 : i;
+};
 
 // 사업자 정보가 아직 없는 공급사(대부분의 DC 공급사)는 상호에 이름만 넣고 나머지는 공란으로 발행
 // ===== 거래명세서 설정 (거래명세서 화면 오른쪽 위 "거래명세서 설정"에서 직원이 바꾼 값, 서버 /settings/invoice_settings) =====
@@ -11370,7 +11386,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
                   shownItems.map((i) => (
                     <tr key={i.id || i.sku} className="rowhover">
                       <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
-                      <td style={{ fontWeight: 600 }}>{i.name}</td>
+                      <td style={{ fontWeight: 600, minWidth: 200 }}>{i.name}</td>
                       <td>
                         <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                           {itemBrandsOf(i).map((b) => (
