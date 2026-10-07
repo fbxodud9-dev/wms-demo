@@ -1492,6 +1492,7 @@ function mapItemFromApi(i) {
     unitQty: i.unit_qty,
     boxQty: i.box_qty,
     cbm: Number(i.cbm) || 0,
+    brands: i.brands || "GS",
     replenished: false,
   };
 }
@@ -1958,12 +1959,14 @@ function WMSApp() {
 
   // 발주파일 업로드 시 미등록 품목을 한 번에 등록 (품목 개수만큼 반복 호출하지 않음)
   const registerItemsBulk = useCallback(
-    async (skuNamePairs) => {
-      if (skuNamePairs.length === 0) return;
+    async (list, defaultBrand) => {
+      if (!list || list.length === 0) return;
       try {
+        // [sku, name] 쌍 또는 { sku, name, brand, boxQty } -> 발주 브랜드로 상품마스터 자동 등록
+        const itemsBody = list.map((x) => (Array.isArray(x) ? { sku: x[0], name: x[1], brand: defaultBrand || "" } : { sku: x.sku, name: x.name, brand: x.brand || defaultBrand || "", boxQty: x.boxQty || 0 }));
         await apiFetch("/orders/bulk-register-items", authToken, {
           method: "POST",
-          body: { items: skuNamePairs.map(([sku, name]) => ({ sku, name })) },
+          body: { items: itemsBody },
         });
       } catch (e) {
         setApiErr(e.message);
@@ -2126,6 +2129,7 @@ function WMSApp() {
         if (fields.boxQty !== undefined) body.box_qty = fields.boxQty;
         if (fields.cbm !== undefined) body.cbm = fields.cbm;
         if (fields.qty !== undefined) body.qty = fields.qty;
+        if (fields.brands !== undefined) body.brands = fields.brands;
         if (fields.newSku !== undefined && String(fields.newSku).trim() && String(fields.newSku).trim() !== sku) body.newSku = String(fields.newSku).trim();
         await apiFetch(`/items/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body });
         await loadCoreData();
@@ -2201,6 +2205,7 @@ function WMSApp() {
             unit_qty: fields.unitQty || 1,
             box_qty: fields.boxQty || 1,
             cbm: fields.cbm || 0,
+            brands: fields.brands || "GS",
           },
         });
         await loadCoreData();
@@ -2480,7 +2485,7 @@ function WMSApp() {
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
-        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} onUpload={addOrdersBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
+        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickingconfirm" && (
@@ -2491,6 +2496,7 @@ function WMSApp() {
             channel={pickChannel}
             onChannel={setPickChannel}
             emartOrders={emartOrders}
+            authToken={authToken}
             gsView={<PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} />}
           />
         )}
@@ -2500,20 +2506,19 @@ function WMSApp() {
         )}
         {tab === "gsdaily" && <GsDailyPage orders={orders} authToken={authToken} productInfo={productInfo} />}
         {tab === "invoice" && (
-          <BrandTabs
+          <InvoiceCenter
             channel={invChannel}
             onChannel={setInvChannel}
-            title="거래명세서"
-            renderReady={(c) =>
-              c === "gs" ? <InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} /> : null
-            }
+            emartOrders={emartOrders}
+            authToken={authToken}
+            gsView={<InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
           />
         )}
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
         {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
-        {tab === "productinfo" && <ProductInfoPage orders={orders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
+        {tab === "productinfo" && <ProductInfoCenter orders={orders} items={itemsView} emartOrders={emartOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -3906,7 +3911,11 @@ function resolveNamePackOverride(name) {
       }
       const unmatchedList = Array.from(allUnmatched.entries());
       if (onRegisterItemsBulk) {
-        await onRegisterItemsBulk(unmatchedList);
+        // 이미 다른 브랜드(예: 이마트)로만 등록된 품목이 GS 발주에 나오면 GS 브랜드도 붙인다
+        const gsSkus = new Set();
+        allNewOrders.forEach((o) => o.lines.forEach((l) => gsSkus.add(l.sku)));
+        const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes("GS")).map((i) => ({ sku: i.sku, name: i.name, brand: "GS" }));
+        await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: "GS" })), ...addGs]);
       } else {
         for (const [sku, name] of unmatchedList) {
           if (onRegisterItem) await onRegisterItem(sku, name);
@@ -5274,9 +5283,10 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       // 상품명(머리글)과 입수
       const tmp = { doc: sheet.doc };
       setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
-      if (item.box > 1) {
+      const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || item.box;
+      if (boxQ > 1) {
         const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
-        if (b) setCellXml(tmp, "B4", item.box);
+        if (b) setCellXml(tmp, "B4", boxQ);
       }
     };
     mutate.pivot = pivot;
@@ -5316,6 +5326,24 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (!cell.f && typeof cell.v === "string" && EMART_REMOVE_TEXTS.includes(cell.v.trim())) setCellXml(s, ref, null);
     });
   });
+
+  // 상품 정보 관리(이마트)에서 바꾼 입수를 템플릿 상품 시트의 입수 칸에 넣기 (센터 줄의 B/C 숫자 칸)
+  if (opts.packOverride && opts.packOverride.size) {
+    links.forEach(({ prod, item }) => {
+      const np = opts.packOverride.get(item.name);
+      if (!np || prod.isNew || !prod.pack || np === prod.pack) return;
+      const s = tpl.sheets.find((x) => x.name === prod.sheet);
+      if (!s) return;
+      for (let r = 1; r <= s.maxRow; r++) {
+        const a = s.cells.get("A" + r);
+        if (!a || typeof a.v !== "string" || !/\(저온\)|\(상온\)|\(냉동\)/.test(a.v)) continue;
+        ["B", "C"].forEach((col) => {
+          const x = s.cells.get(col + r);
+          if (x && !x.f && x.v === prod.pack) setCellXml(s, col + r, np);
+        });
+      }
+    });
+  }
 
   // 수식 결과값 다시 계산해서 넣기
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
@@ -5391,6 +5419,21 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       let app = await tpl.zip.file("docProps/app.xml").async("string");
       app = app.replace(/<HeadingPairs>[\s\S]*?<\/HeadingPairs>/, "").replace(/<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/, "");
       tpl.zip.file("docProps/app.xml", app);
+    }
+  }
+  // 순서 설정이 있으면 시트(탭) 순서를 바꾼다. 순위가 없는 시트(새로 복사한 시트 등)는 바로 앞 시트 뒤에 붙는다
+  if (opts.sheetRank && opts.sheetRank.size) {
+    const sheetEls = Array.from(tpl.wbXml.getElementsByTagName("sheet"));
+    const parent = sheetEls.length ? sheetEls[0].parentNode : null;
+    if (parent) {
+      let last = -1;
+      const ranked = sheetEls.map((el, i) => {
+        const r = opts.sheetRank.get(el.getAttribute("name"));
+        if (r != null) last = r;
+        return { el, rank: r != null ? r : last + 0.001 * (i + 1), i };
+      });
+      ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
+      ranked.forEach((x) => parent.appendChild(x.el));
     }
   }
   // 이름 정의(인쇄 영역 등)의 시트 번호를 최종 시트 순서에 맞게 다시 매기기
@@ -5504,9 +5547,9 @@ async function getEmartTemplateInfo() {
   if (!EMART_TPL_INFO_CACHE) EMART_TPL_INFO_CACHE = loadEmartTemplate(await getEmartTemplateBuffer(null)).then((t) => analyzeEmartTemplate(t));
   return EMART_TPL_INFO_CACHE;
 }
-async function downloadEmartPickingFile(rows, date, customTpl, activeName) {
+async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts = {}) {
   const buf = await getEmartTemplateBuffer(customTpl);
-  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName);
+  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, opts);
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -5551,7 +5594,7 @@ function emartVendorKey(v) {
 }
 
 /* ---------- 주문정보 (E.MART): GS 주문정보와 같은 화면 ---------- */
-function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
+function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }) {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -5601,6 +5644,15 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
       }
       if (all.length === 0) throw new Error("발주 수량이 있는 줄이 없어요.");
       const list2 = emartOrdersFromRows(all);
+      // 상품마스터에 이마트 상품으로 자동 등록 (이미 있는 품목은 이마트 브랜드만 추가)
+      if (onRegisterItems) {
+        const seen = new Map();
+        all.forEach((r) => {
+          const sku = r.code || r.name;
+          if (sku && !seen.has(sku)) seen.set(sku, { sku, name: r.name, brand: "EMART", boxQty: r.box || 0 });
+        });
+        await onRegisterItems(Array.from(seen.values()));
+      }
       const res = await onUpload(list2);
       const dates = Array.from(new Set(list2.map((o) => o.createdAt))).sort();
       setMsg(
@@ -5624,7 +5676,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
           <div style={{ fontSize: 13, color: T.inkSoft }}>
             이마트24 발주파일(출고관리-발주조회_납품등록, xlsx)을 업로드하면 자동으로 발주가 등록됩니다. 피킹지시서 출력 &gt; 이마트에서 확인하세요.
             <br />
-            여러 파일을 한 번에 선택해서 업로드할 수 있어요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요.
+            여러 파일을 한 번에 선택해서 업로드할 수 있어요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요. 상품은 상품마스터에 이마트 상품으로 자동 등록돼요.
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => e.target.files.length > 0 && handleFiles(e.target.files)} />
@@ -5692,7 +5744,11 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate }) {
 }
 
 /* ---------- 피킹지시서 출력 > 이마트: GS 피킹지시서 출력과 같은 화면 ---------- */
-function EmartPickingView({ emartOrders }) {
+function EmartPickingView({ emartOrders, authToken }) {
+  const orderCfg = useSetting("picking_order_emart", authToken);
+  const emInfoRaw = useSetting("product_info_emart", authToken);
+  const emInfo = useMemo(() => emInfoRaw || {}, [emInfoRaw]);
+  const [showOrderSet, setShowOrderSet] = useState(false);
   const dateOptions = useMemo(() => Array.from(new Set(emartOrders.map((o) => o.createdAt))).sort((a, b) => (a < b ? 1 : -1)), [emartOrders]);
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
@@ -5713,7 +5769,18 @@ function EmartPickingView({ emartOrders }) {
       .catch((e) => setTplErr(`피킹지 템플릿을 읽지 못했어요 (${e.message})`));
   }, []);
 
-  const rows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate)), [emartOrders, activeDate]);
+  // XIII. 상품 정보 관리(이마트)에서 바꾼 값: 입수 / 일시중지·삭제 상품은 피킹지에서 뺌
+  const infoOf = (name, tp) => emInfo[name] || (tp ? emInfo[String(tp.title || "").replace(/\s*\n\s*/g, "").trim()] : null) || null;
+  const allRows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate)), [emartOrders, activeDate]);
+  const rows = useMemo(
+    () =>
+      allRows.filter((r) => {
+        const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
+        return !(ov && (ov.paused || ov.discontinued));
+      }),
+    [allRows, emInfo, tplInfo] // eslint-disable-line
+  );
+  const hiddenCount = useMemo(() => new Set(allRows.map((r) => r.name)).size - new Set(rows.map((r) => r.name)).size, [allRows, rows]);
   // 상품 목록: 템플릿 시트 순서(공급사별)대로, 템플릿에 없는 상품은 맨 뒤
   const products = useMemo(() => {
     const m = new Map();
@@ -5728,13 +5795,16 @@ function EmartPickingView({ emartOrders }) {
       const order = new Map(tplInfo.sheets.map((s, i) => [s.name, i]));
       list.forEach((p) => {
         p.tpl = matchEmartProduct(tplInfo, p.name);
-        p.pack = (p.tpl && p.tpl.pack) || p.box || 0;
+        const ov = infoOf(p.name, p.tpl);
+        p.packOverride = ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : 0;
+        p.pack = p.packOverride || (p.tpl && p.tpl.pack) || p.box || 0;
         p.sort = p.tpl ? order.get(p.tpl.sheet) : 100000;
       });
       list.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "ko"));
     }
-    return list;
-  }, [rows, tplInfo]);
+    // 순서 설정(이마트)이 있으면 그 순서로
+    return applyBrandOrder(list, orderCfg, (p) => p.vendor, (p) => p.name);
+  }, [rows, tplInfo, orderCfg, emInfo]); // eslint-disable-line
   const vendorOptions = useMemo(() => Array.from(new Set(products.map((p) => p.vendor))), [products]);
   const filtered = products.filter((p) => {
     if (vendorFilter !== "all" && p.vendor !== vendorFilter) return false;
@@ -5761,7 +5831,19 @@ function EmartPickingView({ emartOrders }) {
     setErr("");
     try {
       const names = new Set((filterOn ? filtered : products).map((p) => p.name));
-      setReport(await downloadEmartPickingFile(rows.filter((r) => names.has(r.name)), activeDate, customTpl, activeName));
+      const packOverride = new Map(products.filter((p) => p.packOverride).map((p) => [p.name, p.packOverride]));
+      // 순서 설정이 있으면 엑셀 시트 순서도 그대로 (공급사 피벗 -> 그 공급사 상품 시트들)
+      let sheetRank = null;
+      if (orderCfg && (orderCfg.suppliers || orderCfg.products)) {
+        sheetRank = new Map();
+        let n = 0;
+        products.forEach((p) => {
+          if (!p.tpl) return;
+          if (!sheetRank.has(p.tpl.pivot)) sheetRank.set(p.tpl.pivot, n++);
+          if (!sheetRank.has(p.tpl.sheet)) sheetRank.set(p.tpl.sheet, n++);
+        });
+      }
+      setReport(await downloadEmartPickingFile(rows.filter((r) => names.has(r.name)), activeDate, customTpl, activeName, { packOverride, sheetRank }));
     } catch (e) {
       setErr(`피킹지를 만들지 못했어요: ${e.message}`);
     } finally {
@@ -5804,7 +5886,10 @@ function EmartPickingView({ emartOrders }) {
         title="피킹지시서 출력"
         sub="이마트24 발주를 실물 이마트24 피킹검수 양식(공급사별 지역·입수·서식) 그대로 정리합니다"
         action={
-          <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+          <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정">
+              <SettingsGear size={15} /> 순서 설정
+            </button>
             <input
               ref={tplRef}
               type="file"
@@ -5830,8 +5915,25 @@ function EmartPickingView({ emartOrders }) {
           </span>
         }
       />
+      {showOrderSet && (
+        <BrandOrderSettingsModal
+          brand="EMART"
+          label="이마트"
+          authToken={authToken}
+          detected={(() => {
+            const m = new Map();
+            products.forEach((p) => {
+              if (!m.has(p.vendor)) m.set(p.vendor, { key: p.vendor, names: [] });
+              m.get(p.vendor).names.push(p.name);
+            });
+            return Array.from(m.values());
+          })()}
+          onClose={() => setShowOrderSet(false)}
+        />
+      )}
       {tplErr && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
       {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+      {hiddenCount > 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 10 }}>※ 상품 정보 관리에서 일시중지·삭제한 상품 {hiddenCount}개는 빠져 있어요.</div>}
       {dateOptions.length === 0 ? (
         <div style={cardStyle}>
           <EmptyRow text="이마트 발주가 없습니다. 먼저 주문정보 (E.MART)에서 발주파일을 업로드해주세요." />
@@ -6013,28 +6115,622 @@ function EmartPickingView({ emartOrders }) {
   );
 }
 
-/* ---------- 피킹지시서 출력: 브랜드 탭 (GS / GS슈퍼 / 이마트 / BGF / 세븐일레븐) ---------- */
+/* ---------- 브랜드 탭 (GS / GS슈퍼 / 이마트 / BGF / 세븐일레븐) ---------- */
+// brand: 상품마스터(items.brands)와 설정 이름에 쓰는 코드
 const PICKING_CHANNELS = [
-  { key: "gs", label: "GS" },
-  { key: "gssuper", label: "GS슈퍼" },
-  { key: "emart", label: "이마트" },
-  { key: "bgf", label: "BGF" },
-  { key: "seven", label: "세븐일레븐" },
+  { key: "gs", brand: "GS", label: "GS" },
+  { key: "gssuper", brand: "GSSUPER", label: "GS슈퍼" },
+  { key: "emart", brand: "EMART", label: "이마트" },
+  { key: "bgf", brand: "BGF", label: "BGF" },
+  { key: "seven", brand: "SEVEN", label: "세븐일레븐" },
 ];
-// 브랜드 탭 공통: 준비된 브랜드는 renderReady가 화면을 돌려주고, 아니면 "준비 중"
-function BrandTabs({ channel, onChannel, title, renderReady }) {
-  const label = PICKING_CHANNELS.find((c) => c.key === channel).label;
-  const view = renderReady(channel);
+const BRAND_LABEL = Object.fromEntries(PICKING_CHANNELS.map((c) => [c.brand, c.label]));
+const BRAND_COLOR = {
+  GS: { bg: "#E6F0FA", fg: "#1F4E79" },
+  GSSUPER: { bg: "#E4F2EE", fg: "#0E4F3F" },
+  EMART: { bg: "#FDF1DC", fg: "#8A5A00" },
+  BGF: { bg: "#EFE8F7", fg: "#4B2E7A" },
+  SEVEN: { bg: "#FBE9DF", fg: "#7A331A" },
+};
+// 상품마스터 품목의 브랜드 목록 (예전에 등록된 품목은 brands가 비어 있어서 GS로 본다)
+function itemBrandsOf(i) {
+  return String((i && i.brands) || "GS")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+function BrandBadge({ brand }) {
+  const c = BRAND_COLOR[brand] || { bg: "#EEF1F4", fg: "#3E4750" };
+  return <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 4, background: c.bg, color: c.fg, fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap" }}>{BRAND_LABEL[brand] || brand}</span>;
+}
+
+// ---------- 서버 설정값(/settings/:key) 공통 훅: 한 번 불러오면 화면끼리 공유 ----------
+const SETTING_CACHE = {};
+const SETTING_SUBS = {};
+function settingLocalKey(key) {
+  return "wms-setting-" + key;
+}
+function publishSetting(key, value) {
+  SETTING_CACHE[key] = value;
+  (SETTING_SUBS[key] || new Set()).forEach((f) => f(value));
+}
+function useSetting(key, authToken) {
+  const [value, setValue] = useState(SETTING_CACHE[key] ?? null);
+  useEffect(() => {
+    const sub = (v) => setValue(v);
+    (SETTING_SUBS[key] = SETTING_SUBS[key] || new Set()).add(sub);
+    if (key in SETTING_CACHE) setValue(SETTING_CACHE[key]);
+    else if (authToken) {
+      apiFetch(`/settings/${key}`, authToken)
+        .then((r) => (r ? r.value ?? null : null))
+        .catch(() => {
+          try {
+            return JSON.parse(localStorage.getItem(settingLocalKey(key)) || "null");
+          } catch (e) {
+            return null;
+          }
+        })
+        .then((v) => {
+          if (!(key in SETTING_CACHE)) publishSetting(key, v);
+        });
+    }
+    return () => SETTING_SUBS[key].delete(sub);
+  }, [key, authToken]);
+  return value;
+}
+// 최신 값을 서버에서 다시 읽어 updater로 고친 뒤 저장 (다른 직원이 동시에 바꾼 값 보존)
+async function updateSetting(key, authToken, updater) {
+  let latest = SETTING_CACHE[key] ?? null;
+  try {
+    const r = await apiFetch(`/settings/${key}`, authToken);
+    if (r && r.value) latest = r.value;
+  } catch (e) {
+    /* 서버를 못 읽으면 화면 값 기준 */
+  }
+  const next = updater(JSON.parse(JSON.stringify(latest || {})));
+  publishSetting(key, next);
+  try {
+    await apiFetch(`/settings/${key}`, authToken, { method: "PUT", body: { value: next } });
+    return { ok: true, value: next };
+  } catch (e) {
+    try {
+      localStorage.setItem(settingLocalKey(key), JSON.stringify(next));
+    } catch (e2) {
+      /* 무시 */
+    }
+    return { ok: false, value: next, error: e.message };
+  }
+}
+const brandSettingKey = (prefix, brand) => `${prefix}_${String(brand).toLowerCase()}`;
+
+// 브랜드 순서 설정 적용: 설정에 있는 공급사 먼저(설정 순서), 없는 공급사는 원래 순서대로 뒤에. 공급사 안의 상품도 같은 방식.
+function applyBrandOrder(list, cfg, supOf, nameOf) {
+  if (!cfg || (!cfg.suppliers && !cfg.products)) return list;
+  const supIdx = new Map((cfg.suppliers || []).map((k, i) => [k, i]));
+  const base = new Map(list.map((x, i) => [x, i]));
+  const firstPos = new Map();
+  list.forEach((x, i) => !firstPos.has(supOf(x)) && firstPos.set(supOf(x), i));
+  const supRank = (s) => (supIdx.has(s) ? supIdx.get(s) : 100000 + firstPos.get(s));
+  const prodRank = (x) => {
+    const arr = (cfg.products || {})[supOf(x)];
+    const i = arr ? arr.indexOf(nameOf(x)) : -1;
+    return i >= 0 ? i : 100000 + base.get(x);
+  };
+  return [...list].sort((a, b) => supRank(supOf(a)) - supRank(supOf(b)) || prodRank(a) - prodRank(b));
+}
+
+// 공통 모달 틀
+function BrandModalFrame({ title, sub, onClose, children, maxWidth = 1100, height }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  return createPortal(
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth, height, maxHeight: "92vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "16px 22px", borderBottom: `1px solid ${T.border}` }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
+            {sub && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>{sub}</div>}
+          </div>
+          <button onClick={onClose} title="닫기" style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: T.inkSoft }}>
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>,
+    document.body
+  );
+}
+const settingBtnStyle = { ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 };
+
+/* ----- 브랜드별 피킹지 순서 설정 (공급사 순서 + 공급사 안 상품 순서) ----- */
+// detected: [{ key: 공급사, names: [상품명...] }] (그 브랜드 발주에서 찾은 기본 순서)
+function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose }) {
+  const key = brandSettingKey("picking_order", brand);
+  const saved = useSetting(key, authToken);
+  const [draft, setDraft] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [selSup, setSelSup] = useState(null);
+  const [newSup, setNewSup] = useState("");
+  const [newProd, setNewProd] = useState("");
+  useEffect(() => {
+    if (!dirty) setDraft({ suppliers: (saved && saved.suppliers) || null, products: { ...((saved && saved.products) || {}) } });
+  }, [saved]); // eslint-disable-line
+
+  const detSup = detected.map((d) => d.key);
+  const base = (draft && draft.suppliers) || [];
+  const supplierList = [...base, ...detSup.filter((k) => !base.includes(k))];
+  const curSup = selSup && supplierList.includes(selSup) ? selSup : supplierList[0] || null;
+  const detNames = (detected.find((d) => d.key === curSup) || { names: [] }).names;
+  const savedNames = (draft && draft.products[curSup]) || [];
+  const productNames = [...savedNames, ...detNames.filter((n) => !savedNames.includes(n))];
+
+  const change = (fn) => {
+    setDraft((d) => {
+      const n = { suppliers: d.suppliers ? [...d.suppliers] : null, products: { ...d.products } };
+      fn(n);
+      return n;
+    });
+    setDirty(true);
+    setMsg("");
+  };
+  const move = (arr, from, to) => {
+    const list = [...arr];
+    if (to < 0 || to >= list.length || from === to) return list;
+    const [x] = list.splice(from, 1);
+    list.splice(to, 0, x);
+    return list;
+  };
+  const moveSup = (from, to) => change((n) => (n.suppliers = move(supplierList, from, to)));
+  const moveProd = (from, to) => change((n) => (n.products[curSup] = move(productNames, from, to)));
+  function close() {
+    if (dirty && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
+    onClose();
+  }
+  async function save() {
+    setBusy(true);
+    const value = { suppliers: draft.suppliers, products: draft.products };
+    const r = await updateSetting(key, authToken, () => value);
+    setBusy(false);
+    setDirty(false);
+    setMsg(r.ok ? "저장했어요. 피킹지 화면과 엑셀에 바로 반영돼요." : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  const rowBtn = { ...smallBtnStyle, padding: "3px 9px", minWidth: 30, justifyContent: "center" };
+  const row = { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: `1px solid ${T.border}` };
+
+  return (
+    <BrandModalFrame title={`피킹지 순서 설정 · ${label}`} sub="공급사(시트) 순서와 공급사 안의 상품 순서를 정해요. 저장하면 고정값으로 남아요." onClose={close} maxWidth={1100}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy || !dirty || !draft} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
+          <Check size={14} /> {busy ? "저장 중..." : dirty ? "변경 내용 저장" : "저장할 변경 없음"}
+        </button>
+        <button onClick={() => change((n) => ((n.suppliers = null), (n.products = {})))} style={smallBtnStyle}>
+          전부 기본 순서로 되돌리기
+        </button>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</span>}
+      </div>
+      {!draft ? (
+        <div style={{ padding: 24, fontSize: 13, color: T.inkSoft }}>불러오는 중...</div>
+      ) : (
+        <div style={{ overflowY: "auto", padding: "16px 20px 20px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, alignItems: "start" }}>
+          <div style={cardStyle}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>1. 공급사(시트) 순서</div>
+            <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>위에 있을수록 먼저 나와요. 순서표에 없는 새 공급사는 맨 뒤에 붙어요.</div>
+            {supplierList.length === 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, padding: "10px 0" }}>아직 {label} 발주가 없어요. 아래에서 공급사를 직접 추가해 둘 수 있어요.</div>}
+            {supplierList.map((k, i) => (
+              <div key={k} style={row}>
+                <select style={{ ...inputStyle, padding: "3px 4px", width: 62, fontSize: 12.5 }} value={i + 1} onChange={(e) => moveSup(i, Number(e.target.value) - 1)}>
+                  {supplierList.map((_, n) => (
+                    <option key={n} value={n + 1}>
+                      {n + 1}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => setSelSup(k)} style={{ flex: 1, textAlign: "left", border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: k === curSup ? 700 : 500, color: detSup.includes(k) ? T.ink : T.inkSoft, padding: 0 }}>
+                  {k}
+                  {detSup.includes(k) && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>발주 있음</span>}
+                </button>
+                <button style={rowBtn} onClick={() => moveSup(i, i - 1)} disabled={i === 0} title="위로">
+                  ▲
+                </button>
+                <button style={rowBtn} onClick={() => moveSup(i, i + 1)} disabled={i === supplierList.length - 1} title="아래로">
+                  ▼
+                </button>
+                {!detSup.includes(k) && (
+                  <button style={{ ...rowBtn, color: T.danger }} title="순서표에서 빼기" onClick={() => change((n) => ((n.suppliers = supplierList.filter((x) => x !== k)), delete n.products[k]))}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              <input style={{ ...inputStyle, flex: 1 }} placeholder="공급사 이름 직접 추가" value={newSup} onChange={(e) => setNewSup(e.target.value)} />
+              <button
+                style={smallBtnStyle}
+                onClick={() => {
+                  const v = newSup.trim();
+                  if (!v || supplierList.includes(v)) return;
+                  change((n) => (n.suppliers = [...supplierList, v]));
+                  setNewSup("");
+                  setSelSup(v);
+                }}
+              >
+                <Plus size={13} /> 추가
+              </button>
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>2. 공급사 안의 상품 순서 {curSup ? `· ${curSup}` : ""}</div>
+            <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>왼쪽에서 공급사 이름을 누르면 그 공급사 상품 순서를 바꿔요. 정하지 않으면 기본(템플릿) 순서예요.</div>
+            {curSup && (
+              <button
+                style={{ ...smallBtnStyle, marginBottom: 8 }}
+                onClick={() =>
+                  change((n) => {
+                    delete n.products[curSup];
+                  })
+                }
+              >
+                이 공급사 기본 순서로
+              </button>
+            )}
+            {curSup && productNames.length === 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, padding: "10px 0" }}>이 공급사 상품 발주가 아직 없어요.</div>}
+            {productNames.map((n, i) => (
+              <div key={n} style={row}>
+                <span style={{ width: 28, fontSize: 12, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{i + 1}</span>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: detNames.includes(n) ? 600 : 500, color: detNames.includes(n) ? T.ink : T.inkSoft }}>{n}</span>
+                <button style={rowBtn} onClick={() => moveProd(i, 0)} disabled={i === 0} title="맨 위로">
+                  ⤒
+                </button>
+                <button style={rowBtn} onClick={() => moveProd(i, i - 1)} disabled={i === 0} title="위로">
+                  ▲
+                </button>
+                <button style={rowBtn} onClick={() => moveProd(i, i + 1)} disabled={i === productNames.length - 1} title="아래로">
+                  ▼
+                </button>
+                <button style={rowBtn} onClick={() => moveProd(i, productNames.length - 1)} disabled={i === productNames.length - 1} title="맨 아래로">
+                  ⤓
+                </button>
+              </div>
+            ))}
+            {curSup && (
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                <input style={{ ...inputStyle, flex: 1 }} placeholder="상품명 직접 추가" value={newProd} onChange={(e) => setNewProd(e.target.value)} />
+                <button
+                  style={smallBtnStyle}
+                  onClick={() => {
+                    const v = newProd.trim();
+                    if (!v || productNames.includes(v)) return;
+                    change((n) => (n.products[curSup] = [...productNames, v]));
+                    setNewProd("");
+                  }}
+                >
+                  <Plus size={13} /> 추가
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </BrandModalFrame>
+  );
+}
+
+/* ----- 브랜드별 거래명세서 설정 (공급사 사업자 정보 · 발행 센터 · 명세서용 상품명/입수/소비기한) ----- */
+// detected: [{ key: 공급사, products: [{ name, pack }], centers: [센터...] }]
+function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose }) {
+  const key = brandSettingKey("invoice_settings", brand);
+  const saved = useSetting(key, authToken);
+  const savedSup = (saved && saved.suppliers) || {};
+  const [extraSup, setExtraSup] = useState([]);
+  const supplierKeys = Array.from(new Set([...detected.map((d) => d.key), ...Object.keys(savedSup), ...extraSup]));
+  const [selKey, setSelKey] = useState(null);
+  const cur = selKey && supplierKeys.includes(selKey) ? selKey : supplierKeys[0] || null;
+  const det = detected.find((d) => d.key === cur) || { products: [], centers: [] };
+  const [tab, setTab] = useState("info");
+  const [form, setForm] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [q, setQ] = useState("");
+  const [newSup, setNewSup] = useState("");
+  const [newCenter, setNewCenter] = useState("");
+
+  useEffect(() => {
+    if (!cur) return setForm(null);
+    const s = savedSup[cur] || {};
+    const info = {};
+    INV_INFO_FIELDS.forEach((f) => (info[f.key] = (s.info && s.info[f.key]) || ""));
+    const centers = { mode: (s.centers && s.centers.mode) || "all", list: [...((s.centers && s.centers.list) || [])] };
+    const products = {};
+    Object.entries(s.products || {}).forEach(([n, v]) => (products[n] = { displayName: v.displayName ?? "", packQty: v.packQty ?? "", expiryDays: v.expiryDays ?? "" }));
+    setForm({ info, centers, products });
+    setDirty(false);
+    setMsg("");
+  }, [cur, saved]); // eslint-disable-line
+
+  const confirmLeave = () => !dirty || window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 넘어갈까요?");
+  const close = () => confirmLeave() && onClose();
+  const upd = (fn) => {
+    setForm((f) => {
+      const n = JSON.parse(JSON.stringify(f));
+      fn(n);
+      return n;
+    });
+    setDirty(true);
+    setMsg("");
+  };
+  const allCenters = Array.from(new Set([...det.centers, ...((form && form.centers.list) || [])]));
+  const productList = Array.from(new Set([...det.products.map((p) => p.name), ...Object.keys((form && form.products) || {})])).map((n) => det.products.find((p) => p.name === n) || { name: n, pack: 0 });
+
+  async function save() {
+    if (form.centers.mode === "selected" && form.centers.list.length === 0) return setMsg('발행할 센터를 하나 이상 고르거나 "발주 있는 센터 전부"로 바꿔주세요.');
+    const entry = {};
+    const info = {};
+    INV_INFO_FIELDS.forEach((f) => String(form.info[f.key] || "").trim() && (info[f.key] = String(form.info[f.key])));
+    if (Object.keys(info).length) entry.info = info;
+    if (form.centers.mode === "selected") entry.centers = { mode: "selected", list: form.centers.list };
+    const prods = {};
+    for (const [n, v] of Object.entries(form.products)) {
+      const o = {};
+      if (String(v.displayName || "").trim()) o.displayName = String(v.displayName).trim();
+      if (String(v.packQty ?? "").trim() !== "") {
+        if (!(Number(v.packQty) > 0)) return setMsg(`"${n}" 입수는 1 이상의 숫자로 넣어주세요.`);
+        o.packQty = Number(v.packQty);
+      }
+      if (String(v.expiryDays ?? "").trim() !== "") {
+        if (!Number.isFinite(Number(v.expiryDays))) return setMsg(`"${n}" 소비기한은 숫자(일수)로 넣어주세요.`);
+        o.expiryDays = Number(v.expiryDays);
+      }
+      if (Object.keys(o).length) prods[n] = o;
+    }
+    if (Object.keys(prods).length) entry.products = prods;
+    setBusy(true);
+    const r = await updateSetting(key, authToken, (v) => {
+      const next = { ...v, suppliers: { ...(v.suppliers || {}) } };
+      next.suppliers[cur] = entry;
+      return next;
+    });
+    setBusy(false);
+    setDirty(false);
+    setMsg(r.ok ? "저장했어요. 고정값으로 남고, 거래명세서를 만들 때 이 값으로 나가요." : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  async function removeSupplier() {
+    if (!window.confirm(`${cur}의 거래명세서 설정을 지울까요?`)) return;
+    setBusy(true);
+    await updateSetting(key, authToken, (v) => {
+      const next = { ...v, suppliers: { ...(v.suppliers || {}) } };
+      delete next.suppliers[cur];
+      return next;
+    });
+    setExtraSup((l) => l.filter((x) => x !== cur));
+    setBusy(false);
+    setDirty(false);
+  }
+
+  const hint = { fontSize: 11.5, color: T.inkSoft, marginTop: 4 };
+  const tabBtn = (k, text) => (
+    <button key={k} onClick={() => setTab(k)} style={{ padding: "9px 14px", border: "none", borderBottom: `2.5px solid ${tab === k ? T.steel : "transparent"}`, background: "transparent", fontWeight: tab === k ? 700 : 500, color: tab === k ? T.ink : T.inkSoft, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}>
+      {text}
+    </button>
+  );
+  const chip = (on) => ({ padding: "5px 10px", borderRadius: 999, border: `1.5px solid ${on ? T.teal : T.border}`, background: on ? "#E4F2EE" : T.surface, color: on ? T.tealDeep : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" });
+  const shown = supplierKeys.filter((k) => !q.trim() || k.toLowerCase().includes(q.trim().toLowerCase()));
+  const pv = (n, f) => (form && form.products[n] ? form.products[n][f] : "") ?? "";
+  const setPv = (n, f, v) =>
+    upd((x) => {
+      x.products[n] = x.products[n] || { displayName: "", packQty: "", expiryDays: "" };
+      x.products[n][f] = v;
+    });
+
+  return (
+    <BrandModalFrame title={`거래명세서 설정 · ${label}`} sub="공급사별 사업자 정보·발행 센터·명세서용 상품명/입수/소비기한. 저장하면 고정값으로 남아요 (명세서에만 적용, 피킹지는 그대로)." onClose={close} maxWidth={1080} height="90vh">
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <div style={{ width: 230, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: "#FBFAF7" }}>
+          <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            <input style={{ ...inputStyle, width: "100%" }} placeholder="공급사 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+            <div style={{ display: "flex", gap: 4 }}>
+              <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} placeholder="공급사 추가" value={newSup} onChange={(e) => setNewSup(e.target.value)} />
+              <button
+                style={{ ...smallBtnStyle, padding: "6px 8px" }}
+                onClick={() => {
+                  const v = newSup.trim();
+                  if (!v) return;
+                  if (!supplierKeys.includes(v)) setExtraSup((l) => [...l, v]);
+                  if (confirmLeave()) setSelKey(v);
+                  setNewSup("");
+                }}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+          </div>
+          <div style={{ overflowY: "auto", flex: 1, padding: "0 8px 10px" }}>
+            {shown.length === 0 && <div style={{ fontSize: 12, color: T.inkSoft, padding: 8 }}>아직 {label} 발주가 없어요. 위에서 공급사를 추가해 미리 설정할 수 있어요.</div>}
+            {shown.map((k) => (
+              <button
+                key={k}
+                onClick={() => k !== cur && confirmLeave() && (setSelKey(k), setTab("info"))}
+                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 6, padding: "9px 10px", marginBottom: 2, border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, background: k === cur ? T.steel : "transparent", color: k === cur ? "#fff" : T.ink, fontWeight: k === cur ? 700 : 500 }}
+              >
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{k}</span>
+                {savedSup[k] && <span style={{ width: 7, height: 7, borderRadius: 99, background: T.amber, flexShrink: 0 }} title="설정됨" />}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          {!cur || !form ? (
+            <div style={{ padding: 24, fontSize: 13, color: T.inkSoft }}>왼쪽에서 공급사를 고르거나 추가해 주세요.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 18px", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ fontWeight: 700, fontSize: 15, marginRight: 14 }}>{cur}</div>
+                {tabBtn("info", "사업자 정보")}
+                {tabBtn("centers", "발행 센터")}
+                {tabBtn("products", `상품 (${productList.length})`)}
+              </div>
+              <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+                {tab === "info" && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 720 }}>
+                    {INV_INFO_FIELDS.map((f) => (
+                      <div key={f.key} style={{ gridColumn: f.key === "address" || f.multiline ? "1 / -1" : "auto" }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>{f.label}</div>
+                        {f.multiline ? (
+                          <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                        ) : (
+                          <input style={{ ...inputStyle, width: "100%" }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {tab === "centers" && (
+                  <div>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      <button onClick={() => upd((n) => (n.centers.mode = "all"))} style={chip(form.centers.mode === "all")}>
+                        발주 있는 센터 전부
+                      </button>
+                      <button onClick={() => upd((n) => (n.centers.mode = "selected"))} style={chip(form.centers.mode === "selected")}>
+                        선택한 센터만
+                      </button>
+                    </div>
+                    {form.centers.mode === "all" ? (
+                      <div style={hint}>그날 이 공급사 발주가 있는 센터마다 명세서가 나가요.</div>
+                    ) : (
+                      <>
+                        <div style={{ ...hint, marginTop: 0, marginBottom: 8 }}>고른 센터만 명세서가 나가고, 발주가 없는 날도 수량 0으로 나가요 ({form.centers.list.length}곳 선택).</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                          {allCenters.length === 0 && <span style={{ fontSize: 12, color: T.inkSoft }}>발주에서 찾은 센터가 없어요. 아래에서 직접 추가하세요.</span>}
+                          {allCenters.map((c) => {
+                            const on = form.centers.list.includes(c);
+                            return (
+                              <button key={c} onClick={() => upd((n) => (n.centers.list = on ? n.centers.list.filter((x) => x !== c) : [...n.centers.list, c]))} style={chip(on)}>
+                                {c}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, maxWidth: 360 }}>
+                          <input style={{ ...inputStyle, flex: 1 }} placeholder="센터 이름 직접 추가 (예: 원주2(저온))" value={newCenter} onChange={(e) => setNewCenter(e.target.value)} />
+                          <button
+                            style={smallBtnStyle}
+                            onClick={() => {
+                              const v = newCenter.trim();
+                              if (!v) return;
+                              upd((n) => !n.centers.list.includes(v) && n.centers.list.push(v));
+                              setNewCenter("");
+                            }}
+                          >
+                            <Plus size={13} /> 추가
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+                {tab === "products" && (
+                  <div>
+                    <div style={{ ...hint, marginTop: 0, marginBottom: 10 }}>비워두면 기본값(회색 글씨)을 써요. 여기서 바꾼 상품명·입수는 거래명세서에만 적용돼요.</div>
+                    {productList.length === 0 ? (
+                      <EmptyRow text="이 공급사 상품 발주가 아직 없어요." />
+                    ) : (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>명세서 상품명</th>
+                            <th style={{ width: 96, textAlign: "center" }}>입수</th>
+                            <th style={{ width: 116, textAlign: "center" }}>소비기한 (+일)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productList.map((p) => (
+                            <tr key={p.name}>
+                              <td>
+                                <input style={{ ...inputStyle, width: "100%", borderColor: String(pv(p.name, "displayName")).trim() ? T.amber : undefined }} value={pv(p.name, "displayName")} placeholder={p.name} onChange={(e) => setPv(p.name, "displayName", e.target.value)} />
+                              </td>
+                              <td>
+                                <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} type="number" min="1" value={pv(p.name, "packQty")} placeholder={p.pack ? String(p.pack) : "-"} onChange={(e) => setPv(p.name, "packQty", e.target.value)} />
+                              </td>
+                              <td>
+                                <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} type="number" value={pv(p.name, "expiryDays")} placeholder="공란" onChange={(e) => setPv(p.name, "expiryDays", e.target.value)} />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7" }}>
+                {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+                {savedSup[cur] && (
+                  <button onClick={removeSupplier} disabled={busy} style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger + "55" }}>
+                    이 공급사 설정 지우기
+                  </button>
+                )}
+                <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, marginLeft: savedSup[cur] ? 0 : "auto", opacity: busy || !dirty ? 0.55 : 1 }}>
+                  <Check size={14} /> {busy ? "저장 중..." : dirty ? "저장" : "저장할 변경 없음"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </BrandModalFrame>
+  );
+}
+
+// 이마트 발주 -> 설정 창에 보여줄 공급사·상품·센터 목록 (템플릿 순서 우선)
+function emartDetected(emartOrders, tplInfo) {
+  const m = new Map();
+  emartRowsFromOrders(emartOrders).forEach((r) => {
+    const k = emartVendorKey(r.vendor);
+    const d = m.get(k) || { key: k, products: new Map(), centers: new Set() };
+    if (!d.products.has(r.name)) {
+      const tp = tplInfo ? matchEmartProduct(tplInfo, r.name) : null;
+      d.products.set(r.name, { name: r.name, pack: (tp && tp.pack) || r.box || 0, sort: tp && tplInfo ? tplInfo.sheets.findIndex((s) => s.name === tp.sheet) : 100000 });
+    }
+    d.centers.add(r.center);
+    m.set(k, d);
+  });
+  const list = Array.from(m.values()).map((d) => {
+    const products = Array.from(d.products.values()).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "ko"));
+    return { key: d.key, products, names: products.map((p) => p.name), centers: [...EMART_STD_REGIONS.filter((c) => d.centers.has(c)), ...[...d.centers].filter((c) => !EMART_STD_REGIONS.includes(c))], sort: products.length ? products[0].sort : 100000 };
+  });
+  return list.sort((a, b) => a.sort - b.sort);
+}
+function useEmartTplInfo() {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    getEmartTemplateInfo()
+      .then(setInfo)
+      .catch(() => {});
+  }, []);
+  return info;
+}
+
+// 브랜드 탭 공통: 준비된 브랜드는 renderReady가 화면을 돌려주고, 아니면 "공사중" (+ 오른쪽 위 설정 버튼)
+function BrandTabs({ channel, onChannel, title, renderReady, placeholderAction, hideHeaderFallback }) {
+  const ch = PICKING_CHANNELS.find((c) => c.key === channel) || PICKING_CHANNELS[0];
+  const view = renderReady(ch.key);
   return (
     <div>
-      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 16, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content" }}>
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 16, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
         {PICKING_CHANNELS.map((c) => (
           <button
             key={c.key}
             onClick={() => onChannel(c.key)}
             style={{
               padding: "8px 18px", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
-              fontWeight: channel === c.key ? 700 : 500, background: channel === c.key ? T.steel : "transparent", color: channel === c.key ? "#fff" : T.inkSoft,
+              fontWeight: ch.key === c.key ? 700 : 500, background: ch.key === c.key ? T.steel : "transparent", color: ch.key === c.key ? "#fff" : T.inkSoft,
             }}
           >
             {c.label}
@@ -6043,7 +6739,7 @@ function BrandTabs({ channel, onChannel, title, renderReady }) {
       </div>
       {view || (
         <div>
-          <PageHeader title={title} sub={`${label} ${title}`} />
+          <PageHeader title={title} sub={`${ch.label} ${title}`} action={placeholderAction ? placeholderAction(ch) : undefined} />
           <div style={cardStyle}>
             <EmptyRow text="🚧 공사중" />
           </div>
@@ -6052,8 +6748,307 @@ function BrandTabs({ channel, onChannel, title, renderReady }) {
     </div>
   );
 }
-function PickingCenter({ channel, onChannel, gsView, emartOrders }) {
-  return <BrandTabs channel={channel} onChannel={onChannel} title="피킹지시서 출력" renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} /> : null)} />;
+
+// 공사중 브랜드에서도 순서 설정은 미리 해둘 수 있게 하는 버튼
+function BrandOrderSettingsButton({ ch, authToken, detected }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="no-print" onClick={() => setOpen(true)} style={settingBtnStyle} title="공급사·상품 순서 설정">
+        <SettingsGear size={15} /> 순서 설정
+      </button>
+      {open && <BrandOrderSettingsModal brand={ch.brand} label={ch.label} authToken={authToken} detected={detected || []} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+function BrandInvoiceSettingsButton({ ch, authToken, detected }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="no-print" onClick={() => setOpen(true)} style={settingBtnStyle} title="공급사 사업자 정보·발행 센터·명세서 상품 설정">
+        <SettingsGear size={15} /> 거래명세서 설정
+      </button>
+      {open && <BrandInvoiceSettingsModal brand={ch.brand} label={ch.label} authToken={authToken} detected={detected || []} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function PickingCenter({ channel, onChannel, gsView, emartOrders, authToken }) {
+  return (
+    <BrandTabs
+      channel={channel}
+      onChannel={onChannel}
+      title="피킹지시서 출력"
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : null)}
+      placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
+    />
+  );
+}
+
+// 거래명세서: GS는 기존 화면, 나머지 브랜드는 공사중 + 거래명세서 설정 (설정은 바로 저장·고정)
+function InvoiceCenter({ channel, onChannel, gsView, emartOrders, authToken }) {
+  const tplInfo = useEmartTplInfo();
+  const emartDet = useMemo(() => (channel === "emart" ? emartDetected(emartOrders, tplInfo) : []), [channel, emartOrders, tplInfo]);
+  return (
+    <BrandTabs
+      channel={channel}
+      onChannel={onChannel}
+      title="거래명세서"
+      renderReady={(c) => (c === "gs" ? gsView : null)}
+      placeholderAction={(ch) => <BrandInvoiceSettingsButton ch={ch} authToken={authToken} detected={ch.brand === "EMART" ? emartDet : []} />}
+    />
+  );
+}
+
+/* ----- XIII. 상품 정보 관리: 브랜드 필터 ----- */
+function ProductInfoCenter({ orders, items, emartOrders, authToken, productInfo, onSaved }) {
+  const [channel, setChannel] = useState("gs");
+  const tplInfo = useEmartTplInfo();
+  const rowsFor = (brand) => {
+    const map = new Map();
+    if (brand === "EMART") {
+      // 1) 실제 이마트 발주에 나온 상품 (최근 날짜 기준)  2) 피킹지 템플릿에 있는 상품 전부
+      const pivotVendor = {};
+      const usedSheets = new Set();
+      [...emartOrders]
+        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+        .forEach((o) =>
+          o.lines.forEach((l) => {
+            const name = String(l.name || "").trim();
+            if (!name) return;
+            const tp = tplInfo ? matchEmartProduct(tplInfo, name) : null;
+            if (tp) {
+              usedSheets.add(tp.sheet);
+              pivotVendor[tp.pivot] = emartVendorKey(o.supplier);
+            }
+            map.set(name, { name, sku: l.sku !== name ? l.sku : "", supplier: emartVendorKey(o.supplier), basePack: (tp && tp.pack) || Number(l.packQty) || 0, lastDate: o.createdAt, tplTitle: tp ? emartNorm(tp.title) : "" });
+          })
+        );
+      if (tplInfo)
+        tplInfo.products.forEach((tp) => {
+          if (usedSheets.has(tp.sheet)) return;
+          const name = String(tp.title || tp.sheet).replace(/\s*\n\s*/g, "").trim();
+          if (map.has(name)) return;
+          const sup = pivotVendor[tp.pivot] || String(tp.sheetTitle || tp.pivot).replace(/\s*-\s*이마트24.*$/, "").replace(/\s*피벗\s*$/, "").trim();
+          map.set(name, { name, sku: "", supplier: sup, basePack: tp.pack || 0, lastDate: "", tplTitle: emartNorm(tp.title) });
+        });
+    }
+    // 상품마스터에 그 브랜드로 등록된 품목도 같이
+    items
+      .filter((i) => itemBrandsOf(i).includes(brand))
+      .forEach((i) => {
+        const name = String(i.name || "").trim();
+        if (name && !map.has(name)) map.set(name, { name, sku: i.sku, supplier: "-", basePack: Number(i.boxQty) > 1 ? Number(i.boxQty) : 0, lastDate: "" });
+      });
+    return Array.from(map.values());
+  };
+  return (
+    <BrandTabs
+      channel={channel}
+      onChannel={setChannel}
+      title="XIII. 상품 정보 관리"
+      renderReady={(c) => {
+        if (c === "gs") return <ProductInfoPage orders={orders} authToken={authToken} productInfo={productInfo} onSaved={onSaved} />;
+        const ch = PICKING_CHANNELS.find((x) => x.key === c);
+        return <BrandProductInfoView key={ch.brand} brand={ch.brand} label={ch.label} rows={rowsFor(ch.brand)} authToken={authToken} loading={ch.brand === "EMART" && !tplInfo} />;
+      }}
+    />
+  );
+}
+
+// GS 외 브랜드 상품 정보 (입수·소비기한·표시 상품명·일시중지·삭제) - 서버 /settings/product_info_<brand>
+function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
+  const key = brandSettingKey("product_info", brand);
+  const info = useSetting(key, authToken) || {};
+  const [q, setQ] = useState("");
+  const [supplier, setSupplier] = useState("all");
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState("");
+  const list = rows
+    .map((r) => {
+      const ov = info[r.name] || null;
+      return { ...r, ov, pack: (ov && ov.packQty) || r.basePack, expiry: ov && ov.expiryDays != null ? ov.expiryDays : null, displayName: (ov && ov.displayName) || r.name, paused: !!(ov && ov.paused), deleted: !!(ov && ov.discontinued), changed: !!ov && ["packQty", "expiryDays", "displayName"].some((k) => ov[k] != null && ov[k] !== "") };
+    })
+    // 최근 발주가 있는 상품 먼저(최신 날짜순), 그다음 공급사·상품명 순
+    .sort((a, b) => (b.lastDate || "").localeCompare(a.lastDate || "") || a.supplier.localeCompare(b.supplier, "ko") || a.name.localeCompare(b.name, "ko"));
+  const suppliers = Array.from(new Set(list.map((r) => r.supplier)));
+  const filtered = list.filter((r) => {
+    if (showDeleted !== r.deleted) return false;
+    if (supplier !== "all" && r.supplier !== supplier) return false;
+    const k = q.trim().toLowerCase();
+    if (k && !r.name.toLowerCase().includes(k) && !String(r.sku).toLowerCase().includes(k) && !r.displayName.toLowerCase().includes(k)) return false;
+    return true;
+  });
+  const shown = filtered.slice(0, 400);
+  async function setEntry(name, fn, done) {
+    setBusy(name);
+    setMsg("");
+    const r = await updateSetting(key, authToken, (v) => {
+      const e = fn({ ...(v[name] || {}) });
+      if (e && Object.keys(e).length) v[name] = e;
+      else delete v[name];
+      return v;
+    });
+    setBusy(null);
+    setMsg(r.ok ? done : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  const btn = { ...smallBtnStyle, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4 };
+  return (
+    <div>
+      <PageHeader title="XIII. 상품 정보 관리" sub={`${label} 상품의 입수·소비기한·표시 상품명을 관리해요. ${brand === "EMART" ? "입수는 이마트 피킹지 엑셀에 바로 반영되고, " : ""}일시중지·삭제한 상품은 피킹지에서 빠져요.`} />
+      <div style={{ ...cardStyle, padding: 16, marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 260px" }}>
+          <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
+          <input style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} placeholder="상품명 또는 상품코드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <select style={{ ...inputStyle, flex: "0 1 220px" }} value={supplier} onChange={(e) => setSupplier(e.target.value)}>
+          <option value="all">전체 공급사</option>
+          {suppliers.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <button onClick={() => setShowDeleted((v) => !v)} style={{ ...smallBtnStyle, padding: "8px 12px", background: showDeleted ? T.danger : T.surface, color: showDeleted ? "#fff" : T.ink, borderColor: showDeleted ? T.danger : T.border }}>
+          삭제된 상품 ({list.filter((r) => r.deleted).length})
+        </button>
+        <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
+          {label} 상품 {filtered.length}개{filtered.length > shown.length ? ` (앞 ${shown.length}개 표시 - 검색으로 좁혀주세요)` : ""}
+        </span>
+      </div>
+      {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("서버에") ? T.danger : T.teal, margin: "-4px 0 12px 2px" }}>{msg}</div>}
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>공급사</th>
+              <th>상품명</th>
+              <th>상품코드</th>
+              <th style={{ textAlign: "center" }}>입수</th>
+              <th style={{ textAlign: "center" }}>소비기한</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.length === 0 ? (
+              <tr>
+                <td colSpan={6}>
+                  <EmptyRow text={loading ? "불러오는 중..." : showDeleted ? "삭제한 상품이 없어요." : list.length === 0 ? `${label} 발주파일을 올리면 상품이 여기에 자동으로 나와요.` : "조건에 맞는 상품이 없어요."} />
+                </td>
+              </tr>
+            ) : (
+              shown.map((r) => (
+                <tr key={r.name} className="rowhover" style={{ cursor: r.deleted ? "default" : "pointer", opacity: r.paused || r.deleted ? 0.55 : 1 }} onClick={() => !r.deleted && setEditing(r)}>
+                  <td style={{ color: T.inkSoft, fontSize: 12.5, whiteSpace: "nowrap" }}>{r.supplier}</td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <BrandBadge brand={brand} />
+                      <span style={{ fontWeight: 600 }}>{r.displayName}</span>
+                      {!r.lastDate && brand === "EMART" && <span style={{ fontSize: 10.5, color: T.inkSoft }}>(최근 발주 없음)</span>}
+                    </div>
+                    {r.displayName !== r.name && <div style={{ fontSize: 11.5, color: T.inkSoft }}>원래 이름: {r.name}</div>}
+                  </td>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: T.inkSoft }}>{r.sku || "-"}</td>
+                  <td style={{ textAlign: "center", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>
+                    {r.pack || "-"}
+                    {r.ov && r.ov.packQty && r.basePack !== r.pack && <div style={{ fontSize: 11, color: T.inkSoft, fontWeight: 500, textDecoration: "line-through" }}>{r.basePack || "-"}</div>}
+                  </td>
+                  <td style={{ textAlign: "center", fontSize: 13 }}>{r.expiry == null ? <span style={{ color: T.inkSoft }}>공란</span> : `+${r.expiry}일`}</td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                    {r.paused && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#fff", background: T.inkSoft, padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>일시중지</span>}
+                    {r.changed && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>변경됨</span>}
+                    {r.deleted ? (
+                      <button disabled={busy === r.name} onClick={() => setEntry(r.name, (e) => (delete e.discontinued, e), `"${r.displayName}" 복구했어요.`)} style={{ ...btn, color: T.teal, borderColor: T.teal + "66" }}>
+                        복구
+                      </button>
+                    ) : (
+                      <span style={{ display: "inline-flex", gap: 6 }}>
+                        <button onClick={() => setEditing(r)} style={btn}>
+                          <Pencil size={13} /> 수정
+                        </button>
+                        <button
+                          disabled={busy === r.name}
+                          onClick={() => setEntry(r.name, (e) => (e.paused ? delete e.paused : (e.paused = true), e), r.paused ? `"${r.displayName}" 다시 나가요.` : `"${r.displayName}" 일시중지했어요.`)}
+                          style={{ ...btn, ...(r.paused ? { background: T.teal, color: "#fff", borderColor: T.teal } : { color: T.amberDeep, borderColor: T.amber + "99" }) }}
+                        >
+                          {r.paused ? "재개" : "일시중지"}
+                        </button>
+                        <button
+                          disabled={busy === r.name}
+                          onClick={() => window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n피킹지에 더 이상 나오지 않아요. "삭제된 상품"에서 복구할 수 있어요.`) && setEntry(r.name, (e) => (delete e.paused, (e.discontinued = true), e), `"${r.displayName}" 삭제했어요.`)}
+                          style={{ ...btn, color: T.danger, borderColor: T.danger + "55" }}
+                        >
+                          <Trash2 size={13} /> 삭제
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <BrandProductInfoModal
+          row={editing}
+          label={label}
+          onClose={() => setEditing(null)}
+          onSave={async (vals) => {
+            await setEntry(
+              editing.name,
+              (e) => {
+                ["displayName", "packQty", "expiryDays"].forEach((k) => (vals[k] === "" || vals[k] == null ? delete e[k] : (e[k] = vals[k])));
+                return e;
+              },
+              `"${vals.displayName || editing.name}" 저장했어요.`
+            );
+            setEditing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+function BrandProductInfoModal({ row, label, onClose, onSave }) {
+  const ov = row.ov || {};
+  const [displayName, setDisplayName] = useState(ov.displayName || "");
+  const [packQty, setPackQty] = useState(ov.packQty ?? "");
+  const [expiryDays, setExpiryDays] = useState(ov.expiryDays ?? "");
+  const [err, setErr] = useState("");
+  function submit() {
+    if (String(packQty).trim() !== "" && !(Number(packQty) > 0)) return setErr("입수는 1 이상의 숫자로 넣어주세요.");
+    if (String(expiryDays).trim() !== "" && !Number.isFinite(Number(expiryDays))) return setErr("소비기한은 숫자(일수)로 넣어주세요.");
+    onSave({ displayName: displayName.trim(), packQty: String(packQty).trim() === "" ? "" : Number(packQty), expiryDays: String(expiryDays).trim() === "" ? "" : Number(expiryDays) });
+  }
+  return (
+    <BrandModalFrame title={`상품 정보 수정 · ${label}`} sub={row.name} onClose={onClose} maxWidth={520}>
+      <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <Field label="표시 상품명 (비우면 원래 이름)">
+          <input style={inputStyle} value={displayName} placeholder={row.name} onChange={(e) => setDisplayName(e.target.value)} />
+        </Field>
+        <div className="field-row" style={{ display: "flex", gap: 10 }}>
+          <Field label={`입수 (기본 ${row.basePack || "-"})`}>
+            <input style={inputStyle} type="number" min="1" value={packQty} placeholder={row.basePack ? String(row.basePack) : "-"} onChange={(e) => setPackQty(e.target.value)} />
+          </Field>
+          <Field label="소비기한 (+일)">
+            <input style={inputStyle} type="number" value={expiryDays} placeholder="공란" onChange={(e) => setExpiryDays(e.target.value)} />
+          </Field>
+        </div>
+        {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={smallBtnStyle}>
+            취소
+          </button>
+          <button onClick={submit} className="primary-btn" style={primaryBtnStyle}>
+            <Check size={14} /> 저장
+          </button>
+        </div>
+      </div>
+    </BrandModalFrame>
+  );
 }
 /* ================= II. 상품할당 ================= */
 function Allocation({ items, orders, onAllocate }) {
@@ -10139,16 +11134,44 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(null);
   const [mode, setMode] = useState("edit"); // "edit" | "create"
-  const [createForm, setCreateForm] = useState({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0 });
+  const [createForm, setCreateForm] = useState({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0, brands: "GS" });
   const [createErr, setCreateErr] = useState("");
+  const [brandFilter, setBrandFilter] = useState("all");
 
   const selected = items.find((i) => i.sku === selectedSku) || null;
-  const filtered = items.filter((i) => !query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase()));
+  const brandCount = (b) => items.filter((i) => itemBrandsOf(i).includes(b)).length;
+  const filtered = items.filter((i) => (brandFilter === "all" || itemBrandsOf(i).includes(brandFilter)) && (!query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase())));
+  const shownItems = filtered.slice(0, 500);
+  // 브랜드 체크 (쉼표 문자열 <-> 체크박스)
+  const BrandChecks = ({ value, onChange }) => {
+    const cur = String(value || "GS").split(",").filter(Boolean);
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {PICKING_CHANNELS.map((c) => {
+          const on = cur.includes(c.brand);
+          return (
+            <button
+              key={c.brand}
+              type="button"
+              onClick={() => {
+                const next = on ? cur.filter((x) => x !== c.brand) : [...cur, c.brand];
+                if (next.length === 0) return;
+                onChange(PICKING_CHANNELS.map((x) => x.brand).filter((b) => next.includes(b)).join(","));
+              }}
+              style={{ padding: "5px 10px", borderRadius: 999, border: `1.5px solid ${on ? T.teal : T.border}`, background: on ? "#E4F2EE" : T.surface, color: on ? T.tealDeep : T.inkSoft, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
 
   function openEdit(item) {
     setMode("edit");
     setSelectedSku(item.sku);
-    setForm({ newSku: item.sku, tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm, qty: item.qty });
+    setForm({ newSku: item.sku, tempZone: item.tempZone, workType: item.workType, location: item.location, unitQty: item.unitQty, boxQty: item.boxQty, cbm: item.cbm, qty: item.qty, brands: item.brands || "GS" });
   }
   function save() {
     if (!selected || !form) return;
@@ -10164,12 +11187,23 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
     if (!createForm.sku.trim() || !createForm.name.trim()) return setCreateErr("상품코드와 품목명은 필수입니다.");
     if (items.some((i) => i.sku === createForm.sku.trim())) return setCreateErr("이미 존재하는 상품코드입니다.");
     onCreate({ ...createForm, sku: createForm.sku.trim(), location: createForm.location.trim() || "미배정" });
-    setCreateForm({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0 });
+    setCreateForm({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0, brands: brandFilter === "all" ? "GS" : brandFilter });
   }
 
   return (
     <div>
-      <PageHeader title="X. 상품마스터" sub="품목별 온도구역·작업유형·로케이션·단위정보를 관리합니다" />
+      <PageHeader title="X. 상품마스터" sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요." />
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
+        {[{ brand: "all", label: "전체" }, ...PICKING_CHANNELS].map((c) => (
+          <button
+            key={c.brand}
+            onClick={() => setBrandFilter(c.brand)}
+            style={{ padding: "8px 16px", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: brandFilter === c.brand ? 700 : 500, background: brandFilter === c.brand ? T.steel : "transparent", color: brandFilter === c.brand ? "#fff" : T.inkSoft }}
+          >
+            {c.label} <span style={{ fontSize: 11.5, opacity: 0.75 }}>{c.brand === "all" ? items.length : brandCount(c.brand)}</span>
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "2 1 420px" }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -10187,6 +11221,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
                 <tr>
                   <th>상품코드</th>
                   <th>품목명</th>
+                  <th>브랜드</th>
                   <th>온도구역</th>
                   <th>작업유형</th>
                   <th>로케이션</th>
@@ -10196,21 +11231,28 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
-                      <EmptyRow text="등록된 품목이 없습니다." />
+                    <td colSpan={7}>
+                      <EmptyRow text={brandFilter === "all" ? "등록된 품목이 없습니다." : `${BRAND_LABEL[brandFilter]} 품목이 없어요. ${BRAND_LABEL[brandFilter]} 발주파일을 올리면 자동으로 등록돼요.`} />
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((i) => (
-                    <tr key={i.id} className="rowhover">
+                  shownItems.map((i) => (
+                    <tr key={i.id || i.sku} className="rowhover">
                       <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
                       <td style={{ fontWeight: 600 }}>{i.name}</td>
+                      <td>
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                          {itemBrandsOf(i).map((b) => (
+                            <BrandBadge key={b} brand={b} />
+                          ))}
+                        </div>
+                      </td>
                       <td>{i.tempZone}</td>
                       <td>{i.workType}</td>
-                      <td>
+                      <td style={{ whiteSpace: "nowrap" }}>
                         <LocationTag loc={i.location} />
                       </td>
-                      <td>
+                      <td style={{ whiteSpace: "nowrap" }}>
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
                             <Pencil size={13} /> 수정
@@ -10232,6 +11274,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
               </tbody>
             </table>
           </div>
+          {filtered.length > shownItems.length && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8 }}>품목 {filtered.length}개 중 앞 {shownItems.length}개만 보여요. 검색으로 좁혀주세요.</div>}
         </div>
         <div style={{ flex: "1 1 280px" }}>
           <div style={cardStyle}>
@@ -10243,6 +11286,9 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
                 </Field>
                 <Field label="품목명">
                   <input style={inputStyle} value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} placeholder="품목명을 입력하세요" />
+                </Field>
+                <Field label="브랜드 (여러 개 선택 가능)">
+                  <BrandChecks value={createForm.brands} onChange={(v) => setCreateForm({ ...createForm, brands: v })} />
                 </Field>
                 <Field label="카테고리">
                   <input style={inputStyle} value={createForm.category} onChange={(e) => setCreateForm({ ...createForm, category: e.target.value })} placeholder="예: 베이커리" />
@@ -10297,6 +11343,9 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{selected.name}</div>
                 <Field label="상품코드 (발주파일의 상품코드와 같아야 해요)">
                   <input style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} value={form.newSku ?? selected.sku} onChange={(e) => setForm({ ...form, newSku: e.target.value })} />
+                </Field>
+                <Field label="브랜드 (여러 개 선택 가능)">
+                  <BrandChecks value={form.brands} onChange={(v) => setForm({ ...form, brands: v })} />
                 </Field>
                 <Field label="온도구역">
                   <select style={inputStyle} value={form.tempZone} onChange={(e) => setForm({ ...form, tempZone: e.target.value })}>
