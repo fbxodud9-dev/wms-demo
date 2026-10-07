@@ -3682,11 +3682,17 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
     const bytes = new Uint8Array(buf);
     let rows = [];
 
-    const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // 진짜 xlsx/xls 바이너리(ZIP)
+    const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // 진짜 xlsx 바이너리(ZIP)
+    const isCfb = bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0; // 엑셀 97-2003 .xls (새 GS 발주파일 형식)
     if (isZip && typeof XLSX !== "undefined") {
       const wb = XLSX.read(bytes, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    } else if (isCfb && typeof XLSX !== "undefined") {
+      const wb = XLSX.read(bytes, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      // 숫자는 숫자 그대로(20261007, 36 등) 받아서 아래에서 날짜·수량으로 정리
+      rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
     } else {
       // 국내 물류/발주 시스템에서 흔한 "HTML 표를 .xls로 저장" 방식 (대개 EUC-KR 인코딩)
       let text;
@@ -3715,16 +3721,26 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
     }
 
     if (rows.length < 2) throw new Error(`${file.name}: 표 형식의 데이터를 찾지 못했습니다.`);
-    const header = rows[0].map((h) => (h == null ? "" : String(h)));
-    const dataRows = rows.slice(1).filter((r) => r.some((c) => c !== "" && c != null));
+    // 머리글 줄: 보통 첫 줄. 첫 줄에 상품코드가 없으면 위쪽 10줄 안에서 "상품코드"가 있는 줄을 찾는다 (제목 줄이 붙은 파일 대비)
+    const hNorm = (h) => String(h == null ? "" : h).replace(/[\s\u00a0]/g, "");
+    let headerIdx = 0;
+    if (!rows[0].some((h) => /상품코드|품목코드|SKU/.test(hNorm(h)))) {
+      const found = rows.slice(0, 10).findIndex((r) => r && r.some((h) => /상품코드|품목코드|SKU/.test(hNorm(h))));
+      if (found !== -1) headerIdx = found;
+    }
+    const header = rows[headerIdx].map((h) => (h == null ? "" : String(h)));
+    const headerN = header.map(hNorm);
+    const dataRows = rows.slice(headerIdx + 1).filter((r) => r.some((c) => c !== "" && c != null));
 
     const findCol = (candidates) => {
       for (const cand of candidates) {
-        const idx = header.findIndex((h) => h && h.includes(cand));
+        let idx = header.findIndex((h) => h && h.includes(cand));
+        if (idx === -1) idx = headerN.findIndex((h) => h && h.includes(hNorm(cand))); // "낱개 수량"처럼 띄어쓰기가 다른 머리글
         if (idx !== -1) return idx;
       }
       return -1;
     };
+    const exactCol = (name) => headerN.findIndex((h) => h === hNorm(name));
     const col = {
       orderNo: findCol(["발주번호", "주문번호"]),
       store: findCol(["납품처", "배송처", "발주처"]),
@@ -3737,7 +3753,14 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       date: findCol(["발주일자", "발주일"]),
       delivDate: findCol(["납품일자", "입고일"]),
       type: findCol(["발주타입", "발주유형"]),
+      // 새 발주파일 형식(2026-10 테스트): 납품처 코드/납품처명, 업체 코드/화주사명이 따로 있는 칸
+      storeCode: exactCol("납품처코드"),
+      storeName: exactCol("납품처명"),
+      supplierCode: exactCol("업체코드"),
     };
+    // 새 형식은 "납품처" 칸이 따로 없어서 위 검색이 "납품처 코드"를 잡는다 -> 코드/이름 칸을 따로 쓰도록 정리
+    const splitStoreCols = col.storeCode !== -1 && col.storeName !== -1 && exactCol("납품처") === -1;
+    if (splitStoreCols) col.store = -1;
     if (col.sku === -1 || col.qty === -1) {
       throw new Error(`${file.name}: '상품코드/품목코드'와 '수량' 컬럼을 찾지 못했습니다. 헤더명을 확인해주세요.`);
     }
@@ -3754,7 +3777,25 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
     // 작업일(피킹 날짜) 보정: 신제주(VV92) 1편처럼 GS가 하루 일찍 발주하는 줄은 발주일자가 하루 빠르지만(예: 발주 10/04)
     // 납품일자는 다른 지역과 같다(10/06). 발주일자 그대로 쓰면 그 줄만 전날 날짜로 들어가 그날 피킹지·명세서에서 빠지므로,
     // 같은 납품일자를 가진 줄들 중 가장 많은 발주일자를 그 납품일자의 작업일로 보고 모든 줄을 그 날짜로 맞춘다.
-    const dayOf = (v) => (v == null || v === "" ? "" : String(v).slice(0, 10));
+    const dayOf = (v) => {
+      if (v == null || v === "") return "";
+      if (typeof v === "number") {
+        if (v > 19000000 && v < 30000000) {
+          const t = String(Math.round(v));
+          return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}`; // 20261007
+        }
+        if (v > 20000 && v < 80000) {
+          const d = new Date(Math.round((v - 25569) * 86400000)); // 엑셀 날짜 일련번호
+          return d.toISOString().slice(0, 10);
+        }
+      }
+      const t = String(v).trim();
+      let m = t.match(/^(\d{4})(\d{2})(\d{2})$/);
+      if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+      m = t.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+      if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+      return t.slice(0, 10);
+    };
     const workDateByDeliv = new Map();
     if (col.date !== -1 && col.delivDate !== -1) {
       const counts = new Map(); // 납품일자 -> Map(발주일자 -> 줄 수)
@@ -3778,12 +3819,34 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
         workDateByDeliv.set(dd, best);
       });
     }
+    // 새 형식처럼 납품일자 칸이 없으면: 하루 일찍 발주되는 신제주(VV92)만 있는 날짜는, 파일에 그 다음 날짜가 있으면 다음 날 작업으로 본다
+    const earlyShift = new Map();
+    if (col.date !== -1 && col.delivDate === -1) {
+      const storesByDate = new Map();
+      dataRows.forEach((r) => {
+        const od = dayOf(r[col.date]);
+        if (!od) return;
+        const sc = col.storeCode !== -1 ? String(r[col.storeCode] || "").trim() : splitCodeName(col.store !== -1 ? r[col.store] : "").code;
+        if (!storesByDate.has(od)) storesByDate.set(od, new Set());
+        storesByDate.get(od).add(sc);
+      });
+      storesByDate.forEach((set, od) => {
+        const next = addDaysStr(od, 1);
+        if (storesByDate.has(next) && Array.from(set).every((c) => c === "VV92")) earlyShift.set(od, next);
+      });
+    }
     const workDateOf = (r) => {
       const od = col.date !== -1 ? dayOf(r[col.date]) : "";
       const dd = col.delivDate !== -1 ? dayOf(r[col.delivDate]) : "";
-      return (dd && workDateByDeliv.get(dd)) || od || todayStr();
+      return (dd && workDateByDeliv.get(dd)) || earlyShift.get(od) || od || todayStr();
     };
 
+    // 업체 코드 -> 예전 형식 발주파일의 공급자 이름 (가장 최근 것). 새 형식 파일에서만 사용
+    const knownSupplierByCode = new Map();
+    [...orders]
+      .filter((o) => o.supplierCode && !/^GS\d{8}-/.test(String(o.orderNo || "")))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      .forEach((o) => !knownSupplierByCode.has(o.supplierCode) && knownSupplierByCode.set(o.supplierCode, o.supplier));
     const groups = {};
     const unmatchedMap = new Map(); // 상품코드 -> 품목명 (자동 등록용)
     const rekeyMap = new Map(); // 기존 마스터 코드 -> 발주파일 상품코드 (이름으로만 맞은 품목)
@@ -3800,9 +3863,23 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       nameToCodes.get(nm).add(c);
     });
     dataRows.forEach((r) => {
-      const orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
-      const storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
-      const supplierSplit = splitCodeName(col.supplier !== -1 ? r[col.supplier] : "기타 화주사");
+      let orderNoRaw = col.orderNo !== -1 ? r[col.orderNo] : "";
+      let storeSplit = splitCodeName(col.store !== -1 ? r[col.store] : "미지정 매장");
+      if (splitStoreCols) storeSplit = { code: String(r[col.storeCode] || "").trim(), name: String(r[col.storeName] || "").trim() };
+      // 업체 코드 칸이 따로 있으면(새 형식) 화주사명은 쪼개지 않고 그대로 쓴다 ("H2 글로벌"처럼 앞이 영문이어도 안전).
+      // 그리고 예전 형식 발주에서 그 업체 코드로 쓰던 공급자 이름이 있으면 그 이름을 쓴다 -> 피킹지·명세서 공급사 묶음이 예전과 똑같이 유지됨
+      let supplierSplit;
+      if (col.supplierCode !== -1) {
+        const code = String(r[col.supplierCode] || "").trim();
+        const nm = String((col.supplier !== -1 && r[col.supplier]) || "").trim();
+        supplierSplit = { code, name: (code && knownSupplierByCode.get(code)) || nm || "기타 화주사" };
+      } else supplierSplit = splitCodeName(col.supplier !== -1 ? r[col.supplier] : "기타 화주사");
+      // 발주번호 칸이 없는 파일(새 형식): 작업일+납품처+업체코드로 발주번호를 만들고, 중복은 상품 줄 단위로 막는다 (handleFiles)
+      let synthetic = false;
+      if (col.orderNo === -1) {
+        orderNoRaw = `GS${workDateOf(r).replace(/-/g, "")}-${storeSplit.code || storeSplit.name}-${supplierSplit.code || supplierSplit.name}`;
+        synthetic = true;
+      }
       // 그룹 키는 반드시 코드 기준 (이름이 비슷해도 코드가 다르면 다른 그룹)
       const key = (orderNoRaw || "UPLOAD") + "__" + (storeSplit.code || storeSplit.name);
       if (!groups[key]) {
@@ -3815,6 +3892,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
           supplierCode: supplierSplit.code,
           channel: (col.type !== -1 && r[col.type]) || "화주사발주",
           createdAt: workDateOf(r),
+          syntheticNo: synthetic,
           status: "NEW",
           pickDocNo: null,
           pmsStatus: null,
@@ -3825,10 +3903,10 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       const sku = String(r[col.sku] ?? "").trim();
       if (!sku) return;
       const name = (col.name !== -1 && r[col.name]) || sku;
-      const qty = Number(r[col.qty]) || 0;
+      const qty = Number(String(r[col.qty] ?? "").replace(/,/g, "")) || 0;
       if (qty <= 0) return;
       const unit = (col.unit !== -1 && r[col.unit]) || "EA";
-      const packQty = col.packQty !== -1 ? Number(r[col.packQty]) || 0 : 0;
+      const packQty = col.packQty !== -1 ? Number(String(r[col.packQty] ?? "").replace(/,/g, "")) || 0 : 0;
       // 상품코드 대신 "품목명"으로 지정하는 입수 강제고정 (카카오톡으로 받은 입수 변경 요청 - 상품코드를 모를 때 사용).
 // 발주파일의 상품명과 아래 이름이 정확히 같아야 적용됨. 다르면(띄어쓰기·괄호 등) 조용히 무시되니,
 // 적용 후 화면에서 그 상품 입수가 실제로 바뀌었는지 확인 필요.
@@ -3934,6 +4012,39 @@ function resolveNamePackOverride(name) {
         }
       }
 
+      // 발주번호가 없는 새 형식 발주: "작업일+납품처+업체+상품코드"가 이미 올라온 줄은 건너뛴다 (같은 파일 재업로드·파일 안 중복 방지)
+      let dupLineCount = 0;
+      {
+        const lineKey = (o, sku) => `${o.createdAt}|${o.storeCode || o.customer}|${o.supplierCode || o.supplier}|${sku}`;
+        const seen = new Set();
+        orders.forEach((o) => o.lines.forEach((l) => seen.add(lineKey(o, l.sku))));
+        const usedNos = new Set(orders.map((o) => `${o.orderNo}|${o.createdAt}`));
+        const kept = [];
+        allNewOrders.forEach((o) => {
+          if (!o.syntheticNo) {
+            kept.push(o);
+            return;
+          }
+          const lines = o.lines.filter((l) => {
+            const k = lineKey(o, l.sku);
+            if (seen.has(k)) {
+              dupLineCount++;
+              return false;
+            }
+            seen.add(k);
+            return true;
+          });
+          if (lines.length === 0) return;
+          let no = o.orderNo;
+          for (let n = 2; usedNos.has(`${no}|${o.createdAt}`); n++) no = `${o.orderNo}-${n}`; // 같은 날 추가 발주는 -2, -3…
+          usedNos.add(`${no}|${o.createdAt}`);
+          const { syntheticNo, ...rest } = o;
+          kept.push({ ...rest, orderNo: no, lines });
+        });
+        allNewOrders.length = 0;
+        allNewOrders.push(...kept);
+      }
+
       let skippedCount = 0;
       if (allNewOrders.length > 0) {
         if (onAddBulk) {
@@ -3952,10 +4063,14 @@ function resolveNamePackOverride(name) {
         setUploadMsg(
           `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length - skippedCount}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
             (skippedCount > 0 ? ` (이미 등록된 발주번호 ${skippedCount}건은 건너뛰었습니다.)` : "") +
+            (dupLineCount > 0 ? ` (이미 올라왔거나 파일 안에서 겹치는 상품 줄 ${dupLineCount}개는 건너뛰었습니다.)` : "") +
             (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "") +
             (rekeyResult.renamed > 0 ? ` (상품마스터의 상품코드 ${rekeyResult.renamed}건을 발주파일의 상품코드로 바꿨습니다.)` : "") +
             (rekeyResult.conflicts > 0 ? ` (상품코드 ${rekeyResult.conflicts}건은 같은 코드의 다른 품목이 이미 있어 바꾸지 못했습니다. 상품마스터에서 확인해주세요.)` : "")
         );
+      }
+      if (allNewOrders.length === 0 && dupLineCount > 0) {
+        setUploadMsg(`새로 추가할 줄이 없어요. 상품 줄 ${dupLineCount}개가 이미 올라와 있어서 모두 건너뛰었습니다.`);
       }
       if (fileErrors.length > 0) {
         setUploadErr(fileErrors.join(" / "));
