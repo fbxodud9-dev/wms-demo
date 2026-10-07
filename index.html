@@ -1754,6 +1754,13 @@ function WMSApp() {
     return () => clearTimeout(timer);
   }, [orders, productInfo, authToken]);
 
+  // 이마트 일별 집계 스냅샷: 월별로 서버 설정(daily_emart_YYYYMM)에 저장 (발주 원본이 지워져도 남게)
+  useEffect(() => {
+    if (!authToken || !emartOrders.length) return;
+    const timer = setTimeout(() => syncEmartDaily(emartOrders, authToken).catch((e) => console.warn("이마트 일별 집계 저장 실패:", e.message)), 2500);
+    return () => clearTimeout(timer);
+  }, [emartOrders, authToken]);
+
   // 거래명세서 설정(사업자 정보·발행 지역·명세서용 상품명/입수/소비기한)을 로그인 후 한 번 불러온다
   const [invoiceSettings, setInvoiceSettingsState] = useState({ suppliers: {} });
   const applyInvoiceSettings = useCallback((value) => {
@@ -2157,6 +2164,11 @@ function WMSApp() {
       try {
         if (channel === "EMART") {
           await apiFetch(`/orders/by-date/${date}?channel=EMART`, authToken, { method: "DELETE" });
+          // 이마트 일별 집계 스냅샷에서도 그 날짜 삭제
+          await updateSetting(emartDailyKey(date.slice(0, 7)), authToken, (v) => {
+            if (v.days) delete v.days[date];
+            return v;
+          }).catch(() => {});
           await loadCoreData();
           return;
         }
@@ -2277,7 +2289,7 @@ function WMSApp() {
       items: [
         { key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" },
         { key: "invoice", label: "거래명세서", icon: FileText },
-        { key: "gsdaily", label: "GS 일별 발주 집계", icon: ListChecks },
+        { key: "gsdaily", label: "일별 발주 집계", icon: ListChecks },
       ],
     },
     {
@@ -2504,7 +2516,7 @@ function WMSApp() {
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
-        {tab === "gsdaily" && <GsDailyPage orders={orders} authToken={authToken} productInfo={productInfo} />}
+        {tab === "gsdaily" && <GsDailyPage orders={orders} emartOrders={emartOrders} authToken={authToken} productInfo={productInfo} />}
         {tab === "invoice" && (
           <InvoiceCenter
             channel={invChannel}
@@ -4401,6 +4413,81 @@ const gsWeekday = (ymd) => {
   return GS_WEEKDAY[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 };
 
+// ---------- 이마트 일별 집계 ----------
+const emartDailyKey = (month) => `daily_emart_${month.replace("-", "")}`;
+// 이마트 상품은 이름에 "2편"이 들어가면 2편, 아니면 1편
+const emartPartOf = (name) => (/2편/.test(String(name || "")) ? 2 : 1);
+function computeEmartDailySnapshot(emartOrders, date) {
+  const m = new Map();
+  emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === date)).forEach((r) => {
+    const x = m.get(r.name) || { name: r.name, supplier: emartVendorKey(r.vendor), qty: 0 };
+    x.qty += r.qty;
+    m.set(r.name, x);
+  });
+  return { products: Array.from(m.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) };
+}
+// 저장 형식(용량 절약): { sups: [공급사...], days: { 날짜: [[상품명, 공급사번호, 수량], ...] } }
+function packEmartMonth(v) {
+  const out = {};
+  Object.entries((v && v.days) || {}).forEach(([d, list]) => (out[d] = { products: (list || []).map(([name, si, qty]) => ({ name, supplier: (v.sups || [])[si] || "미지정", qty })) }));
+  return out;
+}
+async function syncEmartDaily(emartOrders, authToken) {
+  const dates = Array.from(new Set(emartOrders.map((o) => o.createdAt).filter(Boolean)));
+  for (const month of new Set(dates.map((d) => d.slice(0, 7)))) {
+    const key = emartDailyKey(month);
+    const cur = SETTING_CACHE[key];
+    const curDays = cur === undefined ? null : packEmartMonth(cur);
+    const fresh = {};
+    dates.filter((d) => d.startsWith(month)).forEach((d) => (fresh[d] = computeEmartDailySnapshot(emartOrders, d)));
+    if (curDays && Object.entries(fresh).every(([d, snap]) => JSON.stringify(curDays[d]) === JSON.stringify(snap))) continue;
+    await updateSetting(key, authToken, (v) => {
+      const sups = [...(v.sups || [])];
+      const days = { ...(v.days || {}) };
+      Object.entries(fresh).forEach(([d, snap]) => {
+        days[d] = snap.products.map((p) => {
+          let i = sups.indexOf(p.supplier);
+          if (i === -1) i = sups.push(p.supplier) - 1;
+          return [p.name, i, p.qty];
+        });
+      });
+      return { sups, days };
+    });
+  }
+}
+// 이마트/기타 브랜드 표: GS 표와 같은 모양 (냉장 없음)
+function buildBrandDailyTable(month, days, partOf) {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
+  const cols = new Map();
+  Object.values(days).forEach((d) => (d.products || []).forEach((p) => !cols.has(p.name) && cols.set(p.name, { name: p.name, supplier: p.supplier || "미지정" })));
+  const columns = Array.from(cols.values()).sort((a, b) => a.supplier.localeCompare(b.supplier, "ko") || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name, "ko"));
+  const rows = dates.map((date) => {
+    const d = days[date];
+    const all = (d && d.products) || [];
+    const qtyBy = new Map(all.map((p) => [p.name, p.qty]));
+    const sum = (f) => all.filter(f).reduce((a, p) => a + p.qty, 0);
+    return { date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name) === 1), p2: sum((p) => partOf(p.name) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0) };
+  });
+  const totals = {
+    total: rows.reduce((a, r) => a + r.total, 0),
+    p1: rows.reduce((a, r) => a + r.p1, 0),
+    p2: rows.reduce((a, r) => a + r.p2, 0),
+    cold: null,
+    cells: columns.map((_, i) => rows.reduce((a, r) => a + r.cells[i], 0)),
+  };
+  return { columns, rows, totals };
+}
+// 엑셀 시트 순서 (전산팀 "편의점 일별 발주 내역" 파일과 같은 순서)
+const DAILY_SHEETS = [
+  { name: "세븐일레븐", head: "세븐", cold: false },
+  { name: "BGF", head: "bgf", cold: false },
+  { name: "GS", head: "GS", cold: true },
+  { name: "GS재고", head: "GS재고", cold: true },
+  { name: "이마트", head: "이마트", cold: false },
+];
+
 async function downloadGsDailyExcel(table, setBusy) {
   if (setBusy) setBusy(true);
   try {
@@ -4413,8 +4500,10 @@ async function downloadGsDailyExcel(table, setBusy) {
     const gray = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
     const font = { name: "맑은 고딕", size: 10 };
     const bold = { ...font, bold: true };
-    ["GS", "GS재고"].forEach((sheetName) => {
+    DAILY_SHEETS.forEach((meta) => {
+      const sheetName = meta.name;
       const sh = table.sheets[sheetName];
+      if (!sh) return;
       const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 9, ySplit: 5 }] });
       ws.getColumn(1).width = 3;
       [2, 3, 4, 5].forEach((c) => (ws.getColumn(c).width = 12));
@@ -4431,7 +4520,7 @@ async function downloadGsDailyExcel(table, setBusy) {
         ws.getCell(a).fill = a.endsWith("3") ? green : gray;
         ws.getCell(a).border = box;
       });
-      const heads = [`일일물동량\n${sheetName === "GS" ? "GS" : "GS재고"}`, "1편수량", "2편수량", "냉장", "발주일자", "요일", "센터\n입고일자", "요일"];
+      const heads = [`일일물동량\n${meta.head}`, "1편수량", "2편수량", meta.cold ? "냉장" : "", "발주일자", "요일", "센터\n입고일자", "요일"];
       heads.forEach((h, i) => {
         const c = ws.getCell(4, 2 + i);
         c.value = h;
@@ -4467,7 +4556,7 @@ async function downloadGsDailyExcel(table, setBusy) {
       ws.getRow(5).height = 42;
       sh.rows.forEach((r, k) => {
         const rr = 6 + k;
-        const vals = [r.total, r.p1, sheetName === "GS재고" && r.p2 === 0 ? null : r.p2, r.cold];
+        const vals = [r.total, r.p1, sheetName === "GS재고" && r.p2 === 0 ? null : r.p2, meta.cold ? r.cold : null];
         vals.forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
         ws.getCell(rr, 6).value = invDate(r.date);
         ws.getCell(rr, 7).value = gsWeekday(r.date);
@@ -4485,7 +4574,7 @@ async function downloadGsDailyExcel(table, setBusy) {
       });
       const tr = 6 + sh.rows.length;
       ws.getCell(tr, 6).value = "합계";
-      [sh.totals.total, sh.totals.p1, sheetName === "GS재고" && sh.totals.p2 === 0 ? null : sh.totals.p2, sh.totals.cold].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v));
+      [sh.totals.total, sh.totals.p1, sheetName === "GS재고" && sh.totals.p2 === 0 ? null : sh.totals.p2, meta.cold ? sh.totals.cold : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v));
       sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = v));
       for (let c = 2; c < 10 + sh.columns.length; c++) {
         const cell = ws.getCell(tr, c);
@@ -4501,7 +4590,7 @@ async function downloadGsDailyExcel(table, setBusy) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `GS_일별발주내역_${table.year}-${String(table.month).padStart(2, "0")}.xlsx`;
+    a.download = `편의점_일별_발주_내역_${table.year}-${String(table.month).padStart(2, "0")}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -4511,7 +4600,7 @@ async function downloadGsDailyExcel(table, setBusy) {
   }
 }
 
-function GsDailyPage({ orders, authToken, productInfo }) {
+function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
   const orderDates = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt).filter(Boolean))).sort(), [orders]);
   const [months, setMonths] = useState([]);
   const defaultMonth = (orderDates[orderDates.length - 1] || todayStr()).slice(0, 7);
@@ -4551,18 +4640,33 @@ function GsDailyPage({ orders, authToken, productInfo }) {
     orderDates.filter((x) => x.startsWith(month)).forEach((x) => (d[x] = computeGsDailySnapshot(orders, x)));
     return d;
   }, [stored, orders, orderDates, month, productInfo]);
-  const table = useMemo(() => buildGsDailyTable(month, days), [month, days]);
+  // 이마트: 저장된 월 스냅샷 + 지금 남아 있는 이마트 발주
+  const emSaved = useSetting(emartDailyKey(month), authToken);
+  const emDays = useMemo(() => {
+    const d = packEmartMonth(emSaved);
+    Array.from(new Set(emartOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeEmartDailySnapshot(emartOrders, x)));
+    return d;
+  }, [emSaved, emartOrders, month]);
+  const table = useMemo(() => {
+    const t = buildGsDailyTable(month, days);
+    t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf);
+    // 세븐일레븐·BGF: 아직 발주 연동 전이라 날짜 틀만
+    t.sheets["세븐일레븐"] = buildBrandDailyTable(month, {}, () => 1);
+    t.sheets["BGF"] = buildBrandDailyTable(month, {}, () => 1);
+    return t;
+  }, [month, days, emDays]);
   const sh = table.sheets[sheet];
+  const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
   const nf = (v) => (v ? v.toLocaleString() : "-");
   const th = { position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 };
-  const summaryHead = sheet === "GS" ? ["일일물동량", "1편수량", "2편수량", "냉장"] : ["일일물동량", "1편수량", "2편수량", "냉장"];
+  const summaryHead = hasCold ? ["일일물동량", "1편수량", "2편수량", "냉장"] : ["일일물동량", "1편수량", "2편수량"];
 
   return (
     <div>
       <PageHeader
-        title="GS 일별 발주 집계"
-        sub="날짜별 상품 총수량 = 피킹지시서 총수량(0고정 지역은 0) + 당착 수량. 일별로 쌓여서 월별 합계까지 나와요."
+        title="일별 발주 집계"
+        sub="날짜별 상품 총수량을 브랜드별 시트로 쌓아요. GS = 피킹지시서 총수량(0고정 지역은 0) + 당착 수량. 엑셀은 전산팀 파일처럼 세븐일레븐·BGF·GS·GS재고·이마트 시트로 나가요."
         action={
           <button onClick={() => downloadGsDailyExcel(table, setBusy)} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
             <Download size={15} /> {busy ? "생성 중..." : "엑셀 다운로드"}
@@ -4577,18 +4681,18 @@ function GsDailyPage({ orders, authToken, productInfo }) {
             </option>
           ))}
         </select>
-        {["GS", "GS재고"].map((s) => (
+        {["GS", "GS재고", "이마트", "세븐일레븐", "BGF"].map((s) => (
           <button
             key={s}
             onClick={() => setSheet(s)}
             style={{ ...smallBtnStyle, padding: "8px 14px", background: sheet === s ? T.steel : T.surface, color: sheet === s ? "#fff" : T.ink, borderColor: sheet === s ? T.steel : T.border }}
           >
-            {s === "GS" ? "GS (일반)" : "GS재고 (DC)"}
+            {s === "GS" ? "GS (일반)" : s === "GS재고" ? "GS재고 (DC)" : s}
           </button>
         ))}
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
           {loading ? "불러오는 중..." : `월 합계 ${nf(sh.totals.total)}ea · 상품 ${sh.columns.length}종`}
-          {GS_COLD_PRODUCTS.length === 0 ? " · 냉장 상품 목록 받기 전이라 냉장은 0" : ""}
+          {sheet === "세븐일레븐" || sheet === "BGF" ? " · 발주 연동 전이라 빈 시트로 나가요" : ""}
         </span>
       </div>
       {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
@@ -4619,7 +4723,7 @@ function GsDailyPage({ orders, authToken, productInfo }) {
                 <td style={{ textAlign: "right", fontWeight: 700 }}>{nf(r.total)}</td>
                 <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>
                 <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>
-                <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>
+                {hasCold && <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>}
                 {r.cells.map((v, i) => (
                   <td key={i} style={{ textAlign: "right" }}>
                     {nf(v)}
@@ -4632,7 +4736,7 @@ function GsDailyPage({ orders, authToken, productInfo }) {
               <td style={{ textAlign: "right" }}>{nf(sh.totals.total)}</td>
               <td style={{ textAlign: "right" }}>{nf(sh.totals.p1)}</td>
               <td style={{ textAlign: "right" }}>{nf(sh.totals.p2)}</td>
-              <td style={{ textAlign: "right" }}>{nf(sh.totals.cold)}</td>
+              {hasCold && <td style={{ textAlign: "right" }}>{nf(sh.totals.cold)}</td>}
               {sh.totals.cells.map((v, i) => (
                 <td key={i} style={{ textAlign: "right" }}>
                   {nf(v)}
