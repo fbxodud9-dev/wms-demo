@@ -4292,11 +4292,33 @@ function resolveNamePackOverride(name) {
 // 발주 원본은 14일 뒤 자동 삭제되므로, 날짜별 결과를 서버(/gs-daily)에 스냅샷으로 저장해 월별 집계에 쓴다.
 // - GS 시트: TC(일반) 상품 열. 일일물동량/1편/2편/냉장은 GS 전체(GS재고 포함) 합계 (실물 10월 파일 숫자로 확인: B = C + D + E)
 // - GS재고 시트: DC 상품 열 (조인앤조인 고단백저당은 실물처럼 GS 시트에)
-// - 냉장: 아래 목록에 있는 상품만 1편에서 빼서 냉장으로 (목록은 화주사 냉장 상품 파일 받으면 채움)
-const GS_COLD_PRODUCTS = [];
+// - 냉장: 화주사 "GS_냉장제품 리스트"(2026-10-07) 기준. 아래 상품/공급사는 1편에서 빼서 냉장으로
+//   (실물 10월 파일 10/1~10/3 냉장 숫자와 정확히 일치 확인: GS재고 13,396 / GS 전체 34,382)
+// 1) 상품 단위: 조인앤조인(당착) 고단백저당 6종 + 대광 5종
+const GS_COLD_PRODUCTS = [
+  "고단백저당)도넛케이크(다크초코",
+  "고단백저당)도넛케이크(헤이즐넛",
+  "고단백저당)카스테라(초코)",
+  "고단백저당)카스테라(플레인)",
+  "고단백저당)쿠키(다크초코아몬드",
+  "고단백저당)쿠키(말차마카다미아",
+  "달빛한상)매콤순대곱창200G",
+  "대광)두바이초코스틱55G",
+  "대광)벽돌모양초콜릿75G",
+  "황치즈카다이프초콜릿90G",
+  "프리미엄두바이초콜릿(냉장)",
+];
+// 2) 공급사 단위: 이 공급사(DC 그룹) 상품은 전부 냉장
+const GS_COLD_DC_GROUPS = ["삼경MNS", "골든", "흥선", "뚠뚠", "아워홈", "삼진어묵", "싱싱한", "효성", "참맛나라", "맛요일", "h2 글로벌", "데어리젠"];
+const coldNorm = (s) => String(s || "").replace(/\s/g, "").toUpperCase();
+const GS_COLD_NORM = GS_COLD_PRODUCTS.map(coldNorm);
 function isColdProduct(name) {
-  const n = String(name || "").trim();
-  return GS_COLD_PRODUCTS.some((p) => n.startsWith(p));
+  const n = coldNorm(name);
+  if (!n) return false;
+  // 상품명이 잘려 있거나 뒤에 1편/2편이 붙어 있어도 맞도록 앞부분 일치
+  if (GS_COLD_NORM.some((p) => n.startsWith(p) || (n.length >= 10 && p.startsWith(n)))) return true;
+  const k = dcVendorKey(name);
+  return !!k && GS_COLD_DC_GROUPS.includes(k);
 }
 const gsBaseName = (name) => String(name || "").replace(/(\d)\s*편?\s*$/, "").trim(); // 1편·2편을 나란히 정렬하기 위한 기본 이름
 function gsDailySheetOf(name) {
@@ -8039,6 +8061,8 @@ const DC_VENDOR_GROUPS = [
     "락컴퍼니)비빔파스타254G",
     "락컴퍼니)카레당면203G",
     "심으뜸)곤약비빔면201G",
+    "(주문)예약)HOT한미역국탕밥243G",
+    "(주문)예약)카레당면203G",
   ] },
   { key: "유라가", label: "유라가", prefixes: [
     "서울우유)옥수수크림찰떡",
@@ -8071,6 +8095,7 @@ const DC_VENDOR_GROUPS = [
     "효성)떡볶이맛두부바100G",
     "효성)치즈어묵바80G",
     "효성)프로틴두부어육바80G",
+    "흑백)최강록떡볶이맛두부바100G",
   ] },
   { key: "참맛나라", label: "참맛나라", prefixes: [
     "두끼)치즈즉석라볶이633G",
@@ -8084,6 +8109,8 @@ const DC_VENDOR_GROUPS = [
     "맛요일)떠먹는얼큰국물파스타",
     "맛요일)스팸참기름김치덮밥345G",
     "오뚜기마요)참치마요간장계란밥",
+    "(주문)예약)3900치즈미역국468G",
+    "(주문)예약)소고기미역국밥480G",
   ] },
   { key: "h2 글로벌", label: "h2 글로벌", prefixes: [
     "노포식당)김치찌개406G",
