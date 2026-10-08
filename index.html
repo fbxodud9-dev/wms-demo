@@ -5722,6 +5722,32 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     if (sh) Array.from(sh.doc.getElementsByTagName("sheetView")).forEach((v) => (i === activeIdx ? v.setAttribute("tabSelected", "1") : v.removeAttribute("tabSelected")));
   });
 
+  // 시트 색상 설정(이마트): 피벗 / 상품 시트 탭 색 (공급사 = 거래처명 정리한 이름)
+  {
+    const vendorOfSheet = new Map();
+    links.forEach(({ prod, item }) => {
+      const v = emartVendorKey(item.vendor);
+      if (!vendorOfSheet.has(prod.sheet)) vendorOfSheet.set(prod.sheet, v);
+      if (!vendorOfSheet.has(prod.pivot)) vendorOfSheet.set(prod.pivot, v);
+    });
+    const pivotSet = new Set(tpl.products.map((x) => x.pivot));
+    tpl.sheets.forEach((sh) => {
+      const hex = resolveSheetTabColor("emart_picking", { supplier: vendorOfSheet.get(sh.name) || "", type: pivotSet.has(sh.name) ? "pivot" : "product" });
+      if (!hex) return;
+      const doc = sh.doc;
+      const root = doc.documentElement;
+      let pr = doc.getElementsByTagName("sheetPr")[0];
+      if (!pr) {
+        pr = doc.createElementNS(XL_NS, "sheetPr");
+        root.insertBefore(pr, root.firstChild);
+      }
+      Array.from(pr.getElementsByTagName("tabColor")).forEach((t) => pr.removeChild(t));
+      const tc = doc.createElementNS(XL_NS, "tabColor");
+      tc.setAttribute("rgb", "FF" + hex.toUpperCase());
+      pr.insertBefore(tc, pr.firstChild);
+    });
+  }
+
   // 저장: 바뀐 XML 다시 쓰기 + 엑셀이 열 때 전체 재계산
   const ser = new XMLSerializer();
   const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
@@ -6156,6 +6182,7 @@ function EmartPickingView({ emartOrders, authToken }) {
         sub="이마트24 발주를 실물 이마트24 피킹검수 양식(공급사별 지역·입수·서식) 그대로 정리합니다"
         action={
           <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <SheetColorButton kind="emart_picking" authToken={authToken} suppliers={Array.from(new Set(emartOrders.map((o) => emartVendorKey(o.supplier))))} />
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정">
               <SettingsGear size={15} /> 순서 설정
             </button>
@@ -7042,6 +7069,320 @@ function BrandInvoiceSettingsButton({ ch, authToken, detected }) {
   );
 }
 
+/* ================= 엑셀 시트(탭) 색상 설정 ================= */
+// 피킹지시서·거래명세서 엑셀의 시트 탭 색을 공급사별 / 시트 종류별로 정한다. 서버 /settings/sheet_colors
+// { [kind]: { suppliers: { 공급사키: "E2EFDA" }, types: { pivot: "FFFF00", ... } } }
+// 우선순위: "특별" 시트 종류(피벗·당착·오전현장)의 색 > 공급사 색 > 기본 시트 종류 색 > 색 없음
+const SHEET_COLOR_KINDS = {
+  gs_picking: {
+    label: "GS 피킹지시서",
+    types: [
+      { key: "dangchak", label: "당착 시트 (조인앤조인 등 전 지역 당착)", special: true },
+      { key: "ojeon", label: "오전현장 시트 (지역 골라서 당착)", special: true },
+      { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
+    ],
+  },
+  emart_picking: {
+    label: "이마트 피킹지",
+    types: [
+      { key: "pivot", label: "피벗 시트", special: true },
+      { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
+    ],
+  },
+  gs_invoice: {
+    label: "GS 거래명세서",
+    types: [
+      { key: "pivot", label: "발주량(요약) 시트 - 맨 앞", special: true },
+      { key: "1", label: "1편 명세서 시트 (공급사 색이 없을 때)" },
+      { key: "2", label: "2편 명세서 시트 (공급사 색이 없을 때)" },
+      { key: "DC", label: "DC 명세서 시트 (공급사 색이 없을 때)" },
+      { key: "당착", label: "당착 명세서 시트 (공급사 색이 없을 때)" },
+    ],
+  },
+};
+// 시트 하나의 탭 색 (6자리 hex, 없으면 null)
+function resolveSheetTabColor(kind, meta) {
+  const cfg = ((SETTING_CACHE.sheet_colors || {})[kind]) || {};
+  const types = cfg.types || {};
+  const sups = cfg.suppliers || {};
+  const def = (SHEET_COLOR_KINDS[kind] || { types: [] }).types.find((t) => t.key === String(meta.type));
+  if (def && def.special && types[def.key]) return types[def.key];
+  if (meta.supplier && sups[meta.supplier]) return sups[meta.supplier];
+  if (def && !def.special && types[def.key]) return types[def.key];
+  return null;
+}
+// ExcelJS 통합문서: 시트를 만들 때 붙여둔 ws.__sheetMeta로 탭 색을 칠한다
+function applySheetTabColors(workbook, kind) {
+  workbook.worksheets.forEach((ws) => {
+    if (!ws.__sheetMeta) return;
+    const hex = resolveSheetTabColor(kind, ws.__sheetMeta);
+    if (hex) ws.properties.tabColor = { argb: "FF" + hex.toUpperCase() };
+  });
+}
+
+// ---------- 엑셀과 같은 색 팔레트 (Office 기본 테마 + 표준 색) ----------
+const XL_THEME_BASE = [
+  { hex: "FFFFFF", name: "흰색, 배경 1" },
+  { hex: "000000", name: "검정, 텍스트 1" },
+  { hex: "E7E6E6", name: "황갈색, 배경 2" },
+  { hex: "44546A", name: "파랑-회색, 텍스트 2" },
+  { hex: "4472C4", name: "파랑, 강조 1" },
+  { hex: "ED7D31", name: "주황, 강조 2" },
+  { hex: "A5A5A5", name: "회색, 강조 3" },
+  { hex: "FFC000", name: "금색, 강조 4" },
+  { hex: "5B9BD5", name: "파랑, 강조 5" },
+  { hex: "70AD47", name: "녹색, 강조 6" },
+];
+const XL_STANDARD = [
+  { hex: "C00000", name: "진한 빨강" },
+  { hex: "FF0000", name: "빨강" },
+  { hex: "FFC000", name: "주황" },
+  { hex: "FFFF00", name: "노랑" },
+  { hex: "92D050", name: "연한 녹색" },
+  { hex: "00B050", name: "녹색" },
+  { hex: "00B0F0", name: "연한 파랑" },
+  { hex: "0070C0", name: "파랑" },
+  { hex: "002060", name: "진한 파랑" },
+  { hex: "7030A0", name: "자주" },
+];
+// 엑셀 테마 색 밝게/어둡게 (엑셀처럼 HSL 밝기 기준)
+function xlTint(hex, tint) {
+  const r = parseInt(hex.slice(0, 2), 16) / 255, g = parseInt(hex.slice(2, 4), 16) / 255, b = parseInt(hex.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h /= 6;
+  }
+  l = tint < 0 ? l * (1 + tint) : l * (1 - tint) + tint;
+  const hue = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  let R, G, B;
+  if (s === 0) R = G = B = l;
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    R = hue(p, q, h + 1 / 3);
+    G = hue(p, q, h);
+    B = hue(p, q, h - 1 / 3);
+  }
+  return [R, G, B].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+// 엑셀 "테마 색" 6줄 x 10칸 (첫 줄 기본색, 아래 5줄 밝게/어둡게) - 엑셀 2016 이후 기본 테마의 실제 색값 그대로
+const XL_THEME_TINTS = [
+  ["F2F2F2", "D9D9D9", "BFBFBF", "A6A6A6", "808080"],
+  ["808080", "595959", "404040", "262626", "0D0D0D"],
+  ["D0CECE", "AEAAAA", "757171", "3A3838", "161616"],
+  ["D6DCE4", "ACB9CA", "8497B0", "333F4F", "222B35"],
+  ["D9E1F2", "B4C6E7", "8EA9DB", "305496", "203764"],
+  ["FCE4D6", "F8CBAD", "F4B084", "C65911", "833C0C"],
+  ["EDEDED", "DBDBDB", "C9C9C9", "7B7B7B", "525252"],
+  ["FFF2CC", "FFE699", "FFD966", "BF8F00", "806000"],
+  ["DDEBF7", "BDD7EE", "9BC2E6", "2F75B5", "1F4E78"],
+  ["E2EFDA", "C6E0B4", "A9D08E", "548235", "375623"],
+];
+const XL_TINT_LABELS = (i) =>
+  i === 0
+    ? ["5% 더 어둡게", "15% 더 어둡게", "25% 더 어둡게", "35% 더 어둡게", "50% 더 어둡게"]
+    : i === 1
+    ? ["50% 더 밝게", "35% 더 밝게", "25% 더 밝게", "15% 더 밝게", "5% 더 밝게"]
+    : i === 2
+    ? ["10% 더 어둡게", "25% 더 어둡게", "50% 더 어둡게", "75% 더 어둡게", "90% 더 어둡게"]
+    : ["80% 더 밝게", "60% 더 밝게", "40% 더 밝게", "25% 더 어둡게", "50% 더 어둡게"];
+const XL_THEME_GRID = [
+  XL_THEME_BASE.map((c) => ({ ...c })),
+  ...[0, 1, 2, 3, 4].map((k) => XL_THEME_BASE.map((c, i) => ({ hex: XL_THEME_TINTS[i][k], name: `${c.name}, ${XL_TINT_LABELS(i)[k]}` }))),
+];
+const xlColorName = (hex) => {
+  if (!hex) return "색 없음";
+  const H = hex.toUpperCase();
+  for (const row of XL_THEME_GRID) for (const c of row) if (c.hex === H) return c.name;
+  const st = XL_STANDARD.find((c) => c.hex === H);
+  return st ? st.name : `#${H}`;
+};
+
+// 엑셀 "탭 색" 메뉴처럼 생긴 색 고르기 (색칸 + 이름, 누르면 팔레트)
+function ExcelColorPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+  const cell = (c) => (
+    <button
+      key={c.hex}
+      title={c.name}
+      onClick={() => {
+        onChange(c.hex);
+        setOpen(false);
+      }}
+      style={{ width: 18, height: 18, padding: 0, border: value && value.toUpperCase() === c.hex ? "2px solid #1E2124" : "1px solid #D0D0D0", background: "#" + c.hex, cursor: "pointer", borderRadius: 2 }}
+    />
+  );
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 10px", minWidth: 190, justifyContent: "flex-start" }}>
+        <span style={{ width: 26, height: 16, borderRadius: 3, border: "1px solid #BDB8AC", background: value ? "#" + value : "repeating-linear-gradient(45deg,#fff,#fff 4px,#eee 4px,#eee 8px)" }} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: value ? T.ink : T.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150 }}>{xlColorName(value)}</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: T.inkSoft }}>▼</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", zIndex: 30, top: "calc(100% + 4px)", right: 0, background: "#fff", border: "1px solid #C8C8C8", borderRadius: 6, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 10, width: 236 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, marginBottom: 6 }}>테마 색</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 18px)", gap: 4, marginBottom: 2 }}>{XL_THEME_GRID[0].map(cell)}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 18px)", gap: "0 4px", marginTop: 6 }}>{XL_THEME_GRID.slice(1).flatMap((row) => row).map(cell)}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, margin: "10px 0 6px" }}>표준 색</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 18px)", gap: 4 }}>{XL_STANDARD.map(cell)}</div>
+          <button
+            onClick={() => {
+              onChange(null);
+              setOpen(false);
+            }}
+            style={{ ...smallBtnStyle, width: "100%", justifyContent: "center", marginTop: 10, fontSize: 12 }}
+          >
+            색 없음
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 시트 색상 설정 창. suppliers: [공급사 키...] (화면 순서대로)
+function SheetColorModal({ kind, suppliers, authToken, onClose }) {
+  const saved = useSetting("sheet_colors", authToken);
+  const def = SHEET_COLOR_KINDS[kind];
+  const [draft, setDraft] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    if (dirty) return;
+    const cur = ((saved || {})[kind]) || {};
+    setDraft({ suppliers: { ...(cur.suppliers || {}) }, types: { ...(cur.types || {}) } });
+  }, [saved]); // eslint-disable-line
+  const setColor = (group, key, hex) => {
+    setDraft((d) => {
+      const n = { suppliers: { ...d.suppliers }, types: { ...d.types } };
+      if (hex) n[group][key] = hex;
+      else delete n[group][key];
+      return n;
+    });
+    setDirty(true);
+    setMsg("");
+  };
+  function close() {
+    if (dirty && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
+    onClose();
+  }
+  async function save() {
+    setBusy(true);
+    const r = await updateSetting("sheet_colors", authToken, (v) => ({ ...v, [kind]: { suppliers: draft.suppliers, types: draft.types } }));
+    setBusy(false);
+    setDirty(false);
+    setMsg(r.ok ? "저장했어요. 다음에 받는 엑셀부터 이 색으로 나가요." : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  const allSups = draft ? Array.from(new Set([...suppliers, ...Object.keys(draft.suppliers)])) : suppliers;
+  const shown = allSups.filter((s) => !q.trim() || s.toLowerCase().includes(q.trim().toLowerCase()));
+  // 미리보기 탭: 특별 시트 + 색을 정한 공급사 몇 개
+  const preview = [];
+  if (draft) {
+    def.types.filter((t) => t.special).forEach((t) => preview.push({ label: t.label.split(" ")[0], hex: draft.types[t.key] || null }));
+    [...allSups.filter((x) => draft.suppliers[x]), ...allSups.filter((x) => !draft.suppliers[x])].slice(0, 9).forEach((s) => {
+      const base = def.types.find((t) => !t.special);
+      preview.push({ label: s, hex: draft.suppliers[s] || (base && draft.types[base.key]) || null });
+    });
+  }
+  const row = { display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: `1px solid ${T.border}` };
+  return (
+    <BrandModalFrame title={`시트 색상 · ${def.label}`} sub="엑셀 시트 탭 색을 공급사별·시트 종류별로 정해요. 엑셀 '탭 색' 메뉴와 같은 색이에요. 저장하면 고정값으로 남아요." onClose={close} maxWidth={980} height="88vh">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy || !dirty || !draft} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
+          <Check size={14} /> {busy ? "저장 중..." : dirty ? "변경 내용 저장" : "저장할 변경 없음"}
+        </button>
+        <button
+          onClick={() => {
+            if (!window.confirm("이 화면의 색을 모두 지울까요? (저장해야 적용)")) return;
+            setDraft({ suppliers: {}, types: {} });
+            setDirty(true);
+          }}
+          style={smallBtnStyle}
+        >
+          모두 색 없음으로
+        </button>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</span>}
+      </div>
+      {!draft ? (
+        <div style={{ padding: 24, fontSize: 13, color: T.inkSoft }}>불러오는 중...</div>
+      ) : (
+        <div style={{ overflowY: "auto", padding: "14px 20px 24px" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.inkSoft, marginBottom: 6 }}>미리보기 (엑셀 아래쪽 시트 탭)</div>
+          <div style={{ display: "flex", gap: 2, overflowX: "auto", background: "#F3F3F3", border: "1px solid #D6D6D6", padding: "4px 4px 0", marginBottom: 18 }}>
+            {preview.map((p, i) => (
+              <div key={i} style={{ flexShrink: 0, padding: "5px 14px 6px", fontSize: 12, background: p.hex ? "#" + p.hex : "#fff", border: "1px solid #CFCFCF", borderBottom: "none", color: p.hex && parseInt(p.hex.slice(0, 2), 16) + parseInt(p.hex.slice(2, 4), 16) + parseInt(p.hex.slice(4, 6), 16) < 300 ? "#fff" : "#222", whiteSpace: "nowrap" }}>
+                {p.label}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16, alignItems: "start" }}>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>1. 시트 종류별 색</div>
+              <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>피벗·당착처럼 종류 색을 정하면 그 시트들은 공급사와 상관없이 모두 이 색이에요.</div>
+              {def.types.map((t) => (
+                <div key={t.key} style={row}>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: t.special ? 700 : 500 }}>{t.label}</span>
+                  <ExcelColorPicker value={draft.types[t.key] || null} onChange={(hex) => setColor("types", t.key, hex)} />
+                </div>
+              ))}
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>2. 공급사별 색</div>
+              <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>예: 조인앤조인 = 녹색 80% 더 밝게, 은성파머스 = 파랑 80% 더 밝게. 그 공급사 시트가 전부 이 색이 돼요.</div>
+              <input style={{ ...inputStyle, width: "100%", marginBottom: 6 }} placeholder="공급사 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+              {shown.length === 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, padding: "10px 0" }}>공급사가 없어요. 발주를 올리면 나와요.</div>}
+              {shown.map((s) => (
+                <div key={s} style={row}>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: draft.suppliers[s] ? 700 : 500 }}>{s}</span>
+                  <ExcelColorPicker value={draft.suppliers[s] || null} onChange={(hex) => setColor("suppliers", s, hex)} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </BrandModalFrame>
+  );
+}
+function SheetColorButton({ kind, suppliers, authToken }) {
+  const [open, setOpen] = useState(false);
+  useSetting("sheet_colors", authToken); // 엑셀 만들 때 쓸 수 있게 미리 불러둔다
+  return (
+    <>
+      <button className="no-print" onClick={() => setOpen(true)} style={settingBtnStyle} title="엑셀 시트 탭 색 설정">
+        <span style={{ display: "inline-flex", gap: 1 }}>
+          {["#E2EFDA", "#DDEBF7", "#FFFF00"].map((c) => (
+            <span key={c} style={{ width: 5, height: 13, background: c, border: "1px solid #BDB8AC" }} />
+          ))}
+        </span>
+        시트 색상
+      </button>
+      {open && <SheetColorModal kind={kind} suppliers={suppliers} authToken={authToken} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 function PickingCenter({ channel, onChannel, gsView, emartOrders, authToken }) {
   return (
     <BrandTabs
@@ -7626,6 +7967,7 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) 
   // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
   const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
   const ws = workbook.addWorksheet(safeSheetName(product.displayName || product.name, usedNames));
+  ws.__sheetMeta = { supplier: pickingSupplierKey(product.supplier || ""), type: skipZero ? "dangchak" : "product" }; // 시트 탭 색상용
   // 열 너비는 실물 피킹지 그대로 (G·H는 "소분박스/소분낱개"가 들어가서 17)
   ws.columns = [{ width: 33.88 }, { width: 7.62 }, { width: 30.62 }, { width: 12 }, { width: 11.38 }, { width: 13 }, { width: 17 }, { width: 17 }];
 
@@ -7872,6 +8214,7 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
   });
   const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
   const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
+  ws.__sheetMeta = { supplier: pickingSupplierKey((products[0] && products[0].supplier) || supplierLabel), type: "ojeon" }; // 시트 탭 색상용
   ws.columns = [{ width: 36.625 }, { width: 7.625 }, { width: 30.625 }, { width: 12.375 }, { width: 11.375 }, { width: 11.125 }];
   ws.pageSetup = { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 1, margins: { left: 0.25, right: 0.25, top: 0.35, bottom: 0.35, header: 0.2, footer: 0.2 } };
 
@@ -8021,6 +8364,7 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
       const idx = products.findIndex((p) => p.sku === activeSku);
       if (idx > 0) workbook.views = [{ activeTab: idx, firstSheet: idx }];
     }
+    applySheetTabColors(workbook, "gs_picking"); // 시트 색상 설정
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -8990,7 +9334,12 @@ async function downloadSupplierInvoicePart(products, supplierKey, date, part, se
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
     addInvoiceSummarySheet(workbook, data, date, part, usedNames);
-    data.regions.forEach((r) => addStyledInvoiceSheet(workbook, r, info, date, usedNames, part));
+    workbook.worksheets[workbook.worksheets.length - 1].__sheetMeta = { supplier: supplierKey, type: "pivot" };
+    data.regions.forEach((r) => {
+      addStyledInvoiceSheet(workbook, r, info, date, usedNames, part);
+      workbook.worksheets[workbook.worksheets.length - 1].__sheetMeta = { supplier: supplierKey, type: String(part) };
+    });
+    applySheetTabColors(workbook, "gs_invoice"); // 시트 색상 설정
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -9678,10 +10027,13 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
         title="피킹지시서 출력"
         sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다"
         action={
-          <button className="no-print" onClick={() => setShowOrderSet(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="공급사·상품 순서 설정">
-            <SettingsGear size={15} />
-            순서 설정
-          </button>
+          <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
+            <SheetColorButton kind="gs_picking" authToken={authToken} suppliers={Array.from(new Set([...getPickingSupplierOrder(), ...orders.map((o) => pickingSupplierKey(o.supplier || ""))]))} />
+            <button className="no-print" onClick={() => setShowOrderSet(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="공급사·상품 순서 설정">
+              <SettingsGear size={15} />
+              순서 설정
+            </button>
+          </span>
         }
       />
       {showOrderSet && (
@@ -10426,10 +10778,13 @@ function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoic
         title="거래명세서"
         sub="출고 완료된 발주의 거래명세서를 조회·출력합니다 (추후 자동 발행으로 고도화 예정)"
         action={
-          <button onClick={() => setShowInvSettings(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="사업자 정보·발행 지역·상품명·입수·소비기한">
-            <SettingsGear size={15} />
-            거래명세서 설정
-          </button>
+          <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
+            <SheetColorButton kind="gs_invoice" authToken={authToken} suppliers={invoiceSettingsSupplierList().map((x) => x.key)} />
+            <button onClick={() => setShowInvSettings(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="사업자 정보·발행 지역·상품명·입수·소비기한">
+              <SettingsGear size={15} />
+              거래명세서 설정
+            </button>
+          </span>
         }
       />
       {showInvSettings && (
