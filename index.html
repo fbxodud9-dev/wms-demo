@@ -2375,6 +2375,7 @@ function WMSApp() {
         { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
         { key: "pickingconfirm", label: "V. 피킹 확정", icon: ListOrdered, badgeKey: "alloc" },
         { key: "pickinginspection", label: "피킹지시서 출력", icon: Grid3x3 },
+        { key: "pickingedit", label: "피킹지 수정", icon: Pencil },
       ],
     },
     {
@@ -2596,6 +2597,7 @@ function WMSApp() {
         {tab === "pickingconfirm" && (
           <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
         )}
+        {tab === "pickingedit" && <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} />}
         {tab === "pickinginspection" && (
           <PickingCenter
             channel={pickChannel}
@@ -7762,6 +7764,152 @@ function BrandProductInfoModal({ row, label, onClose, onSave }) {
     </BrandModalFrame>
   );
 }
+
+/* ================= 피킹지 수정 (고객사 배포 / 추가발주 수정용 엑셀) ================= */
+function PickingEditPage({ orders, productInfo, orderCfg }) {
+  const dateOptions = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt))).sort((a, b) => (a < b ? 1 : -1)), [orders]);
+  const [selDate, setSelDate] = useState(null);
+  const activeDate = selDate && dateOptions.includes(selDate) ? selDate : dateOptions[0] || null;
+  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, productInfo, orderCfg]);
+  const [supFilter, setSupFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const [busyKey, setBusyKey] = useState(null);
+  const [open, setOpen] = useState(null);
+  const groups = useMemo(() => {
+    const m = new Map();
+    products.forEach((p) => {
+      const k = pickingSupplierKey(p.supplier || "");
+      if (!m.has(k)) m.set(k, { key: k, products: [] });
+      m.get(k).products.push(p);
+    });
+    return Array.from(m.values()).map((g) => {
+      const diffs = g.products.map((p) => ({ p, d: customerDiffOf(p) })).filter((x) => x.d.length);
+      return {
+        ...g,
+        total: g.products.reduce((a, p) => a + p.totalQty, 0),
+        customerTotal: g.products.reduce((a, p) => a + customerVersionOfProduct(p).totalQty, 0),
+        diffs,
+      };
+    });
+  }, [products]);
+  const shown = groups.filter((g) => (supFilter === "all" || g.key === supFilter) && (!q.trim() || g.key.includes(q.trim()) || g.products.some((p) => p.name.includes(q.trim()))));
+  const ymd = activeDate ? activeDate.replace(/-/g, "") : "";
+  async function run(key, fn) {
+    setBusyKey(key);
+    try {
+      await fn();
+    } catch (e) {
+      window.alert(`엑셀을 만들지 못했어요: ${e.message}`);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+  const mono = { fontFamily: "'JetBrains Mono', monospace" };
+  return (
+    <div>
+      <PageHeader title="피킹지 수정" sub="공급사별로 고객사 배포용 피킹지(0고정·당착 지역 포함)와, 추가발주를 직접 고칠 수정용 엑셀을 받아요" />
+      <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>피킹 날짜</span>
+        <select style={{ ...inputStyle, width: 170 }} value={activeDate || ""} onChange={(e) => setSelDate(e.target.value)}>
+          {dateOptions.length === 0 && <option value="">발주 없음</option>}
+          {dateOptions.map((d) => (
+            <option key={d} value={d}>
+              {fmtDate(d)}
+            </option>
+          ))}
+        </select>
+        <select style={{ ...inputStyle, width: 220 }} value={supFilter} onChange={(e) => setSupFilter(e.target.value)}>
+          <option value="all">전체 공급사 ({groups.length})</option>
+          {groups.map((g) => (
+            <option key={g.key} value={g.key}>
+              {g.key}
+              {g.diffs.length ? " ★" : ""}
+            </option>
+          ))}
+        </select>
+        <div style={{ position: "relative", flex: "1 1 220px" }}>
+          <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
+          <input style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} placeholder="공급사 또는 상품명 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ ...cardStyle, padding: "12px 16px", marginBottom: 14, fontSize: 12.5, color: T.inkSoft, lineHeight: 1.7 }}>
+        <b style={{ color: T.ink }}>고객사 배포</b> — 고객사에 보여줄 피킹지. 우리 피킹지에서 0고정·당착으로 0이 된 지역(예: 데어리젠 신제주)도 실제 발주 수량으로 들어가요. 시트 이름은 "상품명(고객사 배포)".
+        <br />
+        <b style={{ color: T.ink }}>수정용 엑셀</b> — 평소 피킹지와 같은 파일을 이 공급사 것만. 추가발주가 오면 엑셀에서 수량(C열)만 고치면 박스·낱개, 구역·총합계, 오른쪽 검수 칸(체크포인트·소분박스/낱개)까지 자동으로 다시 계산돼요.
+        <br />★ = 고객사 배포와 우리 피킹지 수량이 다른 공급사
+      </div>
+      {shown.length === 0 ? (
+        <div style={cardStyle}>
+          <EmptyRow text={dateOptions.length ? "조건에 맞는 공급사가 없어요." : "발주가 없습니다. 먼저 주문정보(GS)에서 발주파일을 올려주세요."} />
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {shown.map((g) => (
+            <div key={g.key} style={{ background: T.surface, border: `1px solid ${g.diffs.length ? T.amber : T.border}`, borderRadius: 10, padding: "14px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>
+                    {g.key}
+                    {g.diffs.length > 0 && <span style={{ marginLeft: 8, fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "2px 8px", borderRadius: 999 }}>고객사 배포 +{(g.customerTotal - g.total).toLocaleString()}개</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                    상품 {g.products.length}종 · 우리 피킹지 {g.total.toLocaleString()}개{g.diffs.length ? ` · 고객사 배포 ${g.customerTotal.toLocaleString()}개` : ""}
+                    <button onClick={() => setOpen(open === g.key ? null : g.key)} style={{ marginLeft: 8, border: "none", background: "none", color: T.teal, fontWeight: 600, cursor: "pointer", fontSize: 12 }}>
+                      {open === g.key ? "상품 접기" : "상품 보기"}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  disabled={!!busyKey}
+                  onClick={() => run(g.key + "c", () => downloadCustomerPickingExcel(g.products, `피킹지_${g.key}_고객사배포_${ymd}.xlsx`, null, activeDate))}
+                  className="primary-btn"
+                  style={{ ...primaryBtnStyle, opacity: busyKey ? 0.6 : 1 }}
+                >
+                  <Download size={14} /> {busyKey === g.key + "c" ? "만드는 중..." : "고객사 배포"}
+                </button>
+                <button
+                  disabled={!!busyKey}
+                  onClick={() => run(g.key + "e", () => downloadStyledInspectionExcel(g.products, `피킹지_${g.key}_수정용_${ymd}.xlsx`, null, activeDate))}
+                  style={{ ...smallBtnStyle, padding: "8px 14px", opacity: busyKey ? 0.6 : 1 }}
+                >
+                  <Download size={14} /> {busyKey === g.key + "e" ? "만드는 중..." : "수정용 엑셀"}
+                </button>
+              </div>
+              {open === g.key && (
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>상품명</th>
+                        <th style={{ textAlign: "right" }}>우리 피킹지</th>
+                        <th style={{ textAlign: "right" }}>고객사 배포</th>
+                        <th>다른 지역 (우리 → 고객사)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.products.map((p) => {
+                        const d = customerDiffOf(p);
+                        return (
+                          <tr key={p.sku}>
+                            <td style={{ fontWeight: 600 }}>{p.displayName || p.name}</td>
+                            <td style={{ textAlign: "right", ...mono }}>{p.totalQty}</td>
+                            <td style={{ textAlign: "right", ...mono, fontWeight: d.length ? 700 : 400, color: d.length ? T.amberDeep : T.ink }}>{customerVersionOfProduct(p).totalQty}</td>
+                            <td style={{ fontSize: 12.5 }}>{d.length ? d.map((x) => `${x.name} ${x.ours}→${x.customer}`).join(", ") : <span style={{ color: T.inkSoft }}>같음</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ================= II. 상품할당 ================= */
 function Allocation({ items, orders, onAllocate }) {
   const newOrders = orders.filter((o) => o.status === "NEW");
@@ -8063,12 +8211,12 @@ const XL_MEDIUM = { style: "medium", color: { argb: "FF000000" } };
 const XL_GRAY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9D9D9" } };
 
 // 실제 피킹지시서 디자인(테두리·음영·폰트 크기)을 그대로 적용해 1개 품목 시트를 만듦
-function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero) {
+function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero, sheetNameOverride) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
   // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
   const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
-  const ws = workbook.addWorksheet(safeSheetName(product.displayName || product.name, usedNames));
+  const ws = workbook.addWorksheet(safeSheetName(sheetNameOverride || product.displayName || product.name, usedNames));
   ws.__sheetMeta = { supplier: pickingSupplierKey(product.supplier || ""), type: skipZero ? "dangchak" : "product" }; // 시트 탭 색상용
   // 열 너비는 실물 피킹지 그대로 (G·H는 "소분박스/소분낱개"가 들어가서 17)
   ws.columns = [{ width: 33.88 }, { width: 7.62 }, { width: 30.62 }, { width: 12 }, { width: 11.38 }, { width: 13 }, { width: 17 }, { width: 17 }];
@@ -8431,6 +8579,44 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     ws.getCell(`F${signRow.number}`).font = { name: XLFONT, size: 15 };
     ws.getCell(`F${signRow.number}`).alignment = { horizontal: "center", vertical: "middle" };
   });
+}
+
+// ===== 피킹지 수정 페이지용 =====
+// 고객사 배포용 상품: 0고정·당착으로 0이 된 지역도 실제 발주 수량(rawQty) 그대로 (예: 데어리젠 신제주)
+function customerVersionOfProduct(p) {
+  const regionRows = p.regionRows.map((r) => ({ ...r, qty: r.rawQty != null ? r.rawQty : r.qty }));
+  return { ...p, regionRows, totalQty: regionRows.reduce((a, r) => a + r.qty, 0) };
+}
+// 고객사 배포와 우리 피킹지가 다른 지역 (0고정·당착으로 빠진 수량)
+function customerDiffOf(p) {
+  return p.regionRows.filter((r) => r.rawQty != null && r.rawQty !== r.qty).map((r) => ({ name: r.shortName || r.key, ours: r.qty, customer: r.rawQty }));
+}
+const CUSTOMER_SUFFIX = "(고객사 배포)";
+function customerSheetName(p) {
+  const base = String(p.displayName || p.name || "품목").replace(/[\\/?*[\]:]/g, "");
+  return base.slice(0, 28 - CUSTOMER_SUFFIX.length) + CUSTOMER_SUFFIX;
+}
+// 고객사 배포 피킹지: 공급사 상품 시트만 (오전현장·당착 시트 없이), 시트 이름 "상품명(고객사 배포)"
+async function downloadCustomerPickingExcel(products, filename, setBusy, date) {
+  if (setBusy) setBusy(true);
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const usedNames = new Set();
+    products.forEach((p) => addStyledInspectionSheet(workbook, customerVersionOfProduct(p), usedNames, date, false, customerSheetName(p)));
+    applySheetTabColors(workbook, "gs_picking");
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (setBusy) setBusy(false);
+  }
 }
 
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
