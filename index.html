@@ -3631,6 +3631,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
   const [uploadMsg, setUploadMsg] = useState("");
   const [uploadErr, setUploadErr] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
   const selected = orders.find((o) => o.id === selectedId) || null;
@@ -3678,6 +3679,8 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
   }, [orders]);
 
   async function parseOneFile(file) {
+    if (/\.numbers$/i.test(file.name))
+      throw new Error(`${file.name}: Mac Numbers 파일은 읽을 수 없어요. 받은 원본 .xls 파일을 그대로 올리거나, Numbers에서 [파일 > 내보내기 > Excel...]로 저장한 파일을 올려주세요.`);
     const buf = await file.arrayBuffer();
     const bytes = new Uint8Array(buf);
     let rows = [];
@@ -4214,18 +4217,30 @@ function resolveNamePackOverride(name) {
   return (
     <div>
       <PageHeader title="I. 주문정보" sub="화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다" />
-      <div style={{ ...cardStyle, marginBottom: 18 }}>
+      <div
+        style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (!uploading && e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 13, color: T.inkSoft }}>
             화주사 발주파일(xls/xlsx)을 업로드하면 자동으로 발주 등록과 할당까지 한 번에 완료됩니다. 바로 품목별 검수표에서 확인하세요.
             <br />
-            여러 파일을 한 번에 선택해서 업로드할 수 있어요.
+            여러 파일을 한 번에 선택하거나, 이 칸으로 파일을 끌어다 놓아도 돼요.
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.csv,.numbers"
               multiple
               style={{ display: "none" }}
               onChange={(e) => e.target.files.length > 0 && handleFiles(e.target.files)}
@@ -5841,6 +5856,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [deletingDate, setDeletingDate] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
 
   const dateGroups = useMemo(() => {
@@ -5912,12 +5928,24 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
   return (
     <div>
       <PageHeader title="주문정보 (E.MART)" sub="이마트24 발주파일을 업로드해서 발주를 접수합니다" />
-      <div style={{ ...cardStyle, marginBottom: 18 }}>
+      <div
+        style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (!uploading && e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 13, color: T.inkSoft }}>
             이마트24 발주파일(출고관리-발주조회_납품등록, xlsx)을 업로드하면 자동으로 발주가 등록됩니다. 피킹지시서 출력 &gt; 이마트에서 확인하세요.
             <br />
-            여러 파일을 한 번에 선택해서 업로드할 수 있어요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요. 상품은 상품마스터에 이마트 상품으로 자동 등록돼요.
+            여러 파일을 한 번에 선택하거나 이 칸으로 끌어다 놓아도 돼요. 같은 주문번호는 다시 올려도 중복 저장되지 않아요. 상품은 상품마스터에 이마트 상품으로 자동 등록돼요.
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => e.target.files.length > 0 && handleFiles(e.target.files)} />
@@ -8652,9 +8680,11 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   };
   const regions = [];
   const sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
-  const regionCfg = part === 1 || part === 2 ? invoiceRegionConfig(supplierKey, part) : { mode: "all" };
+  const regionCfg = invoiceRegionConfig(supplierKey, part); // 1편·2편·DC·당착 모두 거래명세서 설정의 발행 지역을 따른다
   const onlyRegions = regionCfg.mode === "selected" ? regionCfg.codes : null; // 선택한 지역만, 발주 없어도 0으로 발행
-  sheetOrder.forEach((code) => {
+  // 설정 화면에서 순서를 정해 저장한 경우(ordered) 그 순서대로 시트가 나간다
+  const iterOrder = onlyRegions && regionCfg.ordered ? onlyRegions : sheetOrder;
+  iterOrder.forEach((code) => {
     if (!REGION_ORDER_MAP[code]) return;
     if (onlyRegions && !onlyRegions.includes(code)) return; // 거래명세서 설정의 발행 지역 (기본: 1편은 신제주·곤지암·곤지암2만)
     const rowItems = items.map((it) => ({ name: it.name, label: it.label, packQty: it.packQty, expiryDays: it.expiryDays, expiryFixed: it.expiryFixed, qty: qtyOf(it, code) }));
@@ -9880,6 +9910,17 @@ function invoiceSettingsProducts(key, orders) {
     });
 }
 
+// 거래명세서 설정 > 발행 지역: 공급사마다 나올 수 있는 명세서 구분
+const INV_PART_LABEL = { 1: "1편", 2: "2편", DC: "DC", 당착: "당착" };
+const invSheetOrderOf = (part) => (part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2);
+function invoiceSettingsParts(sel, products) {
+  const hasDc = !!DC_VENDOR_GROUPS.find((g) => g.key === sel.key);
+  const hasDk = products.some((pr) => !!getDangchakInfo(pr.name));
+  const parts = sel.isDcOnly ? [] : [1, 2];
+  if (hasDc) parts.push("DC");
+  if (hasDk) parts.push("당착");
+  return parts;
+}
 function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onClose }) {
   const suppliers = useMemo(() => invoiceSettingsSupplierList(), []);
   const [selKey, setSelKey] = useState(suppliers[0] ? suppliers[0].key : null);
@@ -9900,9 +9941,11 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
     const info = {};
     INV_INFO_FIELDS.forEach((f) => (info[f.key] = (cur.info && cur.info[f.key] !== undefined ? cur.info[f.key] : base[f.key]) || ""));
     const regions = {};
-    [1, 2].forEach((p) => {
+    [1, 2, "DC", "당착"].forEach((p) => {
       const c = (cur.regions || {})[String(p)] || invoiceRegionDefault(p);
-      regions[p] = { mode: c.mode, codes: [...(c.codes || [])] };
+      // 순서를 따로 저장한 적 없으면 실제로 나가는 순서(시트 순서)로 보여준다
+      const codes = c.ordered ? [...(c.codes || [])] : invSheetOrderOf(p).filter((x) => (c.codes || []).includes(x));
+      regions[p] = { mode: c.mode, codes };
     });
     const prod = {};
     Object.entries(cur.products || {}).forEach(([n, v]) => (prod[n] = { displayName: v.displayName ?? "", packQty: v.packQty ?? "", expiryDays: v.expiryDays ?? "" }));
@@ -9979,14 +10022,15 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
       if (v !== String(base[f.key] || "")) info[f.key] = v;
     });
     if (Object.keys(info).length) entry.info = info;
-    if (!sel.isDcOnly) {
+    {
       const regions = {};
-      for (const p of [1, 2]) {
+      for (const p of invoiceSettingsParts(sel, products)) {
         const r = form.regions[p];
-        if (r.mode === "selected" && r.codes.length === 0) return setMsg(`${p}편 발행 지역을 하나 이상 고르거나 "발주 있는 지역 전부"로 바꿔주세요.`);
+        if (r.mode === "selected" && r.codes.length === 0) return setMsg(`${INV_PART_LABEL[p]} 발행 지역을 하나 이상 고르거나 "발주 있는 지역 전부"로 바꿔주세요.`);
         const d = invoiceRegionDefault(p);
-        const same = r.mode === d.mode && (r.mode === "all" || [...r.codes].sort().join() === [...d.codes].sort().join());
-        if (!same) regions[String(p)] = { mode: r.mode, codes: r.mode === "selected" ? REGION_ORDER_TABLE.map((x) => x.code).filter((c) => r.codes.includes(c)) : [] };
+        const defCodes = invSheetOrderOf(p).filter((x) => (d.codes || []).includes(x));
+        const same = r.mode === d.mode && (r.mode === "all" || r.codes.join() === defCodes.join());
+        if (!same) regions[String(p)] = r.mode === "selected" ? { mode: "selected", codes: [...r.codes], ordered: true } : { mode: "all", codes: [] };
       }
       if (Object.keys(regions).length) entry.regions = regions;
     }
@@ -10080,7 +10124,7 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
                 <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 18px", borderBottom: `1px solid ${T.border}` }}>
                   <div style={{ fontWeight: 700, fontSize: 15, marginRight: 14 }}>{sel.label}</div>
                   {tabBtn("info", "사업자 정보")}
-                  {!sel.isDcOnly && tabBtn("regions", "발행 지역")}
+                  {tabBtn("regions", "발행 지역")}
                   {tabBtn("products", `상품 (${products.length})`)}
                 </div>
 
@@ -10114,12 +10158,25 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
 
                   {tab === "regions" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                      {[1, 2].map((p) => {
+                      <div style={{ ...hint, marginTop: 0 }}>
+                        명세서 구분마다 발행할 지역과 <b>시트 순서</b>를 정해요. "선택한 지역만"이면 고른 지역만, 아래 순서대로 나가고 발주가 없는 날도 수량 0으로 나가요.
+                      </div>
+                      {invoiceSettingsParts(sel, products).map((p) => {
                         const r = form.regions[p];
+                        const order = invSheetOrderOf(p);
+                        const nm = (c) => (REGION_ORDER_MAP[c] ? REGION_ORDER_MAP[c].shortName : c);
+                        const move = (from, to) =>
+                          upd((n) => {
+                            const list = n.regions[p].codes;
+                            if (to < 0 || to >= list.length) return;
+                            const [x] = list.splice(from, 1);
+                            list.splice(to, 0, x);
+                          });
+                        const rb = { ...smallBtnStyle, padding: "1px 7px", fontSize: 11, minWidth: 24, justifyContent: "center" };
                         return (
                           <div key={p} style={{ border: `1px solid ${T.border}`, borderRadius: 10, padding: 14 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                              <div style={{ fontWeight: 700, fontSize: 14, marginRight: 8 }}>{p}편 명세서</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                              <div style={{ fontWeight: 700, fontSize: 14, marginRight: 8 }}>{INV_PART_LABEL[p]} 명세서</div>
                               <button onClick={() => upd((n) => (n.regions[p].mode = "all"))} style={chip(r.mode === "all")}>
                                 발주 있는 지역 전부
                               </button>
@@ -10127,17 +10184,30 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
                                 선택한 지역만
                               </button>
                               <button
-                                onClick={() => upd((n) => (n.regions[p] = invoiceRegionDefault(p)))}
+                                onClick={() =>
+                                  upd((n) => {
+                                    const d = invoiceRegionDefault(p);
+                                    n.regions[p] = { mode: d.mode, codes: order.filter((x) => (d.codes || []).includes(x)) };
+                                  })
+                                }
                                 style={{ marginLeft: "auto", border: "none", background: "none", color: T.teal, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
                               >
                                 기본값으로 ({p === 1 ? "신제주·곤지암·곤지암2" : "발주 있는 지역 전부"})
                               </button>
                             </div>
                             {r.mode === "all" ? (
-                              <div style={hint}>그날 이 공급사 {p}편 발주가 있는 지역마다 명세서가 나가요.</div>
+                              <div style={hint}>그날 이 공급사 {INV_PART_LABEL[p]} 발주가 있는 지역마다 기본 시트 순서로 명세서가 나가요.</div>
                             ) : (
                               <>
-                                <div style={{ ...hint, marginTop: 0, marginBottom: 8 }}>고른 지역만 명세서가 나가고, 발주가 없는 날도 수량 0으로 나가요 ({r.codes.length}곳 선택).</div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                                  <span style={{ ...hint, marginTop: 0 }}>지역을 눌러 추가·빼기 ({r.codes.length}곳 선택)</span>
+                                  <button onClick={() => upd((n) => (n.regions[p].codes = [...order]))} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12 }}>
+                                    전 지역 선택 ({order.length}곳)
+                                  </button>
+                                  <button onClick={() => upd((n) => (n.regions[p].codes = []))} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12 }}>
+                                    모두 빼기
+                                  </button>
+                                </div>
                                 {["A", "B"].map((zone) => (
                                   <div key={zone} style={{ marginBottom: 8 }}>
                                     <div style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, marginBottom: 5 }}>{zone}구역</div>
@@ -10153,6 +10223,34 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
                                     </div>
                                   </div>
                                 ))}
+                                {r.codes.length > 0 && (
+                                  <div style={{ marginTop: 10, borderTop: `1px dashed ${T.border}`, paddingTop: 10 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                      <span style={{ fontSize: 12.5, fontWeight: 700 }}>시트 순서</span>
+                                      <span style={{ ...hint, marginTop: 0 }}>▲▼로 옮겨요. 새로 고른 지역은 맨 뒤에 붙어요.</span>
+                                      <button
+                                        onClick={() => upd((n) => (n.regions[p].codes = [...n.regions[p].codes].sort((a2, b2) => order.indexOf(a2) - order.indexOf(b2))))}
+                                        style={{ marginLeft: "auto", ...smallBtnStyle, padding: "4px 10px", fontSize: 12 }}
+                                      >
+                                        기본 순서로 정렬
+                                      </button>
+                                    </div>
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 5 }}>
+                                      {r.codes.map((c, i) => (
+                                        <div key={c} style={{ display: "flex", alignItems: "center", gap: 4, border: `1px solid ${T.border}`, borderRadius: 7, padding: "3px 6px", background: "#FBFAF7" }}>
+                                          <span style={{ width: 22, fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{i + 1}</span>
+                                          <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600 }}>{nm(c)}</span>
+                                          <button style={rb} disabled={i === 0} onClick={() => move(i, i - 1)} title="앞으로">
+                                            ▲
+                                          </button>
+                                          <button style={rb} disabled={i === r.codes.length - 1} onClick={() => move(i, i + 1)} title="뒤로">
+                                            ▼
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                               </>
                             )}
                           </div>
