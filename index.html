@@ -1863,6 +1863,53 @@ function WMSApp() {
     };
   }, [authToken, applyOrderCfg]);
 
+  // ===== 실시간 동기화: 5초마다(화면을 보고 있을 때만) 서버의 "변경 표시"를 확인해서 바뀐 것만 다시 불러온다 =====
+  // 다른 직원(또는 다른 창)이 발주를 올리고/지우고/수정하거나, 순서·상품 정보·명세서·색상 설정을 저장하면 새로고침 없이 반영된다.
+  const syncRef = useRef({ settings: null, data: null });
+  useEffect(() => {
+    if (!authToken) return;
+    let busy = false;
+    const refreshSetting = async (key) => {
+      let value = null;
+      try {
+        value = (await apiFetch(`/settings/${key}`, authToken)).value ?? null;
+      } catch (e) {
+        return;
+      }
+      if (key === "picking_order") applyOrderCfg(value);
+      else if (key === "product_info") applyProductInfo(value);
+      else if (key === "invoice_settings") applyInvoiceSettings(value);
+      else if (key in SETTING_CACHE) publishSetting(key, value);
+    };
+    const tick = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        const v = await apiFetch("/settings/sync/version", authToken);
+        const prev = syncRef.current;
+        if (prev.data !== null && v.data !== prev.data) await loadCoreData();
+        if (prev.settings) {
+          for (const [k, t] of Object.entries(v.settings || {})) if (prev.settings[k] !== t) await refreshSetting(k);
+        }
+        syncRef.current = { settings: v.settings || {}, data: v.data };
+      } catch (e) {
+        /* 서버가 예전 버전이거나 잠깐 끊겼으면 조용히 다음 번에 다시 */
+      } finally {
+        busy = false;
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 5000);
+    const onShow = () => !document.hidden && tick();
+    window.addEventListener("focus", onShow);
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", onShow);
+      document.removeEventListener("visibilitychange", onShow);
+    };
+  }, [authToken, loadCoreData, applyOrderCfg, applyProductInfo, applyInvoiceSettings]);
+
   function doLogin(token, user) {
     setAuthToken(token);
     setAuthUser(user);
