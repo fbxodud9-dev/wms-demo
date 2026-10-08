@@ -1080,6 +1080,51 @@ let PRODUCT_INFO = {};
 function setProductInfo(v) {
   PRODUCT_INFO = v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
+// GS 발주파일에 같이 들어오지만 실제로는 GS슈퍼 상품인 것들 (2026-10-08 현장 확인). 상품 정보 관리 > 브랜드 설정에서 바꿀 수 있음
+// 흥선: 쫄깃한매콤편육(DC)만 GS / 대신에프에스: 돌아온 버거 4종만 GS / 태항: 쌈세트)돼지왕구이만 GS
+const DEFAULT_PRODUCT_BRAND = Object.fromEntries(
+  [
+    "밥)마늘편육(흥선_500g)", "밥)족발편육", "흥선)가마솥 미니족발350g", "흥선)맛있는마늘편육365G", "흥선)족발편육215G", "흥선)족발편육365g", "흥선)쫄깃한특수부위165G",
+    "2300원굿딜)매콤불고기1", "2300원굿딜)불갈비버거1", "NEW직화석쇠불고기버거1편", "매콤직화석쇠불고기버거1편", "치즈왕돈까스버거1편", "황치즈직화석쇠불고기버거1편",
+    "2300원굿딜)매콤불고기2", "2300원굿딜)불갈비버거2", "NEW직화석쇠불고기버거2편", "매콤직화석쇠불고기버거2편", "치즈왕돈까스버거2편", "황치즈직화석쇠불고기버거2편",
+    "미국식통모짜치즈스틱(칠리)1편", "한판)제주흑돼지불백1편", "한판)제주흑돼지제육볶음1편", "예약)한판)제주흑돼지제육",
+    "미국식통모짜치즈스틱(칠리)2편", "한판)제주흑돼지불백2편", "한판)제주흑돼지제육볶음2편",
+  ].map((n) => [n, "GSSUPER"])
+);
+// 상품의 브랜드: 상품 정보 관리에서 정한 값 > 기본 목록 > GS
+function productBrandOf(name) {
+  const key = String(name || "").replace(/\n/g, "").trim();
+  const ov = PRODUCT_INFO[key];
+  if (ov && ov.brand) return ov.brand;
+  return DEFAULT_PRODUCT_BRAND[key] || "GS";
+}
+// 여러 상품을 한 번에 저장 (브랜드 일괄 변경용)
+async function saveProductInfoEntries(authToken, fallback, names, updater) {
+  let latest = fallback || {};
+  try {
+    const res = await apiFetch("/settings/product_info", authToken);
+    if (res && res.value && typeof res.value === "object") latest = res.value;
+  } catch (e) {
+    /* 서버를 못 읽으면 화면 값 기준 */
+  }
+  const next = { ...latest };
+  names.forEach((name) => {
+    const entry = updater({ ...(latest[name] || {}) }, name);
+    if (entry && Object.keys(entry).length) next[name] = entry;
+    else delete next[name];
+  });
+  try {
+    await apiFetch("/settings/product_info", authToken, { method: "PUT", body: { value: next } });
+    return { value: next, ok: true };
+  } catch (e) {
+    try {
+      localStorage.setItem("wms-product-info", JSON.stringify(next));
+    } catch (e2) {
+      /* 무시 */
+    }
+    return { value: next, ok: false, error: e.message };
+  }
+}
 function productInfoOf(name) {
   return PRODUCT_INFO[String(name || "").replace(/\n/g, "").trim()] || null;
 }
@@ -1091,6 +1136,7 @@ function packQtyOverrideOf(name) {
 // 피킹지시서·거래명세서·편수리스트·당착 어디에도 나가지 않는다 (발주파일에 찍혀 와도 무시).
 function isProductInactive(name) {
   const ov = productInfoOf(name);
+  if (productBrandOf(name) !== "GS") return true; // GS슈퍼 등 다른 브랜드 상품은 GS 피킹지·명세서·집계에서 제외
   return !!(ov && (ov.paused || ov.discontinued));
 }
 // 저장 직전 서버 최신값을 받아 이 상품 항목만 바꿔 저장 (다른 직원이 그사이 바꾼 다른 상품은 유지)
@@ -7443,6 +7489,15 @@ function ProductInfoCenter({ orders, items, emartOrders, authToken, productInfo,
           map.set(name, { name, sku: "", supplier: sup, basePack: tp.pack || 0, lastDate: "", tplTitle: emartNorm(tp.title) });
         });
     }
+    // GS 발주파일 상품 중 브랜드 설정에서 이 브랜드로 정한 상품
+    if (brand !== "GS") {
+      const gsRows = buildProductInfoRows(orders);
+      const have = new Set(gsRows.map((r) => r.name));
+      Object.keys(DEFAULT_PRODUCT_BRAND).forEach((n) => !have.has(n) && gsRows.push({ name: n, sku: "", supplier: "(발주 기록 없음)", basePack: 0, lastDate: "" }));
+      gsRows.forEach((r) => {
+        if (productBrandOf(r.name) === brand && !map.has(r.name)) map.set(r.name, { ...r, basePack: packQtyOverrideOf(r.name) || r.basePack, fromGs: true });
+      });
+    }
     // 상품마스터에 그 브랜드로 등록된 품목도 같이
     items
       .filter((i) => itemBrandsOf(i).includes(brand))
@@ -10001,6 +10056,12 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
   const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg, productInfo]);
+  // 브랜드 설정에서 GS슈퍼 등으로 정해서 GS 피킹지에서 빠진 상품 (안내용)
+  const otherBrandNames = useMemo(() => {
+    const set = new Set();
+    orders.forEach((o) => o.createdAt === activeDate && o.lines.forEach((l) => productBrandOf(l.name) !== "GS" && set.add(l.name)));
+    return Array.from(set);
+  }, [orders, activeDate, productInfo]);
 
 
   // 필터 드롭다운에 뿌릴 공급사 목록 (이 날짜에 실제로 존재하는 공급사만, 같은 회사는 하나로 묶어서, 고정 순서표 순으로)
@@ -10055,6 +10116,11 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
               ))}
             </select>
             <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 발주만 집계합니다 (다른 날짜와 섞이지 않음)</span>
+            {otherBrandNames.length > 0 && (
+              <span style={{ fontSize: 12, color: T.amberDeep, fontWeight: 600 }} title={otherBrandNames.join(", ")}>
+                · GS슈퍼 등 다른 브랜드로 정한 상품 {otherBrandNames.length}개는 빠져 있어요 (상품 정보 관리 → 브랜드 설정)
+              </span>
+            )}
           </div>
           {products.length === 0 ? (
             <div style={cardStyle}>
@@ -11350,7 +11416,169 @@ function PiCatBadge({ cat, detail }) {
   );
 }
 
+// GS 발주파일 상품의 브랜드 정하기 (GS가 아니면 GS 피킹지·명세서·편수리스트·일별 집계에서 빠지고 그 브랜드 상품 정보 관리에 나옴)
+function ProductBrandModal({ orders, authToken, productInfo, onSaved, onClose }) {
+  const baseRows = useMemo(() => {
+    const list = buildProductInfoRows(orders);
+    const have = new Set(list.map((r) => r.name));
+    [...Object.keys(DEFAULT_PRODUCT_BRAND), ...Object.keys(productInfo || {}).filter((n) => (productInfo[n] || {}).brand)].forEach((n) => {
+      if (!have.has(n)) {
+        have.add(n);
+        list.push({ name: n, sku: "", supplier: "(발주 기록 없음)", basePack: 0, lastDate: "" });
+      }
+    });
+    return list.sort((a, b) => pickingSupplierPriority(a.supplier) - pickingSupplierPriority(b.supplier) || a.supplier.localeCompare(b.supplier, "ko") || a.name.localeCompare(b.name, "ko"));
+  }, [orders, productInfo]);
+  const [draft, setDraft] = useState({}); // 이름 -> 브랜드 (바꾼 것만)
+  const [checked, setChecked] = useState(new Set());
+  const [q, setQ] = useState("");
+  const [supplier, setSupplier] = useState("all");
+  const [brandF, setBrandF] = useState("all");
+  const [bulk, setBulk] = useState("GSSUPER");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const brandOf = (n) => draft[n] || productBrandOf(n);
+  const suppliers = Array.from(new Set(baseRows.map((r) => r.supplier)));
+  const shown = baseRows.filter((r) => {
+    if (supplier !== "all" && r.supplier !== supplier) return false;
+    if (brandF !== "all" && brandOf(r.name) !== brandF) return false;
+    const k = q.trim().toLowerCase();
+    return !k || r.name.toLowerCase().includes(k) || String(r.sku).toLowerCase().includes(k);
+  });
+  const dirtyNames = Object.keys(draft).filter((n) => draft[n] !== productBrandOf(n));
+  const setBrand = (names, b) => {
+    setDraft((d) => {
+      const n = { ...d };
+      names.forEach((x) => (n[x] = b));
+      return n;
+    });
+    setMsg("");
+  };
+  function close() {
+    if (dirtyNames.length && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
+    onClose();
+  }
+  async function save() {
+    setBusy(true);
+    const r = await saveProductInfoEntries(authToken, productInfo, dirtyNames, (e, name) => {
+      const b = draft[name];
+      if (b === (DEFAULT_PRODUCT_BRAND[name] || "GS")) delete e.brand;
+      else e.brand = b;
+      return e;
+    });
+    onSaved(r.value);
+    setBusy(false);
+    setDraft({});
+    setChecked(new Set());
+    setMsg(r.ok ? `${dirtyNames.length}개 상품 브랜드를 저장했어요. 피킹지시서·거래명세서에 바로 반영돼요.` : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
+  const allShownChecked = shown.length > 0 && shown.every((r) => checked.has(r.name));
+  const counts = {};
+  baseRows.forEach((r) => (counts[brandOf(r.name)] = (counts[brandOf(r.name)] || 0) + 1));
+  const selStyle = { ...inputStyle, padding: "5px 8px", fontSize: 12.5 };
+  return (
+    <BrandModalFrame title="브랜드 설정 · GS 발주파일 상품" sub="GS 발주파일에 같이 들어오는 상품의 브랜드를 정해요. GS가 아닌 브랜드(예: GS슈퍼)로 바꾸면 GS 피킹지시서·거래명세서·편수리스트·일별 집계에서 빠지고, 그 브랜드의 상품 정보 관리에 나와요." onClose={close} maxWidth={1080} height="90vh">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy || dirtyNames.length === 0} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirtyNames.length ? 0.55 : 1 }}>
+          <Check size={14} /> {busy ? "저장 중..." : dirtyNames.length ? `변경 ${dirtyNames.length}개 저장` : "저장할 변경 없음"}
+        </button>
+        <span style={{ fontSize: 12.5, color: T.inkSoft, marginLeft: 6 }}>선택한 {checked.size}개를</span>
+        <select style={selStyle} value={bulk} onChange={(e) => setBulk(e.target.value)}>
+          {PICKING_CHANNELS.map((c) => (
+            <option key={c.brand} value={c.brand}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <button disabled={checked.size === 0} onClick={() => setBrand(Array.from(checked), bulk)} style={{ ...smallBtnStyle, opacity: checked.size ? 1 : 0.5 }}>
+          로 바꾸기
+        </button>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("서버에") ? T.danger : T.teal }}>{msg}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 8, padding: "10px 20px", flexWrap: "wrap", alignItems: "center" }}>
+        <input style={{ ...inputStyle, flex: "1 1 220px" }} placeholder="상품명 또는 상품코드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select style={{ ...inputStyle, flex: "0 1 200px" }} value={supplier} onChange={(e) => setSupplier(e.target.value)}>
+          <option value="all">전체 공급사</option>
+          {suppliers.map((x) => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
+        </select>
+        {[{ brand: "all", label: "전체" }, ...PICKING_CHANNELS].map((c) => (
+          <button key={c.brand} onClick={() => setBrandF(c.brand)} style={{ ...smallBtnStyle, padding: "6px 10px", background: brandF === c.brand ? T.steel : T.surface, color: brandF === c.brand ? "#fff" : T.ink, borderColor: brandF === c.brand ? T.steel : T.border }}>
+            {c.label} {c.brand === "all" ? baseRows.length : counts[c.brand] || 0}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 34 }}>
+                <input
+                  type="checkbox"
+                  checked={allShownChecked}
+                  onChange={() =>
+                    setChecked((c) => {
+                      const n = new Set(c);
+                      shown.forEach((r) => (allShownChecked ? n.delete(r.name) : n.add(r.name)));
+                      return n;
+                    })
+                  }
+                />
+              </th>
+              <th>공급사</th>
+              <th>상품명</th>
+              <th style={{ width: 150 }}>브랜드</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => {
+              const b = brandOf(r.name);
+              const changed = draft[r.name] && draft[r.name] !== productBrandOf(r.name);
+              return (
+                <tr key={r.name} style={changed ? { background: "#FFF8E1" } : undefined}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={checked.has(r.name)}
+                      onChange={() =>
+                        setChecked((c) => {
+                          const n = new Set(c);
+                          n.has(r.name) ? n.delete(r.name) : n.add(r.name);
+                          return n;
+                        })
+                      }
+                    />
+                  </td>
+                  <td style={{ color: T.inkSoft, fontSize: 12.5, whiteSpace: "nowrap" }}>{r.supplier}</td>
+                  <td>
+                    <span style={{ fontWeight: 600 }}>{r.name}</span>
+                    {changed && <span style={{ marginLeft: 6, fontSize: 11, color: T.amberDeep, fontWeight: 700 }}>변경</span>}
+                  </td>
+                  <td>
+                    <select style={{ ...selStyle, width: "100%", fontWeight: b !== "GS" ? 700 : 500 }} value={b} onChange={(e) => setBrand([r.name], e.target.value)}>
+                      {PICKING_CHANNELS.map((c) => (
+                        <option key={c.brand} value={c.brand}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {shown.length === 0 && <EmptyRow text="조건에 맞는 상품이 없어요." />}
+      </div>
+    </BrandModalFrame>
+  );
+}
+
 function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
+  const [showBrand, setShowBrand] = useState(false);
   const [q, setQ] = useState("");
   const [supplier, setSupplier] = useState("all");
   const [onlyChanged, setOnlyChanged] = useState(false);
@@ -11411,16 +11639,18 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
         const dc = dcGroupOf(r.name);
         const dk = getDangchakInfo(r.name);
         const expiry = dc && expiryOverrideOf(r.name) == null ? null : expiryDaysOf(r.name);
-        const changed = !!ov && Object.keys(ov).some((k) => k !== "paused" && k !== "discontinued");
-        return { ...r, ov, changed, paused: !!(ov && ov.paused), deleted: !!(ov && ov.discontinued), pack, expiry, displayName: displayNameOf(r.name), category: piCategoryOf(dc, dk), part: detectPart(r.name) };
+        const changed = !!ov && Object.keys(ov).some((k) => k !== "paused" && k !== "discontinued" && k !== "brand");
+        return { ...r, ov, changed, brand: productBrandOf(r.name), paused: !!(ov && ov.paused), deleted: !!(ov && ov.discontinued), pack, expiry, displayName: displayNameOf(r.name), category: piCategoryOf(dc, dk), part: detectPart(r.name) };
       })
       .sort((a, b) => pickingSupplierPriority(a.supplier) - pickingSupplierPriority(b.supplier) || a.supplier.localeCompare(b.supplier, "ko") || a.name.localeCompare(b.name, "ko"));
   }, [orders, productInfo]);
 
+  const otherBrandCount = rows.filter((r) => r.brand !== "GS").length;
   const suppliers = useMemo(() => Array.from(new Set(rows.map((r) => r.supplier))), [rows]);
   const deletedCount = rows.filter((r) => r.deleted).length;
   const pausedCount = rows.filter((r) => r.paused && !r.deleted).length;
   const filtered = rows.filter((r) => {
+    if (r.brand !== "GS") return false; // GS슈퍼 등으로 지정한 상품은 그 브랜드 탭에서 보여요
     if (showDeleted !== r.deleted) return false; // 평소엔 삭제된 상품 숨김, "삭제된 상품" 보기에선 그것만
     if (supplier !== "all" && r.supplier !== supplier) return false;
     if (onlyChanged && !r.changed) return false;
@@ -11433,7 +11663,16 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
 
   return (
     <div>
-      <PageHeader title="XIII. 상품 정보 관리" sub="입수·소비기한·상품명·명세서 구분을 바꾸면 피킹지시서와 거래명세서에 바로 반영돼요 (이미 올린 날짜도 다시 올릴 필요 없어요)" />
+      <PageHeader
+        title="XIII. 상품 정보 관리"
+        sub="입수·소비기한·상품명·명세서 구분을 바꾸면 피킹지시서와 거래명세서에 바로 반영돼요 (이미 올린 날짜도 다시 올릴 필요 없어요)"
+        action={
+          <button onClick={() => setShowBrand(true)} style={settingBtnStyle} title="GS 발주파일 상품의 브랜드(GS / GS슈퍼 등) 정하기">
+            <SettingsGear size={15} /> 브랜드 설정{otherBrandCount > 0 ? ` (다른 브랜드 ${otherBrandCount})` : ""}
+          </button>
+        }
+      />
+      {showBrand && <ProductBrandModal orders={orders} authToken={authToken} productInfo={productInfo} onSaved={onSaved} onClose={() => setShowBrand(false)} />}
 
       <div style={{ ...cardStyle, padding: 16, marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ position: "relative", flex: "1 1 260px" }}>
