@@ -9900,7 +9900,7 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16, alignItems: "start" }}>
         <div style={cardStyle}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>1. 공급사(시트) 순서</div>
-          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>위에 있을수록 먼저 나와요. ▲▼로 한 칸씩, 번호 칸으로 원하는 자리로 옮겨요.</div>
+          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10 }}>위에 있을수록 먼저 나와요. ▲▼로 한 칸씩, 번호 칸으로 원하는 자리로 옮겨요. 취급 안 하는 공급사·중복 공급사는 ✕로 지워요.</div>
           {supplierList.map((k, i) => {
             const has = detectedSuppliers.includes(k);
             const isExtra = extra.includes(k);
@@ -9923,6 +9923,24 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
                 </button>
                 <button style={rowBtn} onClick={() => moveSupplier(i, i + 1)} disabled={i === supplierList.length - 1} title="아래로">
                   ▼
+                </button>
+                <button
+                  style={{ ...rowBtn, color: T.danger, borderColor: T.danger + "55" }}
+                  title="순서표에서 지우기 (취급 안 하는 공급사·중복 공급사)"
+                  onClick={() => {
+                    const warn = has
+                      ? `"${k}"는 이 날짜에 발주가 있는 공급사예요.\n지워도 피킹지에는 계속 나오고, 순서표에 없는 공급사라서 맨 뒤에 붙어요.\n그래도 지울까요?`
+                      : `"${k}"를 순서표에서 지울까요?\n나중에 이 공급사 발주가 들어오면 맨 뒤에 "순서표에 없던 공급사"로 다시 나와요.`;
+                    if (!window.confirm(warn)) return;
+                    updateSuppliers(supplierList.filter((x) => x !== k));
+                    setDraft((d) => {
+                      const products = { ...d.products };
+                      delete products[k];
+                      return { ...d, products };
+                    });
+                  }}
+                >
+                  ✕
                 </button>
               </div>
             );
