@@ -9374,6 +9374,20 @@ async function downloadCustomerPickingExcel(products, filename, setBusy, date) {
   }
 }
 
+// 공급사배포용 시트를 피킹지시서 파일 맨 앞에 같이 넣는 공급사 (0고정 지역까지 실제 수량으로 보여줘야 하는 곳)
+// 예: 데어리젠 - 우리 피킹지는 신제주 0고정이지만 공급사에게는 신제주 포함 수량을 보여줘야 함
+const SUPPLIER_COPY_KEYS = ["데어리젠"];
+function needsSupplierCopy(p) {
+  const keys = [dcVendorKey(p.name), pickingSupplierKey(p.supplier || ""), p.supplier || ""].map((x) => String(x || "").replace(/\s/g, ""));
+  const hit = SUPPLIER_COPY_KEYS.some((k) => keys.some((x) => x && x.includes(k)));
+  return hit && customerDiffOf(p).length > 0;
+}
+const SUPPLIER_COPY_SUFFIX = "(공급사배포용)";
+function supplierCopySheetName(p) {
+  const base = String(p.displayName || p.name || "품목").replace(/[\\/?*[\]:]/g, "");
+  return base.slice(0, 28 - SUPPLIER_COPY_SUFFIX.length) + SUPPLIER_COPY_SUFFIX; // 시트 이름은 28자까지 (safeSheetName)
+}
+
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
   try {
@@ -9382,30 +9396,47 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
     // 당착 상품(GS_당착리스트)은 같은 파일에 섞여 들어가되 37개 지역 전부가 아니라 실제 주문 있는 지역만 보여준다.
     // - style "full"(조인앤조인): 구역 합계는 유지한 채 자기 시트에서 0인 지역만 건너뜀
     // - style "combined"(참맛나라·맛요일·H2글로벌·데어리젠): 같은 공급사 것끼리 한 시트에 몰아서 "{공급사}(오전현장-지역)"로 나감
-    const combinedDone = new Set();
-    products.forEach((p) => {
-      const style = getDangchakStyle(p.name);
-      if (style === "full") {
-        addStyledInspectionSheet(workbook, p, usedNames, date, true);
-      } else {
-        // combined 당착이든 아니든 평소 피킹지시서는 그대로 만든다 - 당착으로 빠지는 지역 하나만
-        // 위의 PICKING_QTY_ZERO_BY_NAME으로 이미 0 처리돼서, 나머지 지역 주문은 평소처럼 다 보인다.
-        addStyledInspectionSheet(workbook, p, usedNames, date);
+    // 시트 순서 (공급사마다): ① 공급사배포용(0고정 지역까지 실제 수량, 예: 데어리젠 신제주 포함) → ② 상품 시트들 → ③ 당착(오전현장) 시트는 맨 끝
+    //   예) 데어리젠: 모짜렐라(공급사배포용) > 스트링치즈(공급사배포용) > 모짜렐라 > 스트링치즈 > 데어리젠(오전현장-신제주)
+    const lastIdxOfGroup = new Map(); // combined 당착 그룹 -> 그 그룹 마지막 상품 위치
+    products.forEach((p, i) => {
+      if (getDangchakStyle(p.name) === "combined") lastIdxOfGroup.set(getDangchakInfo(p.name).group, i);
+    });
+    const blocks = []; // 같은 공급사끼리 연속 묶음
+    products.forEach((p, i) => {
+      const k = pickingSupplierKey(p.supplier || "");
+      if (!blocks.length || blocks[blocks.length - 1].key !== k) blocks.push({ key: k, items: [] });
+      blocks[blocks.length - 1].items.push({ p, i });
+    });
+    const sheetIdxOfSku = new Map();
+    const pendingCombined = []; // 아직 넣지 못한 당착 그룹 (그룹 마지막 상품이 들어간 공급사 묶음 끝에 넣음)
+    blocks.forEach((blk) => {
+      // ① 공급사배포용
+      blk.items.forEach(({ p }) => {
+        if (needsSupplierCopy(p)) addStyledInspectionSheet(workbook, customerVersionOfProduct(p), usedNames, date, false, supplierCopySheetName(p));
+      });
+      // ② 상품 시트
+      blk.items.forEach(({ p, i }) => {
+        const style = getDangchakStyle(p.name);
+        // full(조인앤조인): 0인 지역만 건너뜀 / combined·일반: 평소 피킹지시서 그대로 (당착 지역은 이미 0 처리)
+        addStyledInspectionSheet(workbook, p, usedNames, date, style === "full");
+        sheetIdxOfSku.set(p.sku, workbook.worksheets.length - 1);
         if (style === "combined") {
-          const groupKey = getDangchakInfo(p.name).group;
-          if (!combinedDone.has(groupKey)) {
-            combinedDone.add(groupKey);
-            const group = products.filter((q) => (getDangchakInfo(q.name) || {}).group === groupKey);
-            addDangchakCombinedSheet(workbook, groupKey, group, usedNames, date);
-          }
+          const g = getDangchakInfo(p.name).group;
+          if (lastIdxOfGroup.get(g) === i) pendingCombined.push(g);
         }
+      });
+      // ③ 당착 시트는 공급사 맨 끝
+      while (pendingCombined.length) {
+        const g = pendingCombined.shift();
+        const group = products.filter((q) => (getDangchakInfo(q.name) || {}).group === g);
+        addDangchakCombinedSheet(workbook, g, group, usedNames, date);
       }
     });
     // 여러 상품을 한 파일에 시트로 묶을 때, 화면에서 고르고 있던 상품의 시트가 열자마자 보이도록 활성 탭을 맞춘다.
-    // (지정 안 하면 항상 첫 번째 시트가 열려서, "분명 다른 상품을 골랐는데 엉뚱한 상품이 열린다"는 착각이 생김)
-    if (activeSku) {
-      const idx = products.findIndex((p) => p.sku === activeSku);
-      if (idx > 0) workbook.views = [{ activeTab: idx, firstSheet: idx }];
+    if (activeSku && sheetIdxOfSku.get(activeSku) > 0) {
+      const idx = sheetIdxOfSku.get(activeSku);
+      workbook.views = [{ activeTab: idx, firstSheet: idx }];
     }
     applySheetTabColors(workbook, "gs_picking"); // 시트 색상 설정
     const buffer = await workbook.xlsx.writeBuffer();
