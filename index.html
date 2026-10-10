@@ -4562,144 +4562,63 @@ function gsDailySheetOf(name) {
   const k = dcVendorKey(name);
   return k && k !== "조인앤조인" ? "GS재고" : "GS";
 }
-// ---------- 일별 집계 고정 규칙 (직원 파일과 비교해서 맞춘 값) ----------
-// 피킹지·거래명세서에는 그대로 나오고, "일별 발주 집계"에서만 적용된다. 저장된 지난 스냅샷에도 화면/엑셀에서 적용.
-// exclude: 집계에서 뺄 상품 / cold: 냉장으로 셀 상품 / notCold: 냉장 규칙에 걸려도 1편·2편으로 셀 상품
-// 코드 고정값(아래) + 화면에서 직원 파일 비교 후 [집계 제외]로 추가한 값(설정 gs_daily_rules)을 합쳐서 쓴다.
-const GS_DAILY_RULES_DEFAULT = { exclude: [], cold: [], notCold: [] };
+// ---------- 일별 집계 설정 (직원이 화면에서 정하는 규칙) ----------
+// 피킹지·거래명세서에는 영향 없고 "일별 발주 집계" 화면·엑셀에서만 적용된다. 저장된 지난 날짜에도 그 날짜 기준으로 적용.
+// 규칙 하나 = { id, scope: "supplier"(공급사 전체) | "product"(상품 하나), supplier, name, action, from, to, memo, off }
+//   action: exclude(집계 안 함) / include(집계 함 - 공급사 전체 제외 중 이 상품만 살리기) / cold(냉장) / normal(상온) / p1(1편) / p2(2편)
+//   from~to: 적용 날짜(발주일자). 비우면 계속. 예) 오늘만 빼기 = from=to=오늘
+// 우선순위: 상품 규칙 > 공급사 규칙 > 기본(코드: 이름 끝 1/2 → 편, 냉장 목록). 같은 단계에선 나중에 만든 규칙이 이김.
 const GS_DAILY_RULES_KEY = "gs_daily_rules";
+const DAILY_ACTIONS = {
+  exclude: { label: "집계 안 함", group: "count", color: "#C0392B", bg: "#FDECEA" },
+  include: { label: "집계 함", group: "count", color: "#2E7D32", bg: "#E8F5E9" },
+  cold: { label: "냉장", group: "temp", color: "#1565C0", bg: "#E3F2FD" },
+  normal: { label: "상온", group: "temp", color: "#6D4C41", bg: "#F3EDE7" },
+  p1: { label: "1편", group: "part", color: "#37474F", bg: "#ECEFF1" },
+  p2: { label: "2편", group: "part", color: "#6A1B9A", bg: "#F3E5F5" },
+};
 // 이름 비교용: 공백 제거, 대문자, 끝의 "1편"/"2편" → "1"/"2"
 const dailyNameKey = (s) => String(s || "").replace(/\s/g, "").toUpperCase().replace(/(\d)편$/, "$1");
-function mergeGsDailyRules(saved) {
-  const v = saved && typeof saved === "object" ? saved : {};
-  const out = {};
-  ["exclude", "cold", "notCold"].forEach((k) => {
-    out[k] = new Set([...(GS_DAILY_RULES_DEFAULT[k] || []), ...(Array.isArray(v[k]) ? v[k] : [])].map(dailyNameKey));
-  });
-  return out;
-}
-const isDailyExcluded = (rules, name) => !!rules && rules.exclude.has(dailyNameKey(name));
-function isDailyCold(rules, name) {
-  const k = dailyNameKey(name);
-  if (rules && rules.notCold.has(k)) return false;
-  if (rules && rules.cold.has(k)) return true;
-  return isColdProduct(name);
-}
-
-// ---------- 직원이 입력한 "편의점 일별 발주 내역" 파일 읽기 (GS / GS재고 시트) ----------
-// 3행 공급사(병합이라 앞 값 이어받기), 5행 상품명, 6행부터 날짜별 수량. F열 = 발주일자, B~E = 일일물동량/1편/2편/냉장
-function parseStaffDailyWorkbook(wb) {
-  const out = { days: {}, summary: {} }; // days[date][key] = { name, supplier, sheet, qty }
-  ["GS", "GS재고"].forEach((sn) => {
-    const ws = wb.Sheets[sn];
-    if (!ws) return;
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
-    // 상품명 행 찾기: "발주일자"가 있는 머리글 행 다음 행
-    let hr = rows.findIndex((r) => r.some((c) => String(c).replace(/\s/g, "") === "발주일자"));
-    if (hr < 0) return;
-    const head = rows[hr].map((c) => String(c).replace(/\s/g, ""));
-    const dateCol = head.indexOf("발주일자");
-    const nameRow = rows[hr + 1] || [];
-    const supRow = rows[hr - 1] || [];
-    let sup = "";
-    const cols = [];
-    for (let c = dateCol + 4; c < Math.max(nameRow.length, supRow.length); c++) {
-      if (String(supRow[c] || "").trim()) sup = String(supRow[c]).trim();
-      const nm = String(nameRow[c] || "").trim();
-      if (nm) cols.push({ c, name: nm, supplier: sup });
-    }
-    for (let r = hr + 2; r < rows.length; r++) {
-      const dv = rows[r][dateCol];
-      let date = "";
-      if (typeof dv === "number" && dv > 40000) {
-        const d = new Date(Math.round((dv - 25569) * 86400000));
-        date = d.toISOString().slice(0, 10);
-      } else if (/^\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(String(dv))) {
-        const [y, m, d] = String(dv).split(/[-./]/).map(Number);
-        date = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      }
-      if (!date) continue;
-      const num = (v) => (typeof v === "number" ? v : Number(String(v).replace(/,/g, "")) || 0);
-      const total = num(rows[r][dateCol - 4]);
-      if (!total) continue; // 아직 입력 안 된 날
-      (out.summary[date] = out.summary[date] || {})[sn] = { total, p1: num(rows[r][dateCol - 3]), p2: num(rows[r][dateCol - 2]), cold: num(rows[r][dateCol - 1]) };
-      const day = (out.days[date] = out.days[date] || {});
-      cols.forEach((col) => {
-        const q = num(rows[r][col.c]);
-        const k = dailyNameKey(col.name);
-        const x = day[k] || { name: col.name, supplier: col.supplier, sheet: sn, qty: 0 };
-        x.qty += q;
-        day[k] = x;
-      });
-    }
-  });
-  return out;
-}
-
-// 우리 이름 ↔ 직원 이름 맞추기: 정확히 같음 → 브랜드 접두어( "대광)" 등 ) 빼고 같음 → 한쪽이 잘린 이름(앞부분 일치, 같은 편)
-function matchStaffName(ourName, staffKeys) {
-  const k = dailyNameKey(ourName);
-  if (staffKeys.has(k)) return { key: k, how: "같음" };
-  const strip = (x) => x.replace(/^(\(주문\))?(예약\)|예\))?[^)]{1,8}\)/, "");
-  const part = (x) => (/(\d)$/.test(x) ? x.slice(-1) : "");
-  const ks = strip(k);
-  for (const sk of staffKeys) if (strip(sk) === ks && ks.length >= 4) return { key: sk, how: "이름 다름" };
-  for (const sk of staffKeys) {
-    const a = ks.replace(/\d$/, ""), b = strip(sk).replace(/\d$/, "");
-    if (part(k) === part(sk) && a.length >= 6 && b.length >= 6 && (a.startsWith(b) || b.startsWith(a))) return { key: sk, how: "이름 다름" };
+const dailySupKey = (s) => String(s || "").replace(/\s/g, "").toUpperCase();
+// 집계 화면에 보이는 공급사 이름 (GS재고는 DC 그룹 이름, 나머지는 피킹 공급사 이름)
+function dailySupplierOf(p) {
+  if (gsDailySheetOf(p.name) === "GS재고") {
+    const g = dcGroupOf(p.name);
+    if (g) return g.group.label;
   }
-  return null;
+  return p.supplier || "미지정";
 }
-
-// 비교 결과: 날짜별 합계 차이 + 상품별(날짜 합) 차이
-function compareGsDailyWithStaff(staff, days, rules) {
-  const dates = Object.keys(staff.summary).filter((d) => days[d]).sort();
-  const staffKeys = new Set();
-  dates.forEach((d) => Object.keys(staff.days[d] || {}).forEach((k) => staffKeys.add(k)));
-  const rowsMap = new Map(); // 우리 상품 key 또는 직원 key 기준
-  const get = (id, init) => rowsMap.get(id) || (rowsMap.set(id, { ...init, ours: {}, staff: {} }), rowsMap.get(id));
-  const matchCache = new Map();
-  dates.forEach((d) => {
-    (days[d].products || []).forEach((p) => {
-      if (!matchCache.has(p.name)) matchCache.set(p.name, matchStaffName(p.name, staffKeys));
-      const m = matchCache.get(p.name);
-      const id = m ? "S:" + m.key : "O:" + dailyNameKey(p.name);
-      const row = get(id, { ourName: p.name, staffName: m ? null : null, supplier: p.supplier, how: m ? m.how : "우리만 있음" });
-      row.ourName = row.ourName || p.name;
-      row.ours[d] = (row.ours[d] || 0) + p.qty;
-      row.excluded = isDailyExcluded(rules, p.name);
-      row.cold = isDailyCold(rules, p.name);
-      row.part = detectPart(p.name);
+// 저장값 → 규칙 배열 (예전 형식 exclude/cold/notCold 목록도 상품 규칙으로 읽음)
+function normalizeDailyRules(saved) {
+  const v = saved && typeof saved === "object" ? saved : {};
+  const out = [];
+  const legacy = { exclude: "exclude", cold: "cold", notCold: "normal" };
+  Object.entries(legacy).forEach(([k, action]) =>
+    (Array.isArray(v[k]) ? v[k] : []).forEach((name, i) => out.push({ id: `legacy-${k}-${i}`, scope: "product", name, supplier: "", action, from: "", to: "", legacy: true }))
+  );
+  (Array.isArray(v.rules) ? v.rules : []).forEach((r) => r && DAILY_ACTIONS[r.action] && out.push(r));
+  return out;
+}
+const dailyRuleActive = (r, date) => !r.off && (!r.from || !date || date >= r.from) && (!r.to || !date || date <= r.to);
+const dailyRuleHits = (r, p) => (r.scope === "supplier" ? dailySupKey(r.supplier) === dailySupKey(dailySupplierOf(p)) : dailyNameKey(r.name) === dailyNameKey(p.name));
+// 그날 이 상품의 분류: { excluded, part, cold, src: { count, temp, part } } src = "기본" | "공급사" | "상품"
+function classifyDaily(rules, date, p) {
+  const res = { excluded: false, part: detectPart(p.name), cold: isColdProduct(p.name), src: { count: "기본", temp: "기본", part: "기본" }, rule: {} };
+  if (!rules || !rules.length) return res;
+  const apply = (scope) =>
+    rules.forEach((r) => {
+      if (r.scope !== scope || !dailyRuleActive(r, date) || !dailyRuleHits(r, p)) return;
+      const tag = scope === "supplier" ? "공급사" : "상품";
+      const g = DAILY_ACTIONS[r.action].group;
+      if (g === "count") res.excluded = r.action === "exclude";
+      if (g === "temp") res.cold = r.action === "cold";
+      if (g === "part") res.part = r.action === "p2" ? 2 : 1;
+      res.src[g] = tag;
+      res.rule[g] = r;
     });
-    Object.entries(staff.days[d] || {}).forEach(([k, x]) => {
-      const row = get("S:" + k, { ourName: null, supplier: x.supplier, how: "직원만 있음" });
-      row.staffName = x.name;
-      row.staffSupplier = x.supplier;
-      row.staffSheet = x.sheet;
-      row.staff[d] = (row.staff[d] || 0) + x.qty;
-    });
-  });
-  const rows = Array.from(rowsMap.values())
-    .map((r) => {
-      const ours = dates.map((d) => (r.excluded ? 0 : r.ours[d] || 0));
-      const st = dates.map((d) => r.staff[d] || 0);
-      const diff = ours.map((v, i) => v - st[i]);
-      let kind = r.how;
-      if (r.ourName && r.staffName && r.how === "같음") kind = diff.some((x) => x) ? "수량 차이" : "같음";
-      else if (r.ourName && r.staffName) kind = diff.some((x) => x) ? "이름 다름·수량 차이" : "이름 다름";
-      else if (r.ourName && !st.some((x) => x)) kind = "우리만 있음";
-      else if (!r.ourName && !st.some((x) => x)) kind = "같음"; // 직원 열만 있고 수량 0
-      return { ...r, oursArr: ours, rawOurs: dates.map((d) => r.ours[d] || 0), staffArr: st, diff, absDiff: diff.reduce((a, x) => a + Math.abs(x), 0), kind };
-    })
-    .filter((r) => r.kind !== "같음" || r.excluded);
-  rows.sort((a, b) => b.absDiff - a.absDiff);
-  const table = buildGsDailyTable(dates[0] ? dates[0].slice(0, 7) : "2026-01", Object.fromEntries(dates.map((d) => [d, days[d]])), rules);
-  const sum = dates.map((d) => {
-    const ourRow = table.sheets.GS.rows.find((x) => x.date === d) || {};
-    const s = staff.summary[d].GS || {};
-    return { date: d, ours: { total: ourRow.total || 0, p1: ourRow.p1 || 0, p2: ourRow.p2 || 0, cold: ourRow.cold || 0 }, staff: s };
-  });
-  return { dates, rows, sum };
+  apply("supplier");
+  apply("product");
+  return res;
 }
 
 // 그날 상품별 총수량 스냅샷 (일시중지·삭제한 상품은 buildProductsForDate에서 이미 빠짐)
@@ -4717,9 +4636,21 @@ function computeGsDailySnapshot(orders, date) {
 
 // 한 달치 표 데이터 만들기. days: { "YYYY-MM-DD": { products: [...] } }
 function buildGsDailyTable(month, days, rules) {
-  // 고정 규칙: 집계 제외 상품은 빼고 시작
-  if (rules) days = Object.fromEntries(Object.entries(days).map(([d, v]) => [d, { ...v, products: ((v && v.products) || []).filter((p) => !isDailyExcluded(rules, p.name)) }]));
-  const coldOf = (name) => (rules ? isDailyCold(rules, name) : isColdProduct(name));
+  // 집계 설정: 날짜마다 그날 규칙으로 분류해서, "집계 안 함" 상품은 빼고 편·냉장 정보를 붙인다
+  days = Object.fromEntries(
+    Object.entries(days).map(([d, v]) => [
+      d,
+      {
+        ...v,
+        products: ((v && v.products) || [])
+          .map((p) => {
+            const c = classifyDaily(rules, d, p);
+            return c.excluded ? null : { ...p, _part: c.part, _cold: c.cold };
+          })
+          .filter(Boolean),
+      },
+    ])
+  );
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
@@ -4757,9 +4688,9 @@ function buildGsDailyTable(month, days, rules) {
         inDate: addDaysStr(date, 1),
         has: !!d,
         total: sum(() => true),
-        p1: sum((p) => detectPart(p.name) === 1 && !coldOf(p.name)),
-        p2: sum((p) => detectPart(p.name) === 2 && !coldOf(p.name)),
-        cold: sum((p) => coldOf(p.name)),
+        p1: sum((p) => p._part === 1 && !p._cold),
+        p2: sum((p) => p._part === 2 && !p._cold),
+        cold: sum((p) => p._cold),
         cells: columns.map((c) => qtyBy.get(c.name) || 0),
       };
     });
@@ -4978,9 +4909,9 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState("GS");
   const [busy, setBusy] = useState(false);
-  const [compareOpen, setCompareOpen] = useState(false);
+  const [settingOpen, setSettingOpen] = useState(false);
   const rulesSaved = useSetting(GS_DAILY_RULES_KEY, authToken);
-  const rules = useMemo(() => mergeGsDailyRules(rulesSaved), [rulesSaved]);
+  const rules = useMemo(() => normalizeDailyRules(rulesSaved), [rulesSaved]);
 
   useEffect(() => {
     apiFetch("/gs-daily/months", authToken)
@@ -5027,6 +4958,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
     return t;
   }, [month, days, emDays, rules]);
   const sh = table.sheets[sheet];
+  const newCount = useMemo(() => dailyNewProducts(days, rulesSaved).length, [days, rulesSaved]);
   const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
   const nf = (v) => (v ? v.toLocaleString() : "-");
@@ -5040,8 +4972,9 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
         sub="날짜별 상품 총수량을 브랜드별 시트로 쌓아요. GS = 피킹지시서 총수량(0고정 지역은 0) + 당착 수량. 엑셀은 전산팀 파일처럼 세븐일레븐·BGF·GS·GS재고·이마트 시트로 나가요."
         action={
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setCompareOpen(true)} style={{ ...smallBtnStyle, padding: "9px 14px", whiteSpace: "nowrap" }}>
-              직원 파일과 비교{rules.exclude.size ? ` · 제외 ${rules.exclude.size}종` : ""}
+            <button onClick={() => setSettingOpen(true)} style={{ ...smallBtnStyle, padding: "9px 14px", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <SettingsGear size={15} /> 집계 설정
+              {newCount > 0 && <span style={{ background: T.danger, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 800 }}>신제품 {newCount}</span>}
             </button>
             <button onClick={() => downloadGsDailyExcel(table, setBusy)} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, whiteSpace: "nowrap", opacity: busy ? 0.6 : 1 }}>
               <Download size={15} /> {busy ? "생성 중..." : "엑셀 다운로드"}
@@ -5049,7 +4982,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
           </div>
         }
       />
-      {compareOpen && <StaffCompareModal days={days} rulesSaved={rulesSaved} rules={rules} authToken={authToken} onClose={() => setCompareOpen(false)} />}
+      {settingOpen && <DailySettingsModal days={days} rulesSaved={rulesSaved} rules={rules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => (
@@ -5128,187 +5061,386 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
 }
 
 
-// ---------- 직원 파일과 비교 (어떤 상품이 집계 차이를 만드는지 찾고, 고정 규칙으로 저장) ----------
-function StaffCompareModal({ days, rulesSaved, rules, authToken, onClose }) {
-  const [staff, setStaff] = useState(null);
-  const [fileName, setFileName] = useState("");
-  const [err, setErr] = useState("");
-  const [filter, setFilter] = useState("전체");
+// ---------- 일별 집계 설정 창 ----------
+// 이번 달 집계에 나온 상품 목록: key -> { name, supplier, sheet, first, last, qty: {date: qty} }
+function dailyProductList(days) {
+  const m = new Map();
+  Object.keys(days)
+    .sort()
+    .forEach((d) =>
+      ((days[d] && days[d].products) || []).forEach((p) => {
+        const k = dailyNameKey(p.name);
+        const x = m.get(k) || { key: k, name: p.name, supplier: dailySupplierOf(p), raw: p, sheet: gsDailySheetOf(p.name), first: d, last: d, qty: {} };
+        x.last = d;
+        x.qty[d] = (x.qty[d] || 0) + p.qty;
+        m.set(k, x);
+      })
+    );
+  return Array.from(m.values());
+}
+// 신제품 = 설정에 "확인한 상품(known)"으로 없는 상품. known이 아직 없으면(처음) 신제품 표시 안 함
+function dailyNewProducts(days, saved) {
+  if (!saved || !Array.isArray(saved.known)) return [];
+  const known = new Set(saved.known);
+  return dailyProductList(days).filter((x) => !known.has(x.key));
+}
+const newRuleId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// 저장 공통: 예전 형식 목록은 규칙으로 바꿔서 저장
+function saveDailyRules(authToken, fn) {
+  return updateSetting(GS_DAILY_RULES_KEY, authToken, (v) => {
+    const cur = {
+      rules: normalizeDailyRules(v).map((r) => {
+        if (!r.legacy) return r;
+        const { legacy, ...rest } = r;
+        return { ...rest, id: newRuleId() };
+      }),
+      known: Array.isArray(v && v.known) ? v.known : [],
+    };
+    return fn(cur);
+  });
+}
+
+function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
+  const products = useMemo(() => dailyProductList(days), [days]);
+  const dates = useMemo(() => Object.keys(days).filter((d) => days[d] && (days[d].products || []).length).sort(), [days]);
+  const [tab, setTab] = useState("products");
+  const [baseDate, setBaseDate] = useState(dates[dates.length - 1] || todayStr());
+  const [sup, setSup] = useState("");
+  const [q, setQ] = useState("");
+  const [onlyNew, setOnlyNew] = useState(false);
+  const [period, setPeriod] = useState("always"); // always | day | range
+  const [from, setFrom] = useState(baseDate);
+  const [to, setTo] = useState(baseDate);
   const [saving, setSaving] = useState(false);
-  const fileRef = useRef(null);
-  const readFile = async (f) => {
-    if (!f) return;
-    setErr("");
-    try {
-      if (/\.numbers$/i.test(f.name)) throw new Error("Numbers 파일은 못 읽어요. 엑셀(.xls/.xlsx)로 내보내서 올려주세요.");
-      const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
-      const st = parseStaffDailyWorkbook(wb);
-      if (!Object.keys(st.summary).length) throw new Error("GS / GS재고 시트에서 입력된 날짜를 찾지 못했어요.");
-      setStaff(st);
-      setFileName(f.name);
-    } catch (e) {
-      setErr(e.message);
-    }
-  };
-  const res = useMemo(() => (staff ? compareGsDailyWithStaff(staff, days, rules) : null), [staff, days, rules]);
-  const saveRule = async (kind, name, on) => {
+  const [msg, setMsg] = useState("");
+  const known = useMemo(() => new Set((rulesSaved && rulesSaved.known) || []), [rulesSaved]);
+  const hasKnown = !!(rulesSaved && Array.isArray(rulesSaved.known));
+  // 처음 열 때: 지금 있는 상품을 "확인한 상품"으로 저장 → 이후에 새로 뜨는 상품만 신제품으로 표시
+  useEffect(() => {
+    if (hasKnown || !products.length || !authToken) return;
+    saveDailyRules(authToken, (cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...products.map((x) => x.key)])) }));
+  }, [hasKnown, products.length]);
+  const isNew = (x) => hasKnown && !known.has(x.key);
+  const newCount = products.filter(isNew).length;
+  const suppliers = useMemo(() => Array.from(new Set(products.map((x) => x.supplier))).sort((a, b) => a.localeCompare(b, "ko")), [products]);
+  const shown = products
+    .filter((x) => (!sup || x.supplier === sup) && (!q || dailyNameKey(x.name).includes(dailyNameKey(q))) && (!onlyNew || isNew(x)))
+    .sort((a, b) => Number(isNew(b)) - Number(isNew(a)) || a.supplier.localeCompare(b.supplier, "ko") || pickingNameCompare(gsBaseName(a.name), gsBaseName(b.name)) || detectPart(a.name) - detectPart(b.name));
+  const periodOf = () => (period === "always" ? { from: "", to: "" } : period === "day" ? { from: baseDate, to: baseDate } : { from: from || "", to: to || "" });
+  const periodText = (r) => (!r.from && !r.to ? "계속" : r.from === r.to ? `${r.from.slice(5).replace("-", "/")} 하루` : `${r.from ? r.from.slice(5).replace("-", "/") : "처음"} ~ ${r.to ? r.to.slice(5).replace("-", "/") : "계속"}`);
+
+  // 상품/공급사에 설정 넣기. 같은 기간·같은 종류 규칙은 바꿔치기, 고른 값이 원래 값(규칙 없을 때)과 같으면 규칙을 지워서 "기본"으로
+  const setRule = async (scope, target, action) => {
+    const g = DAILY_ACTIONS[action].group;
+    const per = periodOf();
+    if (per.from && per.to && per.from > per.to) return setMsg("시작일이 종료일보다 늦어요.");
     setSaving(true);
+    setMsg("");
     try {
-      await updateSetting(GS_DAILY_RULES_KEY, authToken, (v) => {
-        const cur = { exclude: [], cold: [], notCold: [], ...(v || {}) };
-        const k = dailyNameKey(name);
-        const list = (cur[kind] || []).filter((x) => dailyNameKey(x) !== k);
-        if (on) list.push(name);
-        return { ...cur, [kind]: list };
+      await saveDailyRules(authToken, (cur) => {
+        const same = (r) => r.scope === scope && DAILY_ACTIONS[r.action].group === g && (scope === "supplier" ? dailySupKey(r.supplier) === dailySupKey(target) : dailyNameKey(r.name) === dailyNameKey(target.name)) && (r.from || "") === per.from && (r.to || "") === per.to;
+        let list = cur.rules.filter((r) => !same(r));
+        if (scope === "product") {
+          // 상품 규칙 없이 계산했을 때 값
+          const base = classifyDaily(list.filter((r) => !(r.scope === "product" && dailyNameKey(r.name) === dailyNameKey(target.name) && DAILY_ACTIONS[r.action].group === g)), baseDate, target.raw);
+          const baseAction = g === "count" ? (base.excluded ? "exclude" : "include") : g === "temp" ? (base.cold ? "cold" : "normal") : base.part === 2 ? "p2" : "p1";
+          const otherActive = list.some((r) => r.scope === "product" && dailyNameKey(r.name) === dailyNameKey(target.name) && DAILY_ACTIONS[r.action].group === g && dailyRuleActive(r, baseDate));
+          if (baseAction !== action || otherActive) list.push({ id: newRuleId(), scope, name: target.name, supplier: target.supplier, action, ...per, at: todayStr() });
+        } else {
+          list.push({ id: newRuleId(), scope, supplier: target, name: "", action, ...per, at: todayStr() });
+        }
+        const knownAdd = scope === "product" ? [target.key] : products.filter((x) => x.supplier === target).map((x) => x.key);
+        return { ...cur, rules: list, known: Array.from(new Set([...cur.known, ...knownAdd])) };
       });
     } catch (e) {
-      setErr(`저장 실패: ${e.message}`);
+      setMsg("저장 실패: " + e.message);
     } finally {
       setSaving(false);
     }
   };
-  const excludeAllOursOnly = async () => {
-    const names = res.rows.filter((r) => r.kind === "우리만 있음" && !r.excluded).map((r) => r.ourName);
-    if (!names.length || !confirm(`직원 파일에 없는 상품 ${names.length}종을 일별 집계에서 뺄까요?\n(피킹지·거래명세서에는 그대로 나와요)`)) return;
+  const clearSupplierRule = async (supplier, g) => {
     setSaving(true);
     try {
-      await updateSetting(GS_DAILY_RULES_KEY, authToken, (v) => {
-        const cur = { exclude: [], cold: [], notCold: [], ...(v || {}) };
-        const have = new Set(cur.exclude.map(dailyNameKey));
-        return { ...cur, exclude: [...cur.exclude, ...names.filter((n) => !have.has(dailyNameKey(n)))] };
-      });
+      await saveDailyRules(authToken, (cur) => ({ ...cur, rules: cur.rules.filter((r) => !(r.scope === "supplier" && dailySupKey(r.supplier) === dailySupKey(supplier) && DAILY_ACTIONS[r.action].group === g && dailyRuleActive(r, baseDate))) }));
     } finally {
       setSaving(false);
     }
   };
-  const nf = (v) => (v ? v.toLocaleString() : "-");
-  const sg = (v) => (v > 0 ? "+" + v.toLocaleString() : v < 0 ? v.toLocaleString() : "0");
-  const kinds = ["전체", "우리만 있음", "직원만 있음", "수량 차이", "이름 다름", "제외됨"];
-  const shown = res ? res.rows.filter((r) => filter === "전체" || (filter === "제외됨" ? r.excluded : filter === "이름 다름" ? r.kind.startsWith("이름 다름") : r.kind === filter)) : [];
-  const savedExclude = (rulesSaved && rulesSaved.exclude) || [];
-  const kindColor = { "우리만 있음": T.danger, "직원만 있음": "#B7791F", "수량 차이": T.steel, "이름 다름": T.teal, "이름 다름·수량 차이": T.teal };
-  const cell = { padding: "6px 8px", borderBottom: `1px solid ${T.border}`, textAlign: "right", whiteSpace: "nowrap" };
+  const markKnown = async (keys) => {
+    setSaving(true);
+    try {
+      await saveDailyRules(authToken, (cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...keys])) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const editRule = async (id, patch) => {
+    setSaving(true);
+    try {
+      await saveDailyRules(authToken, (cur) => ({ ...cur, rules: patch === null ? cur.rules.filter((r) => r.id !== id) : cur.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 버튼 묶음 (현재 값 강조 + 어디서 정해졌는지)
+  const Seg = ({ options, value, src, onPick }) => (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <div style={{ display: "inline-flex", border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+        {options.map((a) => {
+          const on = value === a;
+          const A = DAILY_ACTIONS[a];
+          return (
+            <button
+              key={a}
+              disabled={saving}
+              onClick={() => onPick(a)}
+              style={{ border: "none", padding: "4px 9px", fontSize: 12, fontWeight: on ? 800 : 500, cursor: "pointer", background: on ? A.bg : "#fff", color: on ? A.color : T.inkSoft, borderRight: `1px solid ${T.border}` }}
+            >
+              {A.label}
+            </button>
+          );
+        })}
+      </div>
+      <span style={{ fontSize: 10.5, color: src === "기본" ? T.inkSoft : T.teal, fontWeight: 700, minWidth: 34 }}>{src === "기본" ? "자동" : src}</span>
+    </div>
+  );
+  const supState = (supplier) => {
+    const st = {};
+    rules.forEach((r) => {
+      if (r.scope === "supplier" && dailySupKey(r.supplier) === dailySupKey(supplier) && dailyRuleActive(r, baseDate)) st[DAILY_ACTIONS[r.action].group] = r.action;
+    });
+    return st;
+  };
+  const cell = { padding: "7px 8px", borderBottom: `1px solid ${T.border}`, fontSize: 12.5, verticalAlign: "middle" };
+  const activeRules = rules.filter((r) => !r.legacy || true);
+  const radio = (k, label) => (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, cursor: "pointer", fontWeight: period === k ? 700 : 500 }}>
+      <input type="radio" checked={period === k} onChange={() => setPeriod(k)} /> {label}
+    </label>
+  );
+  const ss = sup ? supState(sup) : {};
+
   return createPortal(
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div style={{ ...cardStyle, width: "min(1180px, 100%)", maxHeight: "92vh", overflow: "auto", padding: 20 }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-          <div style={{ fontSize: 17, fontWeight: 800 }}>직원 파일과 비교 (GS)</div>
-          <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>닫기</button>
-        </div>
-        <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 12, lineHeight: 1.6 }}>
-          직원이 입력한 "편의점 일별 발주 내역" 파일을 올리면, 직원이 숫자를 넣은 날짜만 골라 우리 집계와 상품별로 비교해요.
-          직원 파일에 없는 상품은 <b>[집계 제외]</b>로 고정하면 일별 집계·엑셀에서만 빠지고, 피킹지·거래명세서에는 그대로 나와요.
-        </div>
-        <div
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            readFile(e.dataTransfer.files[0]);
-          }}
-          onClick={() => fileRef.current && fileRef.current.click()}
-          style={{ border: `2px dashed ${T.border}`, borderRadius: 8, padding: 14, textAlign: "center", cursor: "pointer", fontSize: 13, marginBottom: 12 }}
-        >
-          {fileName ? `📄 ${fileName} (다른 파일로 바꾸려면 클릭)` : "직원 일별 발주 내역 파일(.xls/.xlsx)을 끌어다 놓거나 클릭해서 선택"}
-          <input ref={fileRef} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={(e) => readFile(e.target.files[0])} />
-        </div>
-        {err && <div style={{ color: T.danger, fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
-        {res && !res.dates.length && <div style={{ fontSize: 13, color: T.danger }}>직원 파일 날짜 중 우리 집계에 있는 날짜가 없어요. (발주는 14일 뒤 지워지고, 그 전 날짜는 저장된 집계로 비교해요)</div>}
-        {res && res.dates.length > 0 && (
-          <>
-            <table style={{ borderCollapse: "collapse", fontSize: 12.5, marginBottom: 14 }}>
-              <thead>
-                <tr style={{ background: "#F7F6F2" }}>
-                  <th style={{ ...cell, textAlign: "left" }}>발주일자</th>
-                  {["일일물동량", "1편", "2편", "냉장"].map((h) => (
-                    <th key={h} style={cell} colSpan={3}>{h} (우리 / 직원 / 차이)</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {res.sum.map((x) => (
-                  <tr key={x.date}>
-                    <td style={{ ...cell, textAlign: "left" }}>{x.date.slice(5).replace("-", "/")}</td>
-                    {["total", "p1", "p2", "cold"].map((k) => [
-                      <td key={k + "o"} style={cell}>{nf(x.ours[k])}</td>,
-                      <td key={k + "s"} style={cell}>{nf(x.staff[k])}</td>,
-                      <td key={k + "d"} style={{ ...cell, fontWeight: 700, color: x.ours[k] - (x.staff[k] || 0) ? T.danger : T.teal }}>{sg(x.ours[k] - (x.staff[k] || 0))}</td>,
-                    ])}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-              {kinds.map((k) => (
-                <button key={k} onClick={() => setFilter(k)} style={{ ...smallBtnStyle, background: filter === k ? T.steel : T.surface, color: filter === k ? "#fff" : T.ink }}>
-                  {k} ({k === "전체" ? res.rows.length : res.rows.filter((r) => (k === "제외됨" ? r.excluded : k === "이름 다름" ? r.kind.startsWith("이름 다름") : r.kind === k)).length})
-                </button>
-              ))}
-              <button onClick={excludeAllOursOnly} disabled={saving} style={{ ...smallBtnStyle, marginLeft: "auto", borderColor: T.danger, color: T.danger }}>
-                직원 파일에 없는 상품 모두 집계 제외
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
+      <div style={{ ...cardStyle, width: "min(1100px, 100%)", maxHeight: "94vh", display: "flex", flexDirection: "column", padding: 0 }} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ padding: "16px 20px 0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>일별 집계 설정 (GS)</div>
+            {saving && <span style={{ fontSize: 12, color: T.inkSoft }}>저장 중...</span>}
+            <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>닫기</button>
+          </div>
+          <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "6px 0 10px", lineHeight: 1.65 }}>
+            상품마다 <b>집계 여부 · 1편/2편 · 상온/냉장</b>을 정해요. 누르는 즉시 저장되고 집계 표·엑셀에 바로 반영돼요 (다른 PC도 몇 초 안에 반영).
+            피킹지·거래명세서에는 영향 없어요. <b>자동</b> = 상품명 끝 숫자(1/2)와 냉장 목록으로 정한 값, <b>공급사</b>/<b>상품</b> = 직원이 정한 값.
+          </div>
+          <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${T.border}` }}>
+            {[
+              ["products", `상품별 설정`],
+              ["rules", `적용 중인 설정 (${rules.length})`],
+            ].map(([k, label]) => (
+              <button key={k} onClick={() => setTab(k)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13.5, fontWeight: tab === k ? 800 : 600, borderBottom: tab === k ? `2px solid ${T.steel}` : "2px solid transparent", cursor: "pointer", color: T.ink }}>
+                {label}
+                {k === "products" && newCount > 0 && <span style={{ marginLeft: 6, background: T.danger, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11 }}>신제품 {newCount}</span>}
               </button>
-            </div>
-            <div style={{ overflow: "auto", maxHeight: "48vh", border: `1px solid ${T.border}`, borderRadius: 8 }}>
-              <table style={{ borderCollapse: "collapse", fontSize: 12.5, width: "100%" }}>
-                <thead style={{ position: "sticky", top: 0, background: "#F7F6F2" }}>
+            ))}
+          </div>
+        </div>
+        <div style={{ padding: "12px 20px 18px", overflow: "auto", flex: 1 }}>
+          {msg && <div style={{ color: T.danger, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{msg}</div>}
+          {tab === "products" ? (
+            <>
+              {/* 필터 */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                <label style={{ fontSize: 12.5, fontWeight: 700 }}>기준 날짜</label>
+                <select value={baseDate} onChange={(e) => setBaseDate(e.target.value)} style={{ ...inputStyle, padding: "6px 8px" }}>
+                  {(dates.length ? dates : [baseDate]).slice().reverse().map((d) => (
+                    <option key={d} value={d}>
+                      {d.slice(5).replace("-", "/")} ({gsWeekday(d)})
+                    </option>
+                  ))}
+                </select>
+                <select value={sup} onChange={(e) => setSup(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", minWidth: 160 }}>
+                  <option value="">공급사 전체</option>
+                  {suppliers.map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="상품명 검색" style={{ ...inputStyle, padding: "6px 10px", width: 180 }} />
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, cursor: "pointer", color: newCount ? T.danger : T.inkSoft, fontWeight: 700 }}>
+                  <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} /> 신제품만 ({newCount})
+                </label>
+                {newCount > 0 && (
+                  <button disabled={saving} onClick={() => markKnown(products.filter(isNew).map((x) => x.key))} style={{ ...smallBtnStyle, fontSize: 12 }}>
+                    신제품 모두 확인(자동값 그대로)
+                  </button>
+                )}
+              </div>
+              {/* 적용 기간 */}
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", padding: "8px 12px", background: "#F7F6F2", borderRadius: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 800 }}>누를 때 적용 기간</span>
+                {radio("always", "계속 적용")}
+                {radio("day", `기준 날짜 하루만 (${baseDate.slice(5).replace("-", "/")})`)}
+                {radio("range", "기간 지정")}
+                {period === "range" && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                    <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ ...inputStyle, padding: "4px 6px" }} /> ~
+                    <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ ...inputStyle, padding: "4px 6px" }} />
+                    <span style={{ color: T.inkSoft }}>(비우면 처음부터/계속)</span>
+                  </span>
+                )}
+              </div>
+              {/* 공급사 전체 설정 */}
+              {sup && (
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", padding: "10px 12px", border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800 }}>{sup} 전체 상품</span>
+                  {[
+                    ["count", ["exclude", "include"]],
+                    ["part", ["p1", "p2"]],
+                    ["temp", ["normal", "cold"]],
+                  ].map(([g, opts]) => (
+                    <span key={g} style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                      {opts.map((a) => {
+                        const on = ss[g] === a;
+                        const A = DAILY_ACTIONS[a];
+                        return (
+                          <button key={a} disabled={saving} onClick={() => (on ? clearSupplierRule(sup, g) : setRule("supplier", sup, a))} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12, background: on ? A.bg : "#fff", color: on ? A.color : T.ink, borderColor: on ? A.color : T.border, fontWeight: on ? 800 : 600 }}>
+                            {A.label}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  ))}
+                  <span style={{ fontSize: 11.5, color: T.inkSoft }}>켜진 버튼을 다시 누르면 공급사 설정이 풀려요. 상품별로 따로 정한 값이 더 우선이에요.</span>
+                </div>
+              )}
+              <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "auto", maxHeight: "52vh" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                  <thead style={{ position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 }}>
+                    <tr>
+                      {["", "공급사", "상품명", `${baseDate.slice(5).replace("-", "/")} 수량`, "집계", "편", "온도"].map((h, i) => (
+                        <th key={i} style={{ ...cell, textAlign: i === 3 ? "right" : "left", fontWeight: 700 }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map((x) => {
+                      const c = classifyDaily(rules, baseDate, x.raw);
+                      const nw = isNew(x);
+                      return (
+                        <tr key={x.key} style={{ background: nw ? "#FFF8E1" : c.excluded ? "#FAFAFA" : "#fff" }}>
+                          <td style={{ ...cell, width: 70 }}>
+                            {nw ? (
+                              <button disabled={saving} onClick={() => markKnown([x.key])} title="자동값 그대로 확인 처리" style={{ border: "none", background: T.danger, color: "#fff", borderRadius: 10, padding: "2px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
+                                신제품 ✓
+                              </button>
+                            ) : null}
+                          </td>
+                          <td style={{ ...cell, color: T.inkSoft, whiteSpace: "nowrap" }}>{x.supplier}</td>
+                          <td style={{ ...cell, fontWeight: 600, opacity: c.excluded ? 0.5 : 1, textDecoration: c.excluded ? "line-through" : "none" }}>
+                            {x.name}
+                            {nw && <div style={{ fontSize: 10.5, color: T.danger, fontWeight: 600 }}>처음 들어온 날 {x.first.slice(5).replace("-", "/")}</div>}
+                          </td>
+                          <td style={{ ...cell, textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>{x.qty[baseDate] ? x.qty[baseDate].toLocaleString() : "-"}</td>
+                          <td style={cell}>
+                            <Seg options={["include", "exclude"]} value={c.excluded ? "exclude" : "include"} src={c.src.count} onPick={(a) => setRule("product", x, a)} />
+                          </td>
+                          <td style={cell}>
+                            <Seg options={["p1", "p2"]} value={c.part === 2 ? "p2" : "p1"} src={c.src.part} onPick={(a) => setRule("product", x, a)} />
+                          </td>
+                          <td style={cell}>
+                            <Seg options={["normal", "cold"]} value={c.cold ? "cold" : "normal"} src={c.src.temp} onPick={(a) => setRule("product", x, a)} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!shown.length && (
+                      <tr>
+                        <td colSpan={7} style={{ padding: 28, textAlign: "center", color: T.inkSoft, fontSize: 13 }}>
+                          {products.length ? "조건에 맞는 상품이 없어요" : "이번 달 집계된 상품이 없어요"}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
+                신제품 = 설정창에서 아직 한 번도 확인하지 않은 새 상품이에요. 편·온도·집계 중 하나를 누르거나 [신제품 ✓]를 누르면 확인 처리돼요.
+                {" "}기준 날짜는 화면에 보이는 값을 어느 날짜 기준으로 볼지예요(기간 설정이 있으면 날짜마다 다르게 보여요).
+              </div>
+            </>
+          ) : (
+            <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "auto" }}>
+              <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                <thead style={{ background: "#F7F6F2" }}>
                   <tr>
-                    <th style={{ ...cell, textAlign: "left" }}>구분</th>
-                    <th style={{ ...cell, textAlign: "left" }}>우리 상품명</th>
-                    <th style={{ ...cell, textAlign: "left" }}>직원 파일 상품명</th>
-                    <th style={{ ...cell, textAlign: "left" }}>공급사</th>
-                    {res.dates.map((d) => (
-                      <th key={d} style={cell}>{d.slice(5).replace("-", "/")} 우리/직원</th>
+                    {["대상", "이름", "설정", "시작일", "종료일", "사용", ""].map((h, i) => (
+                      <th key={i} style={{ ...cell, textAlign: "left" }}>
+                        {h}
+                      </th>
                     ))}
-                    <th style={cell}>집계</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((r, i) => (
-                    <tr key={i} style={{ opacity: r.excluded ? 0.55 : 1 }}>
-                      <td style={{ ...cell, textAlign: "left", color: kindColor[r.kind] || T.ink, fontWeight: 700 }}>{r.excluded ? "제외됨" : r.kind}</td>
-                      <td style={{ ...cell, textAlign: "left" }}>{r.ourName || "-"}{r.ourName && r.cold ? " ❄" : ""}</td>
-                      <td style={{ ...cell, textAlign: "left" }}>{r.staffName || "-"}{r.staffSheet === "GS재고" ? " (GS재고)" : ""}</td>
-                      <td style={{ ...cell, textAlign: "left", color: T.inkSoft }}>{r.staffSupplier || r.supplier || ""}</td>
-                      {res.dates.map((d, j) => (
-                        <td key={d} style={cell}>
-                          {nf(r.rawOurs[j])} / {nf(r.staffArr[j])}
-                          {r.diff[j] ? <span style={{ color: T.danger, fontWeight: 700 }}> ({sg(r.diff[j])})</span> : null}
-                        </td>
-                      ))}
-                      <td style={cell}>
-                        {r.ourName && (
-                          <button disabled={saving} onClick={() => saveRule("exclude", r.ourName, !r.excluded)} style={{ ...smallBtnStyle, padding: "3px 8px", color: r.excluded ? T.teal : T.danger }}>
-                            {r.excluded ? "다시 포함" : "집계 제외"}
-                          </button>
-                        )}
+                  {rules
+                    .slice()
+                    .sort((a, b) => (a.scope === b.scope ? 0 : a.scope === "supplier" ? -1 : 1))
+                    .map((r) => {
+                      const A = DAILY_ACTIONS[r.action];
+                      const id = r.legacy ? null : r.id;
+                      return (
+                        <tr key={r.id} style={{ opacity: r.off ? 0.5 : 1 }}>
+                          <td style={cell}>{r.scope === "supplier" ? "공급사 전체" : "상품"}</td>
+                          <td style={{ ...cell, fontWeight: 600 }}>
+                            {r.scope === "supplier" ? r.supplier : r.name}
+                            {r.scope === "product" && r.supplier && <span style={{ color: T.inkSoft, fontWeight: 400 }}> · {r.supplier}</span>}
+                          </td>
+                          <td style={cell}>
+                            <span style={{ background: A.bg, color: A.color, borderRadius: 10, padding: "2px 9px", fontWeight: 800, fontSize: 12 }}>{A.label}</span>
+                          </td>
+                          <td style={cell}>
+                            <input type="date" disabled={!id || saving} value={r.from || ""} onChange={(e) => editRule(id, { from: e.target.value })} style={{ ...inputStyle, padding: "3px 6px", fontSize: 12 }} />
+                          </td>
+                          <td style={cell}>
+                            <input type="date" disabled={!id || saving} value={r.to || ""} onChange={(e) => editRule(id, { to: e.target.value })} style={{ ...inputStyle, padding: "3px 6px", fontSize: 12 }} />
+                            <div style={{ fontSize: 10.5, color: T.inkSoft }}>{periodText(r)}</div>
+                          </td>
+                          <td style={cell}>
+                            <input type="checkbox" disabled={!id || saving} checked={!r.off} onChange={(e) => editRule(id, { off: !e.target.checked })} />
+                          </td>
+                          <td style={cell}>
+                            {id ? (
+                              <button disabled={saving} onClick={() => confirm("이 설정을 지울까요?") && editRule(id, null)} style={{ ...smallBtnStyle, padding: "3px 8px", color: T.danger }}>
+                                삭제
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 11, color: T.inkSoft }}>예전 설정 · 아무 설정이나 한 번 바꾸면 수정 가능</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  {!rules.length && (
+                    <tr>
+                      <td colSpan={7} style={{ padding: 28, textAlign: "center", color: T.inkSoft, fontSize: 13 }}>
+                        아직 정한 설정이 없어요. 전부 자동값으로 집계 중이에요.
                       </td>
                     </tr>
-                  ))}
-                  {!shown.length && (<tr><td colSpan={5 + res.dates.length} style={{ padding: 24, textAlign: "center", color: T.inkSoft }}>차이 나는 상품이 없어요</td></tr>)}
+                  )}
                 </tbody>
               </table>
             </div>
-            <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8 }}>❄ = 우리 집계에서 냉장으로 세는 상품. "이름 다름"은 이름이 조금 달라도 같은 상품으로 맞춘 줄이에요(예: "…1" ↔ "…1편", "대광)" 접두어).</div>
-          </>
-        )}
-        {savedExclude.length > 0 && (
-          <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>일별 집계에서 빼는 상품 ({savedExclude.length}종)</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {savedExclude.map((n) => (
-                <span key={n} style={{ fontSize: 12, border: `1px solid ${T.border}`, borderRadius: 14, padding: "3px 6px 3px 10px", display: "inline-flex", gap: 6, alignItems: "center" }}>
-                  {n}
-                  <button disabled={saving} onClick={() => saveRule("exclude", n, false)} style={{ border: "none", background: "none", cursor: "pointer", color: T.danger }} title="다시 포함">✕</button>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>,
     document.body
   );
 }
-
 /* ================= 이마트24 피킹검수 (실물 엑셀 템플릿을 그대로 채우는 방식) ================= */
 // 실물 "이마트24-피킹검수" 파일을 통째로 템플릿(emart24_picking_template.xlsx)으로 두고,
 // 공급사별 피벗 시트에 그날 발주 수량만 다시 써 넣는다. 상품 시트(지역 순서·입수·서식·수식·그림·인쇄설정)는 원본 그대로라
