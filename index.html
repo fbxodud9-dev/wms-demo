@@ -2695,9 +2695,11 @@ const fmtNum = (n) => Number(n || 0).toLocaleString();
 
 // GS 자동 집계: "일별 발주 집계"와 완전히 같은 계산 (피킹지 총수량 + 당착 수량, 집계 설정의 제외·편·냉장 규칙 적용)
 //   1편 = 일별 집계 1편수량, 2편 = 2편수량, 냉장/당착 = 냉장 → 세 칸 합 = 일별 집계 일일물동량
-function computeGsAuto(orders, date, rules) {
+function computeGsAuto(orders, date, rules, editsGs) {
   const auto = { gs_1: 0, gs_cold: 0, gs_2: 0 };
-  computeGsDailySnapshot(orders, date).products.forEach((p) => {
+  // 일별 집계 화면에서 직접 고친 값도 반영
+  const day = applyDailyEdits({ [date]: computeGsDailySnapshot(orders, date) }, editsGs && editsGs[date] ? { [date]: editsGs[date] } : null)[date];
+  day.products.forEach((p) => {
     const c = classifyDaily(rules, date, p);
     if (c.excluded) return;
     const k = c.cold ? "gs_cold" : c.part === 2 ? "gs_2" : "gs_1";
@@ -2994,8 +2996,10 @@ function VolumeDashboard({ orders, authToken }) {
   // 일별 발주 집계 설정(제외·편·냉장)을 그대로 적용 - 설정을 바꾸면 대시보드도 바로 바뀜
   const dailyRulesSaved = useSetting(GS_DAILY_RULES_KEY, authToken);
   const dailyRules = useMemo(() => normalizeDailyRules(dailyRulesSaved), [dailyRulesSaved]);
-  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules), [orders, baseDate, dailyRules]);
-  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules), [orders, prevDate, dailyRules]);
+  const editsBase = useSetting(dailyEditsKey(baseDate.slice(0, 7)), authToken);
+  const editsPrev = useSetting(dailyEditsKey(prevDate.slice(0, 7)), authToken);
+  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules, editsBase && editsBase.GS), [orders, baseDate, dailyRules, editsBase]);
+  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules, editsPrev && editsPrev.GS), [orders, prevDate, dailyRules, editsPrev]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
 
@@ -3037,7 +3041,7 @@ function VolumeDashboard({ orders, authToken }) {
         <VolumeEditModal
           key={editingDate}
           date={editingDate}
-          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules)}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules, ((SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}).GS))}
           saved={savedMap[editingDate]}
           onSave={handleSave}
           onClose={() => setEditingDate(null)}
@@ -4642,8 +4646,34 @@ function computeGsDailySnapshot(orders, date) {
   return { products: list };
 }
 
+// ---------- 일별 집계 직접 수정값 ----------
+// 화면 표에서 상품 칸을 직접 고친 값. 월별 설정 daily_edits_YYYYMM = { GS: { 날짜: { 상품명: 수량 } }, 이마트: {...} }
+// (GS 시트와 GS재고 시트는 상품명이 겹치지 않아 "GS" 하나로 저장) 고친 값이 들어가면 1편·2편·냉장·일일물동량이 그에 맞게 다시 계산됨
+const dailyEditsKey = (month) => `daily_edits_${month.replace("-", "")}`;
+// days에 수정값을 덮어씀. 그날 발주에 없던 상품도 수정값이 있으면 추가 (공급사는 다른 날 값에서 가져옴)
+function applyDailyEdits(days, editsBySheet) {
+  if (!editsBySheet || typeof editsBySheet !== "object" || !Object.keys(editsBySheet).length) return days;
+  const supOf = new Map();
+  Object.values(days).forEach((d) => ((d && d.products) || []).forEach((p) => !supOf.has(p.name) && supOf.set(p.name, p.supplier)));
+  const out = { ...days };
+  Object.entries(editsBySheet).forEach(([date, m]) => {
+    if (!m || typeof m !== "object") return;
+    const cur = ((out[date] && out[date].products) || []).map((p) => ({ ...p }));
+    Object.entries(m).forEach(([name, q]) => {
+      const n = Number(q);
+      if (!Number.isFinite(n)) return;
+      const i = cur.findIndex((p) => p.name === name);
+      if (i >= 0) cur[i] = { ...cur[i], qty: n, _orig: cur[i]._orig ?? cur[i].qty, _edited: true };
+      else cur.push({ name, supplier: supOf.get(name) || "", qty: n, _orig: 0, _edited: true });
+    });
+    out[date] = { ...(out[date] || {}), products: cur };
+  });
+  return out;
+}
+
 // 한 달치 표 데이터 만들기. days: { "YYYY-MM-DD": { products: [...] } }
-function buildGsDailyTable(month, days, rules) {
+function buildGsDailyTable(month, days, rules, edits) {
+  days = applyDailyEdits(days, edits); // 화면에서 직접 고친 값
   // 집계 설정: 날짜마다 그날 규칙으로 분류해서, "집계 안 함" 상품은 빼고 편·냉장 정보를 붙인다
   days = Object.fromEntries(
     Object.entries(days).map(([d, v]) => [
@@ -4668,7 +4698,7 @@ function buildGsDailyTable(month, days, rules) {
       const sheet = gsDailySheetOf(p.name);
       if (!cols[sheet].has(p.name)) {
         const g = dcGroupOf(p.name);
-        cols[sheet].set(p.name, { name: p.name, supplier: sheet === "GS재고" && g ? g.group.label : p.supplier || "미지정", dcIdx: g ? DC_VENDOR_GROUPS.indexOf(g.group) * 1000 + g.idx : 0 });
+        cols[sheet].set(p.name, { name: p.name, raw: { name: p.name, supplier: p.supplier }, supplier: sheet === "GS재고" && g ? g.group.label : p.supplier || "미지정", dcIdx: g ? DC_VENDOR_GROUPS.indexOf(g.group) * 1000 + g.idx : 0 });
       }
     })
   );
@@ -4688,6 +4718,7 @@ function buildGsDailyTable(month, days, rules) {
     const rows = dates.map((date) => {
       const d = days[date];
       const qtyBy = new Map(((d && d.products) || []).map((p) => [p.name, p.qty]));
+      const editedBy = new Map(((d && d.products) || []).filter((p) => p._edited).map((p) => [p.name, p._orig]));
       const all = (d && d.products) || [];
       const scope = sheet === "GS" ? all : all.filter((p) => gsDailySheetOf(p.name) === "GS재고");
       const sum = (f) => scope.filter(f).reduce((a, p) => a + p.qty, 0);
@@ -4700,7 +4731,19 @@ function buildGsDailyTable(month, days, rules) {
         p2: sum((p) => p._part === 2 && !p._cold),
         cold: sum((p) => p._cold),
         cells: columns.map((c) => qtyBy.get(c.name) || 0),
+        orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), // 직접 고친 칸이면 원래 값
+        // 엑셀 수식용: 그날 이 열이 어디로 세지는지 ("1"=1편, "2"=2편, "c"=냉장, "x"=집계 안 함)
+        cls: columns.map((c) => {
+          const k = classifyDaily(rules, date, c.raw);
+          return k.excluded ? "x" : k.cold ? "c" : String(k.part === 2 ? 2 : 1);
+        }),
       };
+    });
+    // 열마다 대표 분류 (가장 많은 날의 분류) - 엑셀 숨김 1행에 넣어 SUMIF로 1편/2편/냉장을 계산
+    columns.forEach((c, i) => {
+      const cnt = {};
+      rows.forEach((r) => (cnt[r.cls[i]] = (cnt[r.cls[i]] || 0) + 1));
+      c.code = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || "1";
     });
     const totals = {
       total: rows.reduce((a, r) => a + r.total, 0),
@@ -4763,7 +4806,8 @@ async function syncEmartDaily(emartOrders, authToken) {
   }
 }
 // 이마트/기타 브랜드 표: GS 표와 같은 모양 (냉장 없음)
-function buildBrandDailyTable(month, days, partOf) {
+function buildBrandDailyTable(month, days, partOf, edits) {
+  days = applyDailyEdits(days, edits);
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
@@ -4774,9 +4818,11 @@ function buildBrandDailyTable(month, days, partOf) {
     const d = days[date];
     const all = (d && d.products) || [];
     const qtyBy = new Map(all.map((p) => [p.name, p.qty]));
+    const editedBy = new Map(all.filter((p) => p._edited).map((p) => [p.name, p._orig]));
     const sum = (f) => all.filter(f).reduce((a, p) => a + p.qty, 0);
-    return { date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name) === 1), p2: sum((p) => partOf(p.name) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0) };
+    return { orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name) === 1), p2: sum((p) => partOf(p.name) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0), cls: columns.map((c) => String(partOf(c.name) === 2 ? 2 : 1)) };
   });
+  columns.forEach((c) => (c.code = String(partOf(c.name) === 2 ? 2 : 1)));
   const totals = {
     total: rows.reduce((a, r) => a + r.total, 0),
     p1: rows.reduce((a, r) => a + r.p1, 0),
@@ -4861,15 +4907,42 @@ async function downloadGsDailyExcel(table, setBusy) {
       });
       ws.getRow(4).height = 30;
       ws.getRow(5).height = 42;
+      // ---- 수식: 상품 칸 숫자를 고치면 일일물동량·1편·2편·냉장·합계가 엑셀에서 자동으로 다시 계산되게 ----
+      // 숨김 1행에 열마다 분류 코드("1"/"2"/"c")를 넣고, 1편 = SUMIF(1행,"1",그날 행) 식으로 계산
+      // GS 시트의 숫자는 GS재고(DC)까지 포함한 GS 전체 → 'GS재고' 시트 같은 행 값을 더함
+      const nCol = sh.columns.length;
+      const firstL = ws.getColumn(10).letter;
+      const lastL = nCol ? ws.getColumn(9 + nCol).letter : firstL;
+      sh.columns.forEach((col, i) => (ws.getCell(1, 10 + i).value = col.code));
+      ws.getRow(1).hidden = true;
+      const withStock = sheetName === "GS" && table.sheets["GS재고"];
+      const stockHas2 = table.sheets["GS재고"] && table.sheets["GS재고"].rows.some((x) => x.p2 > 0);
+      const show2 = !(sheetName === "GS재고" && !sh.rows.some((x) => x.p2 > 0));
+      const partFormula = (r, rr, code, stockCol) => {
+        let f;
+        if (!nCol) f = "0";
+        else if (r.cls.every((c, i) => c === sh.columns[i].code)) f = `SUMIF($${firstL}$1:$${lastL}$1,"${code}",${firstL}${rr}:${lastL}${rr})`;
+        else {
+          // 이 날만 분류가 다른 상품이 있으면(기간 설정) 그날 분류대로 칸을 직접 더함
+          const refs = r.cls.map((c, i) => (c === code ? `${ws.getColumn(10 + i).letter}${rr}` : null)).filter(Boolean);
+          f = refs.length ? refs.join("+") : "0";
+        }
+        if (withStock && stockCol && (stockCol !== "D" || stockHas2)) f += `+'GS재고'!${stockCol}${rr}`;
+        return f;
+      };
       sh.rows.forEach((r, k) => {
         const rr = 6 + k;
-        const vals = [r.total, r.p1, sheetName === "GS재고" && r.p2 === 0 ? null : r.p2, meta.cold ? r.cold : null];
-        vals.forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
+        const cC = { formula: partFormula(r, rr, "1", "C"), result: r.p1 };
+        const cD = show2 ? { formula: partFormula(r, rr, "2", "D"), result: r.p2 } : null;
+        const cE = meta.cold ? { formula: partFormula(r, rr, "c", "E"), result: r.cold } : null;
+        const cB = { formula: meta.cold ? `C${rr}+${show2 ? `D${rr}+` : ""}E${rr}` : `C${rr}+D${rr}`, result: r.total };
+        [cB, cC, cD, cE].forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
         ws.getCell(rr, 6).value = invDate(r.date);
         ws.getCell(rr, 7).value = gsWeekday(r.date);
         ws.getCell(rr, 8).value = invDate(r.inDate);
         ws.getCell(rr, 9).value = gsWeekday(r.inDate);
         r.cells.forEach((v, i) => (ws.getCell(rr, 10 + i).value = v || null));
+        const editedCols = (r.orig || []).map((o, i) => (o !== undefined ? i : -1)).filter((i) => i >= 0);
         for (let c = 2; c < 10 + sh.columns.length; c++) {
           const cell = ws.getCell(rr, c);
           cell.font = font;
@@ -4878,11 +4951,14 @@ async function downloadGsDailyExcel(table, setBusy) {
           if (c === 6 || c === 8) cell.numFmt = "m/d";
           else if (c < 6 || c >= 10) cell.numFmt = "#,##0";
         }
+        // 화면에서 직접 고친 칸은 엑셀에서도 연한 노란색
+        editedCols.forEach((i) => (ws.getCell(rr, 10 + i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } }));
       });
       const tr = 6 + sh.rows.length;
       ws.getCell(tr, 6).value = "합계";
-      [sh.totals.total, sh.totals.p1, sheetName === "GS재고" && sh.totals.p2 === 0 ? null : sh.totals.p2, meta.cold ? sh.totals.cold : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v));
-      sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = v));
+      const colSum = (c, result) => ({ formula: `SUM(${ws.getColumn(c).letter}6:${ws.getColumn(c).letter}${tr - 1})`, result });
+      [sh.totals.total, sh.totals.p1, show2 ? sh.totals.p2 : null, meta.cold ? sh.totals.cold : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v === null ? null : colSum(2 + i, v)));
+      sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = colSum(10 + i, v)));
       for (let c = 2; c < 10 + sh.columns.length; c++) {
         const cell = ws.getCell(tr, c);
         cell.font = bold;
@@ -4957,15 +5033,47 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
     Array.from(new Set(emartOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeEmartDailySnapshot(emartOrders, x)));
     return d;
   }, [emSaved, emartOrders, month]);
+  const editsSaved = useSetting(dailyEditsKey(month), authToken);
+  const [editing, setEditing] = useState(null); // { date, idx }
+  const [editVal, setEditVal] = useState("");
   const table = useMemo(() => {
-    const t = buildGsDailyTable(month, days, rules);
-    t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf);
+    const ed = editsSaved || {};
+    const t = buildGsDailyTable(month, days, rules, ed.GS);
+    t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf, ed["이마트"]);
     // 세븐일레븐·BGF: 아직 발주 연동 전이라 날짜 틀만
     t.sheets["세븐일레븐"] = buildBrandDailyTable(month, {}, () => 1);
     t.sheets["BGF"] = buildBrandDailyTable(month, {}, () => 1);
     return t;
-  }, [month, days, emDays, rules]);
+  }, [month, days, emDays, rules, editsSaved]);
   const sh = table.sheets[sheet];
+  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "이마트";
+  const editKeyOf = sheet === "이마트" ? "이마트" : "GS";
+  const editCount = useMemo(() => {
+    const ed = editsSaved || {};
+    return Object.values(ed).reduce((a, byDate) => a + Object.values(byDate || {}).reduce((b, m) => b + Object.keys(m || {}).length, 0), 0);
+  }, [editsSaved]);
+  // 칸 수정 저장: 원래 값과 같거나 비우면 수정 취소(원래 값으로)
+  const saveEdit = async (date, colName, origVal, text) => {
+    setEditing(null);
+    const t = String(text).replace(/,/g, "").trim();
+    const n = t === "" ? null : Math.round(Number(t));
+    if (t !== "" && !Number.isFinite(n)) return;
+    await updateSetting(dailyEditsKey(month), authToken, (v) => {
+      const all = { ...(v || {}) };
+      const bySheet = { ...(all[editKeyOf] || {}) };
+      const day = { ...(bySheet[date] || {}) };
+      if (n === null || n === origVal) delete day[colName];
+      else day[colName] = n;
+      if (Object.keys(day).length) bySheet[date] = day;
+      else delete bySheet[date];
+      all[editKeyOf] = bySheet;
+      return all;
+    });
+  };
+  const clearAllEdits = async () => {
+    if (!confirm(`${month.replace("-", "년 ")}월에 직접 고친 칸 ${editCount}개를 모두 원래 값으로 되돌릴까요?`)) return;
+    await updateSetting(dailyEditsKey(month), authToken, () => ({}));
+  };
   const newCount = useMemo(() => dailyNewProducts(days, rulesSaved).length, [days, rulesSaved]);
   const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
@@ -5012,8 +5120,18 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
           {loading ? "불러오는 중..." : `월 합계 ${nf(sh.totals.total)}ea · 상품 ${sh.columns.length}종`}
           {sheet === "세븐일레븐" || sheet === "BGF" ? " · 발주 연동 전이라 빈 시트로 나가요" : ""}
         </span>
+        {editCount > 0 && (
+          <button onClick={clearAllEdits} style={{ ...smallBtnStyle, fontSize: 12, borderColor: "#E0C068", background: "#FFF2CC" }} title="이번 달 직접 고친 칸을 모두 원래 값으로">
+            직접 고친 칸 {editCount}개 · 모두 되돌리기
+          </button>
+        )}
       </div>
       {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
+      {editable && (
+        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>
+          상품 칸을 클릭하면 숫자를 바로 고칠 수 있어요 (Enter 저장 · Esc 취소 · 비우면 원래 값). 고치면 1편·2편·냉장·일일물동량·합계가 바로 다시 계산되고, 엑셀·대시보드에도 그대로 반영돼요. 노란 칸 = 직접 고친 칸.
+        </div>
+      )}
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "auto", maxHeight: "70vh" }}>
         <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 12.5 }}>
           <thead>
@@ -5042,11 +5160,43 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
                 <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>
                 <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>
                 {hasCold && <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>}
-                {r.cells.map((v, i) => (
-                  <td key={i} style={{ textAlign: "right" }}>
-                    {nf(v)}
-                  </td>
-                ))}
+                {r.cells.map((v, i) => {
+                  const isEd = r.orig && r.orig[i] !== undefined;
+                  const origVal = isEd ? r.orig[i] : v;
+                  const on = editing && editing.date === r.date && editing.idx === i && editing.sheet === sheet;
+                  if (on)
+                    return (
+                      <td key={i} style={{ textAlign: "right", padding: 2 }}>
+                        <input
+                          autoFocus
+                          value={editVal}
+                          onChange={(e) => setEditVal(e.target.value)}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => saveEdit(r.date, sh.columns[i].name, origVal, editVal)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.target.blur();
+                            if (e.key === "Escape") setEditing(null);
+                          }}
+                          inputMode="numeric"
+                          style={{ width: 80, textAlign: "right", padding: "4px 6px", border: `2px solid ${T.steel}`, borderRadius: 4, fontSize: 12.5 }}
+                        />
+                      </td>
+                    );
+                  return (
+                    <td
+                      key={i}
+                      onClick={() => {
+                        if (!editable) return;
+                        setEditing({ date: r.date, idx: i, sheet });
+                        setEditVal(String(v || 0));
+                      }}
+                      title={editable ? (isEd ? `직접 고친 값 (원래 ${origVal.toLocaleString()}) · 클릭해서 수정, 비우면 원래 값` : "클릭해서 수정") : undefined}
+                      style={{ textAlign: "right", cursor: editable ? "text" : "default", background: isEd ? "#FFF2CC" : undefined, fontWeight: isEd ? 700 : undefined }}
+                    >
+                      {nf(v)}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
             <tr style={{ background: "#EEF6E8", fontWeight: 700 }}>
