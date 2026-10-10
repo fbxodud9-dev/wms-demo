@@ -10,6 +10,8 @@
   html, body { margin: 0; padding: 0; background: #F3F2ED; height: 100%; }
   #root { width: 100%; min-height: 100vh; }
   * { box-sizing: border-box; }
+  /* 화면 전체 글꼴 통일 (창·팝업·버튼·입력칸까지) */
+  body, button, input, select, textarea, table, th, td { font-family: 'IBM Plex Sans KR', sans-serif; }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -5345,7 +5347,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
                             {x.name}
                             {nw && <div style={{ fontSize: 10.5, color: T.danger, fontWeight: 600 }}>처음 들어온 날 {x.first.slice(5).replace("-", "/")}</div>}
                           </td>
-                          <td style={{ ...cell, textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}>{x.qty[baseDate] ? x.qty[baseDate].toLocaleString() : "-"}</td>
+                          <td style={{ ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{x.qty[baseDate] ? x.qty[baseDate].toLocaleString() : "-"}</td>
                           <td style={cell}>
                             <Seg options={["include", "exclude"]} value={c.excluded ? "exclude" : "include"} src={c.src.count} onPick={(a) => setRule("product", x, a)} />
                           </td>
