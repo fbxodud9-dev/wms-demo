@@ -2693,12 +2693,15 @@ function weekdayKo(str) {
 }
 const fmtNum = (n) => Number(n || 0).toLocaleString();
 
-// GS 자동 집계: 피킹지시서와 같은 기준(할당 수량). DC 상품은 "냉장/당착", 나머지는 상품명 끝의 1편/2편으로 구분
-function computeGsAuto(orders, date) {
+// GS 자동 집계: "일별 발주 집계"와 완전히 같은 계산 (피킹지 총수량 + 당착 수량, 집계 설정의 제외·편·냉장 규칙 적용)
+//   1편 = 일별 집계 1편수량, 2편 = 2편수량, 냉장/당착 = 냉장 → 세 칸 합 = 일별 집계 일일물동량
+function computeGsAuto(orders, date, rules) {
   const auto = { gs_1: 0, gs_cold: 0, gs_2: 0 };
-  buildProductsForDate(orders, date).forEach((p) => {
-    const k = isDcProduct(p.name) ? "gs_cold" : p.part === 2 ? "gs_2" : "gs_1";
-    auto[k] += p.totalQty;
+  computeGsDailySnapshot(orders, date).products.forEach((p) => {
+    const c = classifyDaily(rules, date, p);
+    if (c.excluded) return;
+    const k = c.cold ? "gs_cold" : c.part === 2 ? "gs_2" : "gs_1";
+    auto[k] += p.qty;
   });
   return auto;
 }
@@ -2988,8 +2991,11 @@ function VolumeDashboard({ orders, authToken }) {
     return shiftDateStr(baseDate, -1);
   }, [baseDate, orderDates, savedMap]);
 
-  const autoToday = useMemo(() => computeGsAuto(orders, baseDate), [orders, baseDate]);
-  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate), [orders, prevDate]);
+  // 일별 발주 집계 설정(제외·편·냉장)을 그대로 적용 - 설정을 바꾸면 대시보드도 바로 바뀜
+  const dailyRulesSaved = useSetting(GS_DAILY_RULES_KEY, authToken);
+  const dailyRules = useMemo(() => normalizeDailyRules(dailyRulesSaved), [dailyRulesSaved]);
+  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules), [orders, baseDate, dailyRules]);
+  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules), [orders, prevDate, dailyRules]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
 
@@ -3031,7 +3037,7 @@ function VolumeDashboard({ orders, authToken }) {
         <VolumeEditModal
           key={editingDate}
           date={editingDate}
-          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate)}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules)}
           saved={savedMap[editingDate]}
           onSave={handleSave}
           onClose={() => setEditingDate(null)}
