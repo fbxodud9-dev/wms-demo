@@ -10245,6 +10245,9 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
   const byName = new Map();
   let names;
+  // 전 지역 당착 공급사(조인앤조인)도 거래명세서 설정에서 DC 발행 지역을 골라두면, 그 지역은 DC 명세서로 나간다
+  // (예: 조인앤조인 당착 3센터 + DC 8센터 - 둘 다 실제 발주 수량)
+  const dcPickedRegions = part === "DC" && invoiceRegionConfig(supplierKey, "DC").mode === "selected";
   if (part === "DC" || part === "당착") {
     // DC는 주문 파일의 공급사가 아니라 "GS편의점DC" 목록의 DC 공급사 기준. 그날 주문된 상품만, 목록 순서대로(같은 목록 안에선 업로드 순서)
     const dcProducts = products
@@ -10253,7 +10256,8 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
         const dk = getDangchakInfo(x.p.name);
         if (part === "당착") return !!dk && dangchakVendorKey(x.p) === supplierKey;
         if (!x.r || x.r.group.key !== supplierKey) return false;
-        return !dk || dk.style === "combined"; // DC: 일반 DC 상품 + 지역 한 곳만 당착인 상품의 나머지 지역
+        if (!dk || dk.style === "combined") return true; // DC: 일반 DC 상품 + 지역 한 곳만 당착인 상품의 나머지 지역
+        return dk.style === "full" && dcPickedRegions; // 전 지역 당착 상품은 DC 발행 지역을 골라둔 경우에만
       })
       .sort((a, b) => (a.r ? a.r.idx : 9999) - (b.r ? b.r.idx : 9999) || a.i - b.i)
       .map((x) => x.p);
@@ -10301,7 +10305,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       if (!dangchakHasRegion(dk, code)) return 0; // 당착으로 지정된 지역만
       return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
     }
-    if (dk && dk.style === "full") return 0; // 전 지역 당착 상품은 당착 명세서에서만
+    if (dk && dk.style === "full") return part === "DC" && dcPickedRegions ? rr.rawQty ?? rr.qty : 0; // 전 지역 당착 상품: 당착 명세서, 또는 DC 발행 지역을 골라둔 DC 명세서
     if (dk && dk.style === "combined" && dangchakHasRegion(dk, code)) return 0; // 당착 지역 몫은 1편·2편·DC에서 제외
     return rr.qty;
   };
