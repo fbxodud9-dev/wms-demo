@@ -4882,8 +4882,38 @@ const gsWeekday = (ymd) => {
 
 // ---------- 이마트 일별 집계 ----------
 const emartDailyKey = (month) => `daily_emart_${month.replace("-", "")}`;
-// 이마트 상품은 이름에 "2편"이 들어가면 2편, 아니면 1편
-const emartPartOf = (name) => (/2편/.test(String(name || "")) ? 2 : 1);
+// 이마트 편수: 화주사 "이마트 편수리스트"(2026-10-09 수정본) 고정값 - 공급사(거래처)별로 1편/2편이 정해져 있음
+// 목록에 없는 공급사만 예전처럼 상품명에 "2편"이 있으면 2편, 아니면 1편
+const EMART_VENDOR_PART = [
+  // 이마트24 D.C
+  { keys: ["데어리젠"], part: 1 },
+  { keys: ["씨케이푸드", "씨케이"], part: 1 },
+  { keys: ["오뗄"], part: 1 },
+  { keys: ["대광"], part: 2 },
+  { keys: ["브이아이푸드", "브이아이"], part: 2 },
+  { keys: ["신성베이커리", "신성"], part: 1 },
+  { keys: ["모던아트", "장인한과"], part: 2 },
+  { keys: ["서울카스테라"], part: 1 },
+  // 이마트24 T.C
+  { keys: ["자연촌"], part: 1 },
+  { keys: ["엠즈"], part: 1 },
+  { keys: ["세아"], part: 2 },
+  { keys: ["미샛"], part: 2 },
+  { keys: ["탭스"], part: 2 },
+  { keys: ["그린델리카"], part: 2 },
+  { keys: ["영우"], part: 2 },
+  { keys: ["스윗밸런스"], part: 2 },
+  { keys: ["프레시오늘"], part: 2 },
+  { keys: ["미담롤"], part: 2 },
+  { keys: ["아인츠", "영진베이커리"], part: 2 },
+];
+function emartVendorPart(vendor) {
+  const v = String(vendor || "").replace(/\s/g, "");
+  if (!v) return null;
+  const hit = EMART_VENDOR_PART.find((x) => x.keys.some((k) => v.includes(k)));
+  return hit ? hit.part : null;
+}
+const emartPartOf = (name, vendor) => emartVendorPart(vendor) || (/2편/.test(String(name || "")) ? 2 : 1);
 function computeEmartDailySnapshot(emartOrders, date) {
   const m = new Map();
   emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === date)).forEach((r) => {
@@ -4930,16 +4960,16 @@ function buildBrandDailyTable(month, days, partOf, edits) {
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
   const cols = new Map();
   Object.values(days).forEach((d) => (d.products || []).forEach((p) => !cols.has(p.name) && cols.set(p.name, { name: p.name, supplier: p.supplier || "미지정" })));
-  const columns = Array.from(cols.values()).sort((a, b) => a.supplier.localeCompare(b.supplier, "ko") || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name, "ko"));
+  const columns = Array.from(cols.values()).sort((a, b) => a.supplier.localeCompare(b.supplier, "ko") || partOf(a.name, a.supplier) - partOf(b.name, b.supplier) || a.name.localeCompare(b.name, "ko"));
   const rows = dates.map((date) => {
     const d = days[date];
     const all = (d && d.products) || [];
     const qtyBy = new Map(all.map((p) => [p.name, p.qty]));
     const editedBy = new Map(all.filter((p) => p._edited).map((p) => [p.name, p._orig]));
     const sum = (f) => all.filter(f).reduce((a, p) => a + p.qty, 0);
-    return { orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name) === 1), p2: sum((p) => partOf(p.name) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0), cls: columns.map((c) => String(partOf(c.name) === 2 ? 2 : 1)) };
+    return { orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name, p.supplier) === 1), p2: sum((p) => partOf(p.name, p.supplier) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0), cls: columns.map((c) => String(partOf(c.name, c.supplier) === 2 ? 2 : 1)) };
   });
-  columns.forEach((c) => (c.code = String(partOf(c.name) === 2 ? 2 : 1)));
+  columns.forEach((c) => (c.code = String(partOf(c.name, c.supplier) === 2 ? 2 : 1)));
   const totals = {
     total: rows.reduce((a, r) => a + r.total, 0),
     p1: rows.reduce((a, r) => a + r.p1, 0),
