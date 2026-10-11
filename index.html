@@ -1093,12 +1093,33 @@ const DEFAULT_PRODUCT_BRAND = Object.fromEntries(
     "미국식통모짜치즈스틱(칠리)2편", "한판)제주흑돼지불백2편", "한판)제주흑돼지제육볶음2편",
   ].map((n) => [n, "GSSUPER"])
 );
-// 상품의 브랜드: 상품 정보 관리에서 정한 값 > 기본 목록 > GS
+// GS슈퍼 상품 추가 목록: 직원 "편의점 일별 발주 내역" GS슈퍼 시트 상품 + 화주사 요청(2026-10-11: 탭스 유부초밥벌크·착한39 유부초밥)
+// (공백 무시하고 비교)
+const GS_SUPER_NAMES = [
+  "발)유부초밥벌크(20입)", "착한39)유부초밥6P",
+  "저스트그린)스모크닭가슴살샐러드", "저스트그린)케이준치킨샐러드",
+  "NEW)케이준치킨에그샐러드", "빅!블랙페퍼닭가슴살샐러드", "빅!통계란&케이준샐러드", "아삭아삭베이컨포테이토샌드", "아삭아삭햄치즈샌드",
+  "반반닭강정", "(사전예약) 청양마요 닭강정&웨지감자", "(사전예약)데리야끼 닭강정&웨지감자", "(사전예약)새우 닭강정", "사전예약)달콤 닭강정&웨지감자",
+  "소고기전주비빔", "전주비빔참치마요", "직화향가득직화김치제육", "토핑듬뿍베이컨참치마요", "토핑듬뿍비빔참치마요", "토핑듬뿍직화제육볶음", "토핑듬뿍참치김치",
+  "SB)케이준치킨치즈샐러드",
+  "동글동글)유부초밥6P", "동글동글)참치&치킨 유부초밥6P", "동글동글)후리가케 유부초밥6P", "바삭)날치알참치마요김밥", "바삭)스팸계란김밥",
+  "굿데이)통밀에그맛살샌드", "전남친샌드위치",
+  "발)광어초밥용네타20pcs*1팩", "발)새우튀김30g*20개", "발)연어초밥용네타20pcs*1팩",
+  "착한닭가슴살샐러드", "착한리코타샐러드", "착한텐더치킨샐러드", "토핑샐러드키트(냉장/6팩소분)",
+  "흥선)약과도넛 초코", "흥선)약과도넛", "꿀그래놀라그릭요거트",
+];
+const brandNorm = (s) => String(s || "").replace(/\s/g, "").toUpperCase();
+const GS_SUPER_NORM = new Set([...GS_SUPER_NAMES, ...Object.keys(DEFAULT_PRODUCT_BRAND)].map(brandNorm));
+// 이름 규칙: "발)"(발주용 벌크)·"착한"(슈퍼 전용 라인)으로 시작하면 GS슈퍼 (GS 시트에는 이런 상품이 없음 - 10월 직원 파일 확인)
+const GS_SUPER_PREFIX = /^(발\)|착한)/;
+// 상품의 브랜드: 상품 정보 관리에서 정한 값 > 기본 목록 > 이름 규칙 > GS
 function productBrandOf(name) {
   const key = String(name || "").replace(/\n/g, "").trim();
   const ov = PRODUCT_INFO[key];
   if (ov && ov.brand) return ov.brand;
-  return DEFAULT_PRODUCT_BRAND[key] || "GS";
+  if (DEFAULT_PRODUCT_BRAND[key]) return DEFAULT_PRODUCT_BRAND[key];
+  if (GS_SUPER_NORM.has(brandNorm(key)) || GS_SUPER_PREFIX.test(key)) return "GSSUPER";
+  return "GS";
 }
 // 여러 상품을 한 번에 저장 (브랜드 일괄 변경용)
 async function saveProductInfoEntries(authToken, fallback, names, updater) {
@@ -1148,9 +1169,19 @@ function isProductInactive(name) {
 // (우리 물건이 아니라서 지운 상품이 많아, 날짜를 임의로 정하면 지난 집계가 크게 늘어남 - 2026-10-11 확인)
 // 특정 상품만 지난 날짜를 살리려면 상품 정보 관리에서 그 상품의 "집계 제외 시작일"을 정하면 된다.
 const INACTIVE_LEGACY_SINCE = "";
-function openInactiveRange(e) {
+// 단산(삭제)은 돈을 받아야 하니 삭제한 그 달은 일별 집계에 그대로 두고, 다음 달 1일부터 뺀다 (일시중지는 그날부터)
+const nextMonthFirst = (ymd) => {
+  const [y, m] = ymd.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+};
+// 이 기능 전에 삭제돼 기록이 없는 단산 상품 중, 그 달 집계는 살려야 하는 것 (이름 일부로 찾음)
+const DISCONTINUED_KEEP_MONTH = [
+  { match: "햄치즈에그피타브레드", from: "2026-11-01" }, // 오든든 햄치즈에그피타브레드 1편·2편 - 2026-10 단산, 10월분은 정산 대상
+  { match: "크랩유부&계란김밥세트", from: "2026-11-01" }, // 탭스 크랩유부&계란김밥세트 1편·2편 - 2026-10 단산
+];
+function openInactiveRange(e, discontinue) {
   const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
-  if (!list.some((r) => !r.to)) list.push({ from: localDateStr() }); // 한국 날짜 기준
+  if (!list.some((r) => !r.to)) list.push({ from: discontinue ? nextMonthFirst(localDateStr()) : localDateStr() }); // 한국 날짜 기준
   e.inactiveRanges = list;
   return e;
 }
@@ -1167,9 +1198,11 @@ function closeInactiveRange(e) {
   return e;
 }
 // 지금 일시중지·삭제 중인 상품의 "집계 제외 시작일" ("" = 처음부터)
-function inactiveSinceOf(ov) {
+function inactiveSinceOf(ov, name) {
   const open = ov && Array.isArray(ov.inactiveRanges) ? ov.inactiveRanges.find((r) => !r.to) : null;
-  return open ? open.from || "" : INACTIVE_LEGACY_SINCE;
+  if (open) return open.from || "";
+  const keep = ov && ov.discontinued && name && DISCONTINUED_KEEP_MONTH.find((k) => String(name).includes(k.match));
+  return keep ? keep.from : INACTIVE_LEGACY_SINCE;
 }
 function setInactiveSince(e, from) {
   const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.filter((r) => r.to).map((r) => ({ ...r })) : [];
@@ -1178,12 +1211,16 @@ function setInactiveSince(e, from) {
   return e;
 }
 function isProductInactiveOn(name, date) {
-  if (productBrandOf(name) !== "GS") return true;
+  const br = productBrandOf(name);
+  if (br !== "GS" && br !== "GSSUPER") return true; // 일별 집계는 GS + GS슈퍼(따로 시트)
   const ov = productInfoOf(name);
   if (!ov) return false;
   const active = !!(ov.paused || ov.discontinued);
   let ranges = Array.isArray(ov.inactiveRanges) ? ov.inactiveRanges : [];
-  if (active && !ranges.some((r) => !r.to)) ranges = [...ranges, { from: INACTIVE_LEGACY_SINCE }];
+  if (active && !ranges.some((r) => !r.to)) {
+    const keep = ov.discontinued && DISCONTINUED_KEEP_MONTH.find((k) => String(name).includes(k.match));
+    ranges = [...ranges, { from: keep ? keep.from : INACTIVE_LEGACY_SINCE }];
+  }
   // (from이 ""이면 처음부터)
   if (!active) ranges = ranges.filter((r) => r.to); // 지금 켜져 있으면 열린 기간은 무시
   return ranges.some((r) => (!r.from || date >= r.from) && (!r.to || date <= r.to));
@@ -2750,6 +2787,7 @@ function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
   // 일별 집계 화면에서 직접 고친 값도 반영
   const day = applyDailyEdits({ [date]: base }, editsGs && editsGs[date] ? { [date]: editsGs[date] } : null)[date];
   day.products.forEach((p) => {
+    if (gsDailySheetOf(p.name) === "GS슈퍼") return; // GS슈퍼 상품은 GS 물동량에서 제외
     const c = classifyDaily(rules, date, p);
     if (c.excluded) return;
     const k = c.cold ? "gs_cold" : c.part === 2 ? "gs_2" : "gs_1";
@@ -4648,6 +4686,7 @@ function isColdProduct(name) {
 }
 const gsBaseName = (name) => String(name || "").replace(/(\d)\s*편?\s*$/, "").trim(); // 1편·2편을 나란히 정렬하기 위한 기본 이름
 function gsDailySheetOf(name) {
+  if (productBrandOf(name) === "GSSUPER") return "GS슈퍼"; // GS 발주파일에 섞여 오는 GS슈퍼 상품은 따로 시트
   const k = dcVendorKey(name);
   return k && k !== "조인앤조인" ? "GS재고" : "GS";
 }
@@ -4769,7 +4808,7 @@ function buildGsDailyTable(month, days, rules, edits) {
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
-  const cols = { GS: new Map(), GS재고: new Map() }; // name -> { name, supplier }
+  const cols = { GS: new Map(), GS재고: new Map(), GS슈퍼: new Map() }; // name -> { name, supplier }
   Object.values(days).forEach((d) =>
     (d.products || []).forEach((p) => {
       const sheet = gsDailySheetOf(p.name);
@@ -4790,14 +4829,15 @@ function buildGsDailyTable(month, days, rules, edits) {
       );
     });
   const sheets = {};
-  ["GS", "GS재고"].forEach((sheet) => {
+  ["GS", "GS재고", "GS슈퍼"].forEach((sheet) => {
     const columns = sortCols(sheet);
     const rows = dates.map((date) => {
       const d = days[date];
       const qtyBy = new Map(((d && d.products) || []).map((p) => [p.name, p.qty]));
       const editedBy = new Map(((d && d.products) || []).filter((p) => p._edited).map((p) => [p.name, p._orig]));
       const all = (d && d.products) || [];
-      const scope = sheet === "GS" ? all : all.filter((p) => gsDailySheetOf(p.name) === "GS재고");
+      // GS 시트 숫자 = GS 전체(GS재고 포함, GS슈퍼 제외) / GS재고·GS슈퍼 = 자기 시트 상품만
+      const scope = sheet === "GS" ? all.filter((p) => gsDailySheetOf(p.name) !== "GS슈퍼") : all.filter((p) => gsDailySheetOf(p.name) === sheet);
       const sum = (f) => scope.filter(f).reduce((a, p) => a + p.qty, 0);
       return {
         date,
@@ -4915,6 +4955,7 @@ const DAILY_SHEETS = [
   { name: "BGF", head: "bgf", cold: false },
   { name: "GS", head: "GS", cold: true },
   { name: "GS재고", head: "GS재고", cold: true },
+  { name: "GS슈퍼", head: "GS슈퍼", cold: false },
   { name: "이마트", head: "이마트", cold: false },
 ];
 
@@ -5125,7 +5166,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
     return t;
   }, [month, days, emDays, rules, editsSaved]);
   const sh = table.sheets[sheet];
-  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "이마트";
+  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트";
   const editKeyOf = sheet === "이마트" ? "이마트" : "GS";
   const editCount = useMemo(() => {
     const ed = editsSaved || {};
@@ -5215,7 +5256,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
             </option>
           ))}
         </select>
-        {["GS", "GS재고", "이마트", "세븐일레븐", "BGF"].map((s) => (
+        {["GS", "GS재고", "GS슈퍼", "이마트", "세븐일레븐", "BGF"].map((s) => (
           <button
             key={s}
             onClick={() => setSheet(s)}
@@ -8776,7 +8817,7 @@ function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
                         </button>
                         <button
                           disabled={busy === r.name}
-                          onClick={() => window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n피킹지에 더 이상 나오지 않아요. "삭제된 상품"에서 복구할 수 있어요.`) && setEntry(r.name, (e) => (openInactiveRange(e), delete e.paused, (e.discontinued = true), e), `"${r.displayName}" 삭제했어요.`)}
+                          onClick={() => window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n피킹지에 더 이상 나오지 않아요. "삭제된 상품"에서 복구할 수 있어요.`) && setEntry(r.name, (e) => (openInactiveRange(e, true), delete e.paused, (e.discontinued = true), e), `"${r.displayName}" 삭제했어요.`)}
                           style={{ ...btn, color: T.danger, borderColor: T.danger + "55" }}
                         >
                           <Trash2 size={13} /> 삭제
@@ -13038,7 +13079,7 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
     updateStatus(
       r.name,
       (e) => {
-        openInactiveRange(e); // 일시중지 중이었으면 그 기간을 이어감
+        openInactiveRange(e, true); // 일시중지 중이었으면 그 기간을 이어감, 아니면 다음 달 1일부터 집계 제외
         delete e.paused;
         e.discontinued = true;
         return e;
@@ -13182,14 +13223,14 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
                       {(r.paused || r.deleted) && (
                         <label
                           onClick={(e) => e.stopPropagation()}
-                          title="일별 발주 집계에서 이 날짜부터 빠져요. 비우면 처음부터(모든 날짜) 빠져요. 피킹지·명세서는 상관없이 지금 빠져요."
+                          title="일별 발주 집계에서 이 날짜부터 빠져요. 비우면 처음부터(모든 날짜) 빠져요. 새로 삭제(단산)하면 정산 때문에 다음 달 1일로 자동 설정돼요. 피킹지·명세서는 상관없이 지금 빠져요."
                           style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: T.inkSoft, marginRight: 8 }}
                         >
                           집계 제외 시작일
                           <input
                             type="date"
                             disabled={rowBusy === r.name}
-                            value={inactiveSinceOf(r.ov)}
+                            value={inactiveSinceOf(r.ov, r.name)}
                             onChange={(ev) => {
                               const v = ev.target.value;
                               updateStatus(r.name, (e) => setInactiveSince(e, v), v ? `"${r.displayName}" ${v}부터 일별 집계에서 빠져요.` : `"${r.displayName}" 모든 날짜 일별 집계에서 빠져요.`);
