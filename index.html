@@ -1144,8 +1144,10 @@ function isProductInactive(name) {
 // ----- 일시중지·삭제 기간 기록 (일별 발주 집계용) -----
 // 피킹지·명세서는 "지금" 상태로 빼지만, 일별 집계는 그 날짜에 일시중지·삭제 상태였을 때만 뺀다
 // (오늘 삭제해도 지난 날짜에 실제 나간 수량은 그대로 남게). 기간은 ov.inactiveRanges = [{ from, to }] (to 없음 = 지금까지)
-// 이 기능 전에 이미 일시중지·삭제돼 있던 상품(기록 없음)은 아래 날짜부터 뺀 것으로 본다 → 그 전 날짜 수량은 다시 살아남
-const INACTIVE_LEGACY_SINCE = "2026-10-11";
+// 이 기능 전에 이미 일시중지·삭제돼 있던 상품(기록 없음)은 예전처럼 모든 날짜에서 뺀다 ("" = 처음부터).
+// (우리 물건이 아니라서 지운 상품이 많아, 날짜를 임의로 정하면 지난 집계가 크게 늘어남 - 2026-10-11 확인)
+// 특정 상품만 지난 날짜를 살리려면 상품 정보 관리에서 그 상품의 "집계 제외 시작일"을 정하면 된다.
+const INACTIVE_LEGACY_SINCE = "";
 function openInactiveRange(e) {
   const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
   if (!list.some((r) => !r.to)) list.push({ from: localDateStr() }); // 한국 날짜 기준
@@ -1164,6 +1166,17 @@ function closeInactiveRange(e) {
   else delete e.inactiveRanges;
   return e;
 }
+// 지금 일시중지·삭제 중인 상품의 "집계 제외 시작일" ("" = 처음부터)
+function inactiveSinceOf(ov) {
+  const open = ov && Array.isArray(ov.inactiveRanges) ? ov.inactiveRanges.find((r) => !r.to) : null;
+  return open ? open.from || "" : INACTIVE_LEGACY_SINCE;
+}
+function setInactiveSince(e, from) {
+  const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.filter((r) => r.to).map((r) => ({ ...r })) : [];
+  list.push({ from: from || "" });
+  e.inactiveRanges = list;
+  return e;
+}
 function isProductInactiveOn(name, date) {
   if (productBrandOf(name) !== "GS") return true;
   const ov = productInfoOf(name);
@@ -1171,6 +1184,7 @@ function isProductInactiveOn(name, date) {
   const active = !!(ov.paused || ov.discontinued);
   let ranges = Array.isArray(ov.inactiveRanges) ? ov.inactiveRanges : [];
   if (active && !ranges.some((r) => !r.to)) ranges = [...ranges, { from: INACTIVE_LEGACY_SINCE }];
+  // (from이 ""이면 처음부터)
   if (!active) ranges = ranges.filter((r) => r.to); // 지금 켜져 있으면 열린 기간은 무시
   return ranges.some((r) => (!r.from || date >= r.from) && (!r.to || date <= r.to));
 }
@@ -13165,6 +13179,25 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
                     <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                       {r.paused && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#fff", background: T.inkSoft, padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>일시중지</span>}
                       {r.changed && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>변경됨</span>}
+                      {(r.paused || r.deleted) && (
+                        <label
+                          onClick={(e) => e.stopPropagation()}
+                          title="일별 발주 집계에서 이 날짜부터 빠져요. 비우면 처음부터(모든 날짜) 빠져요. 피킹지·명세서는 상관없이 지금 빠져요."
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: T.inkSoft, marginRight: 8 }}
+                        >
+                          집계 제외 시작일
+                          <input
+                            type="date"
+                            disabled={rowBusy === r.name}
+                            value={inactiveSinceOf(r.ov)}
+                            onChange={(ev) => {
+                              const v = ev.target.value;
+                              updateStatus(r.name, (e) => setInactiveSince(e, v), v ? `"${r.displayName}" ${v}부터 일별 집계에서 빠져요.` : `"${r.displayName}" 모든 날짜 일별 집계에서 빠져요.`);
+                            }}
+                            style={{ ...inputStyle, padding: "3px 6px", fontSize: 12 }}
+                          />
+                        </label>
+                      )}
                       {r.deleted ? (
                         <button disabled={rowBusy === r.name} onClick={() => restoreProduct(r)} style={{ ...smallBtnStyle, padding: "6px 10px", color: T.teal, borderColor: T.teal + "66" }}>
                           복구
