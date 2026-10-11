@@ -1141,6 +1141,39 @@ function isProductInactive(name) {
   if (productBrandOf(name) !== "GS") return true; // GS슈퍼 등 다른 브랜드 상품은 GS 피킹지·명세서·집계에서 제외
   return !!(ov && (ov.paused || ov.discontinued));
 }
+// ----- 일시중지·삭제 기간 기록 (일별 발주 집계용) -----
+// 피킹지·명세서는 "지금" 상태로 빼지만, 일별 집계는 그 날짜에 일시중지·삭제 상태였을 때만 뺀다
+// (오늘 삭제해도 지난 날짜에 실제 나간 수량은 그대로 남게). 기간은 ov.inactiveRanges = [{ from, to }] (to 없음 = 지금까지)
+// 이 기능 전에 이미 일시중지·삭제돼 있던 상품(기록 없음)은 아래 날짜부터 뺀 것으로 본다 → 그 전 날짜 수량은 다시 살아남
+const INACTIVE_LEGACY_SINCE = "2026-10-11";
+function openInactiveRange(e) {
+  const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
+  if (!list.some((r) => !r.to)) list.push({ from: localDateStr() }); // 한국 날짜 기준
+  e.inactiveRanges = list;
+  return e;
+}
+function closeInactiveRange(e) {
+  const today = localDateStr();
+  const yesterday = addDaysStr(today, -1);
+  let list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
+  if (!list.length && (e.paused || e.discontinued)) list = [{ from: INACTIVE_LEGACY_SINCE }];
+  list = list
+    .map((r) => (r.to ? r : { ...r, to: yesterday }))
+    .filter((r) => !r.from || r.from <= r.to); // 오늘 껐다 오늘 켠 건 기록 안 남김
+  if (list.length) e.inactiveRanges = list;
+  else delete e.inactiveRanges;
+  return e;
+}
+function isProductInactiveOn(name, date) {
+  if (productBrandOf(name) !== "GS") return true;
+  const ov = productInfoOf(name);
+  if (!ov) return false;
+  const active = !!(ov.paused || ov.discontinued);
+  let ranges = Array.isArray(ov.inactiveRanges) ? ov.inactiveRanges : [];
+  if (active && !ranges.some((r) => !r.to)) ranges = [...ranges, { from: INACTIVE_LEGACY_SINCE }];
+  if (!active) ranges = ranges.filter((r) => r.to); // 지금 켜져 있으면 열린 기간은 무시
+  return ranges.some((r) => (!r.from || date >= r.from) && (!r.to || date <= r.to));
+}
 // 저장 직전 서버 최신값을 받아 이 상품 항목만 바꿔 저장 (다른 직원이 그사이 바꾼 다른 상품은 유지)
 async function saveProductInfoEntry(authToken, fallback, name, updater) {
   let latest = fallback || {};
@@ -2695,10 +2728,13 @@ const fmtNum = (n) => Number(n || 0).toLocaleString();
 
 // GS 자동 집계: "일별 발주 집계"와 완전히 같은 계산 (피킹지 총수량 + 당착 수량, 집계 설정의 제외·편·냉장 규칙 적용)
 //   1편 = 일별 집계 1편수량, 2편 = 2편수량, 냉장/당착 = 냉장 → 세 칸 합 = 일별 집계 일일물동량
-function computeGsAuto(orders, date, rules, editsGs) {
+function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
   const auto = { gs_1: 0, gs_cold: 0, gs_2: 0 };
+  // 발주 원본이 남아 있으면 지금 계산, 지워진 지난 날짜(14일 경과)는 일별 집계에 저장된 스냅샷 - 일별 집계 화면과 같은 규칙
+  const hasOrders = orders.some((o) => o.createdAt === date);
+  const base = hasOrders || !storedSnap ? computeGsDailySnapshot(orders, date) : storedSnap;
   // 일별 집계 화면에서 직접 고친 값도 반영
-  const day = applyDailyEdits({ [date]: computeGsDailySnapshot(orders, date) }, editsGs && editsGs[date] ? { [date]: editsGs[date] } : null)[date];
+  const day = applyDailyEdits({ [date]: base }, editsGs && editsGs[date] ? { [date]: editsGs[date] } : null)[date];
   day.products.forEach((p) => {
     const c = classifyDaily(rules, date, p);
     if (c.excluded) return;
@@ -2715,7 +2751,9 @@ function computeVolumeDay(auto, saved) {
     const s = saved ? saved[key] : undefined;
     const entered = s !== undefined && s !== null && s !== "";
     const isAuto = VOLUME_AUTO_KEYS.includes(key);
-    rows[key] = { value: entered ? Number(s) : isAuto ? auto[key] : 0, entered, fromOrders: isAuto && !entered, autoValue: isAuto ? auto[key] : null };
+    // GS 1편·냉장·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
+    if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
+    else rows[key] = { value: entered ? Number(s) : 0, entered, fromOrders: false, autoValue: null };
   });
   const channels = VOLUME_CHANNELS.map((ch) => {
     const parts = VOLUME_ROW_DEFS.filter((d) => d[2] === ch.id).map((d) => ({ key: d[0], label: d[1], value: rows[d[0]].value }));
@@ -2914,22 +2952,28 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
                   <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
                     <div style={{ flex: 1, fontSize: 13.5 }}>
                       {full}
-                      {isAuto && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>주문 자동</span>}
+                      {isAuto && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>일별 집계 자동</span>}
                     </div>
-                    <input
-                      inputMode="numeric"
-                      value={form[key]}
-                      onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-                      placeholder={isAuto ? fmtNum(auto[key]) : "-"}
-                      style={{ ...inputStyle, width: 130, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", padding: "7px 10px" }}
-                    />
+                    {isAuto ? (
+                      <div title="일별 발주 집계 화면에서 고치면 여기도 바뀌어요" style={{ width: 130, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", padding: "7px 10px", background: "#F1F5F2", border: `1px solid ${T.border}`, borderRadius: 6, color: T.teal, fontWeight: 700 }}>
+                        {fmtNum(auto[key])}
+                      </div>
+                    ) : (
+                      <input
+                        inputMode="numeric"
+                        value={form[key]}
+                        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                        placeholder="-"
+                        style={{ ...inputStyle, width: 130, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", padding: "7px 10px" }}
+                      />
+                    )}
                   </div>
                 );
               })}
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
-            “주문 자동” 칸은 비워두면 주문 파일 기준 수량(회색 숫자)이 쓰이고, 숫자를 넣으면 그 값이 우선해요. 비워둔 다른 칸은 0으로 봅니다.
+            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편)은 일별 발주 집계 화면의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5" }}>
@@ -2998,8 +3042,27 @@ function VolumeDashboard({ orders, authToken }) {
   const dailyRules = useMemo(() => normalizeDailyRules(dailyRulesSaved), [dailyRulesSaved]);
   const editsBase = useSetting(dailyEditsKey(baseDate.slice(0, 7)), authToken);
   const editsPrev = useSetting(dailyEditsKey(prevDate.slice(0, 7)), authToken);
-  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules, editsBase && editsBase.GS), [orders, baseDate, dailyRules, editsBase]);
-  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules, editsPrev && editsPrev.GS), [orders, prevDate, dailyRules, editsPrev]);
+  // 지워진 지난 날짜용: 일별 집계에 저장된 날짜별 스냅샷
+  const [gsStored, setGsStored] = useState({});
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    Array.from(new Set([baseDate.slice(0, 7), prevDate.slice(0, 7)])).forEach((m) =>
+      apiFetch(`/gs-daily?month=${m}`, authToken)
+        .then((r) => {
+          if (cancelled) return;
+          const add = {};
+          (r.days || []).forEach((d) => (add[String(d.date).slice(0, 10)] = d.data));
+          setGsStored((prev) => ({ ...prev, ...add }));
+        })
+        .catch(() => {})
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, baseDate, prevDate]);
+  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules, editsBase && editsBase.GS, gsStored[baseDate]), [orders, baseDate, dailyRules, editsBase, gsStored]);
+  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules, editsPrev && editsPrev.GS, gsStored[prevDate]), [orders, prevDate, dailyRules, editsPrev, gsStored]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
 
@@ -3041,7 +3104,7 @@ function VolumeDashboard({ orders, authToken }) {
         <VolumeEditModal
           key={editingDate}
           date={editingDate}
-          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules, ((SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}).GS))}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules, ((SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}).GS), gsStored[editingDate])}
           saved={savedMap[editingDate]}
           onSave={handleSave}
           onClose={() => setEditingDate(null)}
@@ -4635,7 +4698,7 @@ function classifyDaily(rules, date, p) {
 
 // 그날 상품별 총수량 스냅샷 (일시중지·삭제한 상품은 buildProductsForDate에서 이미 빠짐)
 function computeGsDailySnapshot(orders, date) {
-  const products = buildProductsForDate(orders, date);
+  const products = buildProductsForDate(orders, date, { forDaily: true });
   const list = [];
   products.forEach((p) => {
     const dk = getDangchakInfo(p.name);
@@ -8682,7 +8745,7 @@ function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
                     {r.paused && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#fff", background: T.inkSoft, padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>일시중지</span>}
                     {r.changed && !r.deleted && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.amberDeep, background: "#FDF1DC", padding: "3px 8px", borderRadius: 999, marginRight: 8 }}>변경됨</span>}
                     {r.deleted ? (
-                      <button disabled={busy === r.name} onClick={() => setEntry(r.name, (e) => (delete e.discontinued, e), `"${r.displayName}" 복구했어요.`)} style={{ ...btn, color: T.teal, borderColor: T.teal + "66" }}>
+                      <button disabled={busy === r.name} onClick={() => setEntry(r.name, (e) => (closeInactiveRange(e), delete e.discontinued, e), `"${r.displayName}" 복구했어요.`)} style={{ ...btn, color: T.teal, borderColor: T.teal + "66" }}>
                         복구
                       </button>
                     ) : (
@@ -8692,14 +8755,14 @@ function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
                         </button>
                         <button
                           disabled={busy === r.name}
-                          onClick={() => setEntry(r.name, (e) => (e.paused ? delete e.paused : (e.paused = true), e), r.paused ? `"${r.displayName}" 다시 나가요.` : `"${r.displayName}" 일시중지했어요.`)}
+                          onClick={() => setEntry(r.name, (e) => (e.paused ? (delete e.paused, !e.discontinued && closeInactiveRange(e)) : ((e.paused = true), openInactiveRange(e)), e), r.paused ? `"${r.displayName}" 다시 나가요.` : `"${r.displayName}" 일시중지했어요.`)}
                           style={{ ...btn, ...(r.paused ? { background: T.teal, color: "#fff", borderColor: T.teal } : { color: T.amberDeep, borderColor: T.amber + "99" }) }}
                         >
                           {r.paused ? "재개" : "일시중지"}
                         </button>
                         <button
                           disabled={busy === r.name}
-                          onClick={() => window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n피킹지에 더 이상 나오지 않아요. "삭제된 상품"에서 복구할 수 있어요.`) && setEntry(r.name, (e) => (delete e.paused, (e.discontinued = true), e), `"${r.displayName}" 삭제했어요.`)}
+                          onClick={() => window.confirm(`"${r.displayName}" 상품을 삭제(단종)할까요?\n피킹지에 더 이상 나오지 않아요. "삭제된 상품"에서 복구할 수 있어요.`) && setEntry(r.name, (e) => (openInactiveRange(e), delete e.paused, (e.discontinued = true), e), `"${r.displayName}" 삭제했어요.`)}
                           style={{ ...btn, color: T.danger, borderColor: T.danger + "55" }}
                         >
                           <Trash2 size={13} /> 삭제
@@ -11009,7 +11072,7 @@ function isQtyZeroByName(name, regionCode) {
   return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === name && o.regionCode === regionCode);
 }
 
-function buildProductsForDate(orders, activeDate) {
+function buildProductsForDate(orders, activeDate, opts = {}) {
   const bySku = {};
   // 발주파일에 업로드된 순서(seq) 그대로 처리 - 화면에 뜨는 상품 순서가 파일 순서와 같아지도록 함
   const ordered = [...orders].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
@@ -11034,7 +11097,8 @@ function buildProductsForDate(orders, activeDate) {
       // 발주 수량(수정된 값이 있으면 그 값)을 그대로 쓴다 - 할당 상태 때문에 수량이 안 보이는 일이 없도록.
       const qty = Number(l.changedQty ?? l.qty) || 0;
       if (qty <= 0) return;
-      if (isProductInactive(l.name)) return; // 일시중지·삭제(단종)한 상품은 피킹지·명세서에서 제외
+      // 일시중지·삭제(단종)한 상품은 피킹지·명세서에서 제외. 일별 집계(forDaily)는 그 날짜에 꺼져 있던 경우만 제외
+      if (opts.forDaily ? isProductInactiveOn(l.name, activeDate || o.createdAt) : isProductInactive(l.name)) return;
       // 이 상품이 DC 상품이면 DC 공급사 기준으로, 아니면 발주서 공급사 기준으로 0고정 여부를 판단 (상품마다 다를 수 있음)
       const zeroKey = dcVendorKey(l.name) || supplierKey;
       const zeroed = regionKey && (isQtyZeroOverride(zeroKey, regionKey) || isQtyZeroByName(l.name, regionKey));
@@ -12944,8 +13008,13 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
     updateStatus(
       r.name,
       (e) => {
-        if (e.paused) delete e.paused;
-        else e.paused = true;
+        if (e.paused) {
+          delete e.paused;
+          if (!e.discontinued) closeInactiveRange(e);
+        } else {
+          e.paused = true;
+          openInactiveRange(e);
+        }
         return e;
       },
       r.paused ? `"${r.displayName}" 다시 나가요.` : `"${r.displayName}" 일시중지했어요. 다시 누르면 재개돼요.`
@@ -12955,6 +13024,7 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
     updateStatus(
       r.name,
       (e) => {
+        openInactiveRange(e); // 일시중지 중이었으면 그 기간을 이어감
         delete e.paused;
         e.discontinued = true;
         return e;
@@ -12966,6 +13036,7 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
     updateStatus(
       r.name,
       (e) => {
+        closeInactiveRange(e);
         delete e.discontinued;
         return e;
       },
@@ -12985,7 +13056,7 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
         const dc = dcGroupOf(r.name);
         const dk = getDangchakInfo(r.name);
         const expiry = dc && expiryOverrideOf(r.name) == null ? null : expiryDaysOf(r.name);
-        const changed = !!ov && Object.keys(ov).some((k) => k !== "paused" && k !== "discontinued" && k !== "brand");
+        const changed = !!ov && Object.keys(ov).some((k) => k !== "paused" && k !== "discontinued" && k !== "brand" && k !== "inactiveRanges");
         return { ...r, ov, changed, brand: productBrandOf(r.name), paused: !!(ov && ov.paused), deleted: !!(ov && ov.discontinued), pack, expiry, displayName: displayNameOf(r.name), category: piCategoryOf(dc, dk), part: detectPart(r.name) };
       })
       .sort((a, b) => pickingSupplierPriority(a.supplier) - pickingSupplierPriority(b.supplier) || a.supplier.localeCompare(b.supplier, "ko") || a.name.localeCompare(b.name, "ko"));
@@ -13174,6 +13245,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
     if (entry && cur.paused) entry.paused = true;
     if (entry && cur.discontinued) entry.discontinued = true;
     if (!entry && cur.paused) entry = { paused: true };
+    if (cur.inactiveRanges) entry = { ...(entry || {}), inactiveRanges: cur.inactiveRanges }; // 일시중지·삭제 기간 기록도 유지
     // 다른 직원이 그사이 다른 상품을 저장했을 수 있으니, 저장 직전에 서버 최신 값을 받아 이 상품만 바꿔서 저장한다
     let latest = productInfo || {};
     try {
