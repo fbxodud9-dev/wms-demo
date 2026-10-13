@@ -1258,7 +1258,18 @@ function setPickingOrderConfig(cfg) {
   PICKING_ORDER_CONFIG = {
     suppliers: cfg && Array.isArray(cfg.suppliers) && cfg.suppliers.length ? cfg.suppliers : null,
     products: (cfg && cfg.products && typeof cfg.products === "object" && cfg.products) || {},
+    hidden: (cfg && cfg.hidden) || null, // 피킹 안 함(삭제)으로 뺀 공급사·상품 (복구 가능)
   };
+}
+// GS 피킹지에서 뺀(삭제한) 공급사·상품인지. 상품은 순서 설정 목록 이름(1편/2편 뗀 이름) 또는 실제 이름으로 비교
+function isGsPickHidden(p) {
+  const h = PICKING_ORDER_CONFIG.hidden;
+  if (!h) return false;
+  const sk = pickingSupplierKey(p.supplier || "");
+  if ((h.suppliers || []).includes(sk)) return true;
+  const arr = (h.products || {})[sk] || [];
+  const base = p.baseName || String(p.name || "").replace(/(\d)\s*편?\s*$/, "").trim();
+  return arr.includes(p.name) || arr.includes(base);
 }
 function getPickingSupplierOrder() {
   return PICKING_ORDER_CONFIG.suppliers || SUPPLIER_PICKING_ORDER;
@@ -1933,7 +1944,7 @@ function WMSApp() {
   const [orderCfg, setOrderCfg] = useState({ suppliers: null, products: {} });
   const applyOrderCfg = useCallback((value) => {
     setPickingOrderConfig(value);
-    setOrderCfg({ suppliers: PICKING_ORDER_CONFIG.suppliers, products: PICKING_ORDER_CONFIG.products });
+    setOrderCfg({ suppliers: PICKING_ORDER_CONFIG.suppliers, products: PICKING_ORDER_CONFIG.products, hidden: PICKING_ORDER_CONFIG.hidden });
   }, []);
   useEffect(() => {
     if (!authToken) return;
@@ -5655,6 +5666,56 @@ function saveDailyRules(authToken, fn, key = GS_DAILY_RULES_KEY) {
   });
 }
 
+// 집계 설정 > "집계 안 하는 목록" 탭: 집계 안 함(삭제)으로 정한 공급사·상품·지역을 모아 보고 [복구]
+function DailyDeletedTab({ rules, save, saving, setSaving, chLabel }) {
+  const list = rules.filter((r) => r.action === "exclude");
+  const pt = (r) => (!r.from && !r.to ? "계속" : r.from === r.to ? `${r.from.slice(5).replace("-", "/")} 하루` : `${r.from ? r.from.slice(5).replace("-", "/") : "처음"} ~ ${r.to ? r.to.slice(5).replace("-", "/") : "계속"}`);
+  const same = (a, b) => a.scope === b.scope && a.action === b.action && dailySupKey(a.supplier) === dailySupKey(b.supplier) && dailyNameKey(a.name) === dailyNameKey(b.name) && (a.from || "") === (b.from || "") && (a.to || "") === (b.to || "") && JSON.stringify(a.regions || []) === JSON.stringify(b.regions || []);
+  const what = (r) => (r.scope === "supplier" ? `[${r.supplier}] 공급사 전체` : r.scope === "region" ? `[${r.supplier}] ${(r.regions || []).map(dailyRegionName).join("·")}` : `[${r.name}]`);
+  const restore = async (r) => {
+    if (!window.confirm(`${what(r)}를 다시 ${chLabel} 일별 집계에 넣을까요? (집계 안 함 설정을 지워요)`)) return;
+    setSaving(true);
+    try {
+      await save((cur) => ({ ...cur, rules: cur.rules.filter((x) => !(r.id && !r.legacy ? x.id === r.id : same(x, r))) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const tag = (r) => (r.scope === "supplier" ? ["공급사 전체", "#FDECEA", "#B03A2E"] : r.scope === "region" ? ["지역 제외", "#FFF3E0", "#B26A00"] : ["상품", "#F3EDE7", "#6D4C41"]);
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: 1.65, marginBottom: 10, background: "#F7F6F2", borderRadius: 8, padding: "9px 12px" }}>
+        {chLabel} 일별 집계에서 <b>뺀(집계 안 함)</b> 공급사·상품·지역이에요. 빼는 방법: <b>상품별 설정</b>에서 상품 줄의 [집계 안 함] (상품 하나) · 공급사를 고르면 나오는 [{`공급사 전체`} 집계 안 함] (공급사 전체) · <b>지역 제외</b> 탭 (공급사+지역).
+        잘못 뺐으면 아래에서 <b>[↺ 복구]</b>를 누르면 바로 다시 집계돼요.
+      </div>
+      <div style={{ border: `1px solid ${list.length ? "#E6A9A2" : T.border}`, borderRadius: 10, padding: "6px 14px", background: list.length ? "#FFF8F7" : "#FBFAF7" }}>
+        {!list.length && <div style={{ fontSize: 12.5, color: T.inkSoft, padding: "12px 0" }}>없어요. 전부 집계 중이에요.</div>}
+        {list.map((r) => {
+          const [t, bg, fg] = tag(r);
+          return (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: `1px solid ${T.border}`, opacity: r.off ? 0.5 : 1 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 99, background: bg, color: fg, whiteSpace: "nowrap" }}>{t}</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 13, textDecoration: "line-through", color: T.inkSoft }}>
+                {r.scope === "product" ? r.name : r.supplier}
+                {r.scope === "product" && r.supplier && <span style={{ fontSize: 11.5 }}> · {r.supplier}</span>}
+                {r.scope === "region" && <span style={{ fontSize: 11.5 }}> · {(r.regions || []).map(dailyRegionName).join("·")}</span>}
+              </span>
+              <span style={{ fontSize: 11.5, color: T.inkSoft, whiteSpace: "nowrap" }}>
+                {pt(r)}
+                {r.at ? ` · ${String(r.at).slice(5).replace("-", "/")} 설정` : ""}
+                {r.off ? " · 꺼짐" : ""}
+              </span>
+              <button disabled={saving} onClick={() => restore(r)} style={{ ...smallBtnStyle, padding: "3px 10px", fontSize: 12, fontWeight: 700, color: T.tealDeep, borderColor: T.teal }}>
+                ↺ 복구
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // 집계 설정 > "지역 제외" 탭: 공급사 고르고 → 지역을 눌러 고르고 → [저장]
 function DailyRegionExcludeTab({ ch, orders, suppliers, dates, rules, save, saving, setSaving }) {
   const src = DAILY_REGION_SOURCES[ch.region];
@@ -6015,6 +6076,7 @@ function DailySettingsModal({ ch = DAILY_CHANNELS.GS, orders = [], days, rulesSa
             {[
               ["products", `상품별 설정`],
               ...(true ? [["regions", `지역 제외${rules.some((r) => r.scope === "region") ? ` (${rules.filter((r) => r.scope === "region").length})` : ""}`]] : []),
+              ["deleted", `🗑 집계 안 하는 목록 (${rules.filter((r) => r.action === "exclude").length}) · 복구`],
               ["rules", `적용 중인 설정 (${rules.length})`],
             ].map(([k, label]) => (
               <button key={k} onClick={() => setTab(k)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13.5, fontWeight: tab === k ? 800 : 600, borderBottom: tab === k ? `2px solid ${T.steel}` : "2px solid transparent", cursor: "pointer", color: T.ink }}>
@@ -6026,7 +6088,9 @@ function DailySettingsModal({ ch = DAILY_CHANNELS.GS, orders = [], days, rulesSa
         </div>
         <div style={{ padding: "12px 20px 18px", overflow: "auto", flex: 1 }}>
           {msg && <div style={{ color: T.danger, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{msg}</div>}
-          {tab === "regions" ? (
+          {tab === "deleted" ? (
+            <DailyDeletedTab rules={rules} save={save} saving={saving} setSaving={setSaving} chLabel={ch.label} />
+          ) : tab === "regions" ? (
             <DailyRegionExcludeTab ch={ch} orders={orders} suppliers={suppliers} dates={dates} rules={rules} save={save} saving={saving} setSaving={setSaving} />
           ) : tab === "products" ? (
             <>
@@ -10433,7 +10497,7 @@ function PickingEditPage({ orders, productInfo, orderCfg }) {
   const dateOptions = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt))).sort((a, b) => (a < b ? 1 : -1)), [orders]);
   const [selDate, setSelDate] = useState(null);
   const activeDate = selDate && dateOptions.includes(selDate) ? selDate : dateOptions[0] || null;
-  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, productInfo, orderCfg]);
+  const products = useMemo(() => buildProductsForDate(orders, activeDate).filter((p) => !isGsPickHidden(p)), [orders, activeDate, productInfo, orderCfg]);
   const [supFilter, setSupFilter] = useState("all");
   const [q, setQ] = useState("");
   const [busyKey, setBusyKey] = useState(null);
@@ -11370,6 +11434,7 @@ function withZeroDangchakProducts(products) {
     if (!sameGroup.length) return;
     const part = detectPart(name);
     const tpl = sameGroup.find((p) => p.part === part) || out.find((p) => p.part === part) || sameGroup[0];
+    if (isGsPickHidden({ supplier: tpl.supplier, name })) return; // 피킹지에서 뺀 상품은 0짜리 당착 시트도 안 만듦
     const zero = {
       ...tpl,
       sku: `zero-${name}`,
@@ -11924,6 +11989,10 @@ function setInvoiceSettings(v) {
 function invSupplierSettings(key) {
   return INVOICE_SETTINGS.suppliers[key] || {};
 }
+// 거래명세서 설정에서 "발행 안 함"(삭제)으로 뺀 공급사·상품 (복구 가능)
+function isInvHidden(key, name) {
+  return isBrandHidden(INVOICE_SETTINGS, key, name);
+}
 function invProductOv(key, name) {
   const ps = invSupplierSettings(key).products || {};
   return ps[name] || null;
@@ -12034,6 +12103,7 @@ function invPartLabel(part) {
 //  - 참맛나라·맛요일·H2글로벌(청주), 데어리젠(신제주)처럼 style "combined"인 상품: 그 당착 지역 한 곳만 당착 명세서에 나가고
 //    (0고정과 무관하게 원래 발주 수량), 나머지 지역은 평소처럼 DC 명세서로 나간다. 당착 지역 몫은 DC에 절대 안 나간다.
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
+  if (isInvHidden(supplierKey)) return { items: [], regions: [], qtyOf: () => 0 }; // 발행 안 함으로 뺀 공급사
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
   const byName = new Map();
   let names;
@@ -12077,6 +12147,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     });
     names = [...catalogNames, ...extraNames];
   }
+  names = names.filter((n) => !isInvHidden(supplierKey, n)); // 발행 안 함으로 뺀 상품
   const items = names.map((name) => {
     const p = byName.get(name) || null;
     return {
@@ -13055,10 +13126,54 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
   const activeDate = selDate && dates.includes(selDate) ? selDate : dates[0] || null;
   const dayProducts = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, config]);
 
+  const hiddenCfg = brandHiddenOf(config);
   const baseList = draft.suppliers || SUPPLIER_PICKING_ORDER;
   const detectedSuppliers = useMemo(() => Array.from(new Set(dayProducts.map((p) => pickingSupplierKey(p.supplier)))), [dayProducts]);
   const extra = detectedSuppliers.filter((k) => !baseList.includes(k)); // 순서표에 없던 공급사는 맨 뒤에 붙여서 보여줌
-  const supplierList = [...baseList, ...extra];
+  const supplierList = [...baseList, ...extra].filter((k) => !hiddenCfg.suppliers.includes(k));
+  // 피킹 안 함(삭제)·복구: 바로 저장 (순서 저장과 따로)
+  async function hideOrRestore(op) {
+    const what = op.name == null ? `[${op.sup}] 공급사 전체` : `[${op.name}]`;
+    const text =
+      op.type === "hide"
+        ? `${what}를 GS 피킹지에서 뺄까요?${op.name != null ? "\n(1편·2편이 한 줄로 묶인 상품이면 둘 다 빠져요)" : ""}\n\n· 피킹지시서 화면·엑셀에서 안 나와요\n· 거래명세서·일별 집계는 그대로예요 (각 설정에서 따로 빼요)\n· 잘못 뺐으면 아래 "피킹 안 하는 목록"에서 [복구]를 누르면 돼요`
+        : `${what}를 다시 GS 피킹지에 넣을까요?`;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    setMsg("");
+    let latest = { suppliers: config.suppliers, products: config.products, hidden: config.hidden };
+    try {
+      const res = await apiFetch("/settings/picking_order", authToken);
+      if (res && res.value) latest = res.value;
+    } catch (e) {
+      /* 서버를 못 읽으면 화면 값 기준 */
+    }
+    const r0 = { value: latest };
+    // setBrandHidden과 같은 규칙으로 hidden 고치기
+    const h = brandHiddenOf(r0.value);
+    const n = { suppliers: [...h.suppliers], products: Object.fromEntries(Object.entries(h.products).map(([k, a]) => [k, [...(a || [])]])), at: { ...h.at } };
+    const id = op.name == null ? op.sup : `${op.sup}|${op.name}`;
+    if (op.name == null) {
+      n.suppliers = n.suppliers.filter((x) => x !== op.sup);
+      if (op.type === "hide") n.suppliers.push(op.sup);
+    } else {
+      const arr = (n.products[op.sup] || []).filter((x) => x !== op.name);
+      if (op.type === "hide") arr.push(op.name);
+      if (arr.length) n.products[op.sup] = arr;
+      else delete n.products[op.sup];
+    }
+    if (op.type === "hide") n.at[id] = todayStr();
+    else delete n.at[id];
+    const next = { ...latest, hidden: n };
+    try {
+      await apiFetch("/settings/picking_order", authToken, { method: "PUT", body: { value: next } });
+      setMsg(`저장했어요. ${what}를 ${op.type === "hide" ? "피킹지에서 뺐어요" : "복구했어요"}.`);
+    } catch (e) {
+      setMsg(`서버에 저장하지 못했어요 (${e.message})`);
+    }
+    onSaved(next);
+    setBusy(false);
+  }
 
   function updateSuppliers(list) {
     setDraft((d) => ({ ...d, suppliers: list }));
@@ -13082,7 +13197,7 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
     return out;
   }, [dayProducts, productSupplier]);
   const savedNames = draft.products[productSupplier];
-  const productNames = savedNames && savedNames.length ? [...savedNames, ...detectedNames.filter((n) => !savedNames.includes(n))] : detectedNames;
+  const productNames = (savedNames && savedNames.length ? [...savedNames, ...detectedNames.filter((n) => !savedNames.includes(n))] : detectedNames).filter((n) => !(hiddenCfg.products[productSupplier] || []).includes(n));
 
   function updateProducts(list) {
     setDraft((d) => ({ ...d, products: { ...d.products, [productSupplier]: list } }));
@@ -13097,10 +13212,16 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
   }
 
   async function save() {
-    const value = { suppliers: draft.suppliers, products: draft.products };
+    let value = { suppliers: draft.suppliers, products: draft.products, hidden: config.hidden || null };
     setBusy(true);
     setMsg("");
     try {
+      try {
+        const res = await apiFetch("/settings/picking_order", authToken);
+        if (res && res.value && res.value.hidden) value.hidden = res.value.hidden; // 삭제 목록은 서버 최신값 유지
+      } catch (e0) {
+        /* 무시 */
+      }
       await apiFetch("/settings/picking_order", authToken, { method: "PUT", body: { value } });
       onSaved(value);
       setMsg("저장했어요. 피킹지시서 화면과 엑셀에 바로 반영돼요.");
@@ -13148,6 +13269,9 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
         </select>
       </div>
       {msg && <div style={{ marginBottom: 12, fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+      {hiddenCfg.suppliers.length + Object.values(hiddenCfg.products).reduce((a, x) => a + (x || []).length, 0) > 0 && (
+        <div style={{ marginBottom: 12, fontSize: 12.5, fontWeight: 700, color: T.danger }}>🗑 피킹 안 하는 공급사·상품이 있어요 → 맨 아래 목록에서 확인·복구</div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16, alignItems: "start" }}>
         <div style={cardStyle}>
@@ -13176,6 +13300,11 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
                 <button style={rowBtn} onClick={() => moveSupplier(i, i + 1)} disabled={i === supplierList.length - 1} title="아래로">
                   ▼
                 </button>
+                {has && (
+                  <button style={{ ...rowBtn, color: "#fff", background: T.danger, borderColor: T.danger, fontSize: 11.5, fontWeight: 700 }} disabled={busy} title="이 공급사 전체를 피킹지에서 빼기 (복구 가능)" onClick={() => hideOrRestore({ type: "hide", sup: k })}>
+                    🗑 삭제
+                  </button>
+                )}
                 <button
                   style={{ ...rowBtn, color: T.danger, borderColor: T.danger + "55" }}
                   title="순서표에서 지우기 (취급 안 하는 공급사·중복 공급사)"
@@ -13249,10 +13378,16 @@ function PickingOrderSettings({ orders, authToken, config, onSaved, embedded, in
                 <button style={rowBtn} onClick={() => moveProduct(i, productNames.length - 1)} disabled={i === productNames.length - 1} title="맨 아래로">
                   ⤓
                 </button>
+                <button style={{ ...rowBtn, color: T.danger, borderColor: T.danger + "55", fontWeight: 700 }} disabled={busy} title="이 상품을 피킹지에서 빼기 (복구 가능)" onClick={() => hideOrRestore({ type: "hide", sup: productSupplier, name: n })}>
+                  🗑
+                </button>
               </div>
             );
           })}
         </div>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <BrandHiddenList cfg={config} busy={busy} title="3. 피킹 안 하는 공급사·상품" emptyText="없어요. 공급사 옆 [🗑 삭제] 또는 상품 옆 [🗑]을 누르면 피킹지에서 빠지고 여기에 모여요. 잘못 뺐으면 [복구]." onRestore={(it) => hideOrRestore({ type: "restore", sup: it.sup, name: it.name })} />
       </div>
     </div>
   );
@@ -13326,7 +13461,10 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
-  const products = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg, productInfo]);
+  const allDayProducts = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg, productInfo]);
+  // 순서 설정에서 "삭제"(피킹 안 함)한 공급사·상품은 피킹지에서 뺌
+  const products = useMemo(() => allDayProducts.filter((p) => !isGsPickHidden(p)), [allDayProducts, orderCfg]);
+  const pickHiddenCount = allDayProducts.length - products.length;
   // 브랜드 설정에서 GS슈퍼 등으로 정해서 GS 피킹지에서 빠진 상품 (안내용)
   const otherBrandNames = useMemo(() => {
     const set = new Set();
@@ -13387,6 +13525,9 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
               ))}
             </select>
             <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 발주만 집계합니다 (다른 날짜와 섞이지 않음)</span>
+            {pickHiddenCount > 0 && (
+              <span style={{ fontSize: 12, color: T.danger, fontWeight: 600 }}>· 순서 설정에서 삭제한 상품 {pickHiddenCount}개는 빠져 있어요 (순서 설정 → 피킹 안 하는 목록에서 복구)</span>
+            )}
             {otherBrandNames.length > 0 && (
               <span style={{ fontSize: 12, color: T.amberDeep, fontWeight: 600 }} title={otherBrandNames.join(", ")}>
                 · GS슈퍼 등 다른 브랜드로 정한 상품 {otherBrandNames.length}개는 빠져 있어요 (상품 정보 관리 → 브랜드 설정)
@@ -13628,7 +13769,53 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const sel = suppliers.find((x) => x.key === selKey);
-  const products = useMemo(() => (selKey ? invoiceSettingsProducts(selKey, orders) : []), [selKey, orders, invoiceSettings]);
+  const hiddenCfg = brandHiddenOf(invoiceSettings);
+  const allProducts = useMemo(() => (selKey ? invoiceSettingsProducts(selKey, orders) : []), [selKey, orders, invoiceSettings]);
+  const products = allProducts.filter((pr) => !(hiddenCfg.products[selKey] || []).includes(pr.name));
+  // 발행 안 함(삭제)·복구: 바로 저장
+  async function hideOrRestore(op) {
+    const label0 = (suppliers.find((x) => x.key === op.sup) || { label: op.sup }).label;
+    const what = op.name == null ? `[${label0}] 공급사 전체` : `[${op.name}]`;
+    const text =
+      op.type === "hide"
+        ? `${what}를 GS 거래명세서에서 뺄까요?\n\n· ${op.name == null ? "이 공급사 명세서(1편·2편·DC·당착)가 아예 안 나와요" : "명세서에서 이 상품 줄이 빠져요"}\n· 피킹지·일별 집계는 그대로예요 (각 설정에서 따로 빼요)\n· 잘못 뺐으면 "발행 안 하는 목록"에서 [복구]를 누르면 돼요`
+        : `${what}를 다시 거래명세서에 넣을까요?`;
+    if (op.type === "hide" && op.name == null && !confirmLeave()) return;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    setMsg("");
+    let latest = invoiceSettings || { suppliers: {} };
+    try {
+      const res = await apiFetch("/settings/invoice_settings", authToken);
+      if (res && res.value && res.value.suppliers) latest = res.value;
+    } catch (e) {
+      /* 화면 값 기준 */
+    }
+    const h = brandHiddenOf(latest);
+    const n = { suppliers: [...h.suppliers], products: Object.fromEntries(Object.entries(h.products).map(([k, a]) => [k, [...(a || [])]])), at: { ...h.at } };
+    const id = op.name == null ? op.sup : `${op.sup}|${op.name}`;
+    if (op.name == null) {
+      n.suppliers = n.suppliers.filter((x) => x !== op.sup);
+      if (op.type === "hide") n.suppliers.push(op.sup);
+    } else {
+      const arr = (n.products[op.sup] || []).filter((x) => x !== op.name);
+      if (op.type === "hide") arr.push(op.name);
+      if (arr.length) n.products[op.sup] = arr;
+      else delete n.products[op.sup];
+    }
+    if (op.type === "hide") n.at[id] = todayStr();
+    else delete n.at[id];
+    const next = { ...latest, hidden: n };
+    try {
+      await apiFetch("/settings/invoice_settings", authToken, { method: "PUT", body: { value: next } });
+      setMsg(`저장했어요. ${what}를 ${op.type === "hide" ? "명세서에서 뺐어요" : "복구했어요"}.`);
+    } catch (e) {
+      setMsg(`서버에 저장하지 못했어요 (${e.message})`);
+    }
+    onSaved(next);
+    setDirty(false);
+    setBusy(false);
+  }
 
   // 공급사를 고를 때마다 현재 적용 중인 값으로 폼을 채운다
   useEffect(() => {
@@ -13780,7 +13967,9 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
     fontFamily: "inherit",
   });
   const changedSet = new Set(Object.keys((invoiceSettings && invoiceSettings.suppliers) || {}));
-  const shownSuppliers = suppliers.filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()));
+  const shownSuppliers = suppliers.filter((x) => !hiddenCfg.suppliers.includes(x.key) && (!q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase())));
+  const hiddenTotal = hiddenCfg.suppliers.length + Object.values(hiddenCfg.products).reduce((a, x) => a + (x || []).length, 0);
+  const hiddenView = { ...invoiceSettings, hidden: { ...hiddenCfg, suppliers: hiddenCfg.suppliers.map((k) => k) } };
 
   return createPortal(
     <div onClick={close} style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
@@ -13801,6 +13990,14 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
               <input style={{ ...inputStyle, width: "100%" }} placeholder="공급사 검색" value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
             <div style={{ overflowY: "auto", flex: 1, padding: "0 8px 10px" }}>
+              {hiddenTotal > 0 && (
+                <button
+                  onClick={() => setTab("hidden")}
+                  style={{ width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 6, border: `1px dashed #E6A9A2`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: tab === "hidden" ? "#FDECEA" : "#fff", color: "#B03A2E" }}
+                >
+                  🗑 발행 안 하는 목록 ({hiddenTotal}) · 복구
+                </button>
+              )}
               {shownSuppliers.map((x) => (
                 <button
                   key={x.key}
@@ -13816,7 +14013,15 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
           </div>
 
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-            {!sel || !form ? null : (
+            {tab === "hidden" ? (
+              <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+                {msg && <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+                <BrandHiddenList cfg={hiddenView} busy={busy} title="GS 거래명세서 발행 안 하는 공급사·상품" emptyText="없어요." onRestore={(it) => hideOrRestore({ type: "restore", sup: it.sup, name: it.name })} />
+                <button onClick={() => setTab("info")} style={{ ...smallBtnStyle, marginTop: 12 }}>
+                  ← 공급사 설정으로
+                </button>
+              </div>
+            ) : !sel || !form ? null : (
               <>
                 <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 18px", borderBottom: `1px solid ${T.border}` }}>
                   <div style={{ fontWeight: 700, fontSize: 15, marginRight: 14 }}>{sel.label}</div>
@@ -13971,6 +14176,7 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
                               <th>명세서 상품명</th>
                               <th style={{ width: 96, textAlign: "center" }}>입수</th>
                               <th style={{ width: 116, textAlign: "center" }}>소비기한 (+일)</th>
+                              <th style={{ width: 80, textAlign: "center" }}>발행</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -13989,6 +14195,11 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
                                   <td>
                                     <input style={{ ...inputStyle, width: "100%", textAlign: "center", borderColor: String(prodVal(pr.name, "expiryDays")).trim() ? T.amber : undefined }} type="number" value={prodVal(pr.name, "expiryDays")} placeholder={pr.baseExpiry == null ? "공란" : String(pr.baseExpiry)} onChange={(e) => setProd(pr.name, "expiryDays", e.target.value)} />
                                   </td>
+                                  <td style={{ textAlign: "center" }}>
+                                    <button disabled={busy} onClick={() => hideOrRestore({ type: "hide", sup: selKey, name: pr.name })} title="이 상품을 명세서에서 빼기 (복구 가능)" style={{ ...smallBtnStyle, padding: "4px 9px", fontSize: 12, color: T.danger, borderColor: T.danger + "55" }}>
+                                      🗑 삭제
+                                    </button>
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -14001,12 +14212,15 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7" }}>
                   {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+                  <button onClick={() => hideOrRestore({ type: "hide", sup: selKey })} disabled={busy} title="이 공급사 명세서를 아예 안 만들기 (복구 가능)" style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger, fontWeight: 700 }}>
+                    🗑 이 공급사 명세서 발행 안 함
+                  </button>
                   {changedSet.has(selKey) && (
-                    <button onClick={resetSupplier} disabled={busy} style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger + "55" }}>
+                    <button onClick={resetSupplier} disabled={busy} style={{ ...smallBtnStyle, color: T.inkSoft }}>
                       이 공급사 전부 기본값으로
                     </button>
                   )}
-                  <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, marginLeft: changedSet.has(selKey) ? 0 : "auto", opacity: busy || !dirty ? 0.55 : 1 }}>
+                  <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
                     <Check size={14} /> {busy ? "저장 중..." : dirty ? "저장" : "저장할 변경 없음"}
                   </button>
                 </div>
@@ -14040,7 +14254,7 @@ function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoic
     // 사업자 정보가 등록된 공급사만 (DC 공급사는 아래 "DC 거래명세서" 카드에서 따로)
     const set = new Set(invoiceProducts.map((p) => supplierGroupKey(p.supplier)));
     return Array.from(set)
-      .filter((s) => SUPPLIER_INVOICE_INFO[s])
+      .filter((s) => SUPPLIER_INVOICE_INFO[s] && !isInvHidden(s))
       .sort((a, b) => supplierPriority(a) - supplierPriority(b));
   }, [invoiceProducts]);
   const [invoiceSupplier, setInvoiceSupplier] = useState(null);
