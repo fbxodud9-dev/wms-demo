@@ -4728,14 +4728,16 @@ function normalizeDailyRules(saved) {
   return out;
 }
 const dailyRuleActive = (r, date) => !r.off && (!r.from || !date || date >= r.from) && (!r.to || !date || date <= r.to);
-const dailyRuleHits = (r, p) => (r.scope === "supplier" ? dailySupKey(r.supplier) === dailySupKey(dailySupplierOf(p)) : dailyNameKey(r.name) === dailyNameKey(p.name));
+const dailyRuleHits = (r, p, sup) => (r.scope === "supplier" ? dailySupKey(r.supplier) === dailySupKey(sup != null ? sup : dailySupplierOf(p)) : dailyNameKey(r.name) === dailyNameKey(p.name));
 // 그날 이 상품의 분류: { excluded, part, cold, src: { count, temp, part } } src = "기본" | "공급사" | "상품"
-function classifyDaily(rules, date, p) {
-  const res = { excluded: false, part: detectPart(p.name), cold: isColdProduct(p.name), src: { count: "기본", temp: "기본", part: "기본" }, rule: {} };
+// base: 채널별 기본값 { part, cold, supplier } (이마트처럼 GS와 기본 규칙이 다른 채널용). 없으면 GS 기본 규칙
+function classifyDaily(rules, date, p, base) {
+  const res = { excluded: false, part: base && base.part != null ? base.part : detectPart(p.name), cold: base && base.cold != null ? base.cold : isColdProduct(p.name), src: { count: "기본", temp: "기본", part: "기본" }, rule: {} };
+  const sup = base && base.supplier != null ? base.supplier : null;
   if (!rules || !rules.length) return res;
   const apply = (scope) =>
     rules.forEach((r) => {
-      if (r.scope !== scope || !dailyRuleActive(r, date) || !dailyRuleHits(r, p)) return;
+      if (r.scope !== scope || !dailyRuleActive(r, date) || !dailyRuleHits(r, p, sup)) return;
       const tag = scope === "supplier" ? "공급사" : "상품";
       const g = DAILY_ACTIONS[r.action].group;
       if (g === "count") res.excluded = r.action === "exclude";
@@ -4748,6 +4750,17 @@ function classifyDaily(rules, date, p) {
   apply("product");
   return res;
 }
+
+// 채널별 집계 설정: 채널마다 자기 상품만 보이고, 규칙도 채널별로 따로 저장
+// (GS와 GS슈퍼는 같은 GS 발주파일에서 나와서 규칙 저장소는 같고, 화면에서 보이는 상품만 나눔)
+const DAILY_CHANNELS = {
+  GS: { label: "GS", rulesKey: "gs_daily_rules", showTemp: true, filter: (p) => gsDailySheetOf(p.name) !== "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
+  GS슈퍼: { label: "GS슈퍼", rulesKey: "gs_daily_rules", showTemp: false, filter: (p) => gsDailySheetOf(p.name) === "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
+  이마트: { label: "이마트", rulesKey: "emart_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: emartPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+  세븐일레븐: { label: "세븐일레븐", rulesKey: "seven_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+  BGF: { label: "BGF", rulesKey: "bgf_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+};
+const dailyChannelOfSheet = (sheet) => (sheet === "GS재고" ? "GS" : DAILY_CHANNELS[sheet] ? sheet : "GS");
 
 // 그날 상품별 총수량 스냅샷 (일시중지·삭제한 상품은 buildProductsForDate에서 이미 빠짐)
 function computeGsDailySnapshot(orders, date) {
@@ -4953,8 +4966,14 @@ async function syncEmartDaily(emartOrders, authToken) {
   }
 }
 // 이마트/기타 브랜드 표: GS 표와 같은 모양 (냉장 없음)
-function buildBrandDailyTable(month, days, partOf, edits) {
+function buildBrandDailyTable(month, days, partOf, edits, rules) {
   days = applyDailyEdits(days, edits);
+  // 집계 설정(채널별): 집계 안 함은 빼고, 편은 설정값 우선
+  const baseOf = (p) => ({ part: partOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" });
+  const clsOf = (date, p) => classifyDaily(rules, date, p, baseOf(p));
+  if (rules && rules.length)
+    days = Object.fromEntries(Object.entries(days).map(([d, v]) => [d, { ...v, products: ((v && v.products) || []).filter((p) => !clsOf(d, p).excluded) }]));
+  const partAt = (date, p) => (rules && rules.length ? clsOf(date, p).part : partOf(p.name, p.supplier));
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
@@ -4967,9 +4986,13 @@ function buildBrandDailyTable(month, days, partOf, edits) {
     const qtyBy = new Map(all.map((p) => [p.name, p.qty]));
     const editedBy = new Map(all.filter((p) => p._edited).map((p) => [p.name, p._orig]));
     const sum = (f) => all.filter(f).reduce((a, p) => a + p.qty, 0);
-    return { orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partOf(p.name, p.supplier) === 1), p2: sum((p) => partOf(p.name, p.supplier) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0), cls: columns.map((c) => String(partOf(c.name, c.supplier) === 2 ? 2 : 1)) };
+    return { orig: columns.map((c) => (editedBy.has(c.name) ? editedBy.get(c.name) : undefined)), date, inDate: addDaysStr(date, 1), has: !!d, total: sum(() => true), p1: sum((p) => partAt(date, p) === 1), p2: sum((p) => partAt(date, p) === 2), cold: null, cells: columns.map((c) => qtyBy.get(c.name) || 0), cls: columns.map((c) => String(partAt(date, c) === 2 ? 2 : 1)) };
   });
-  columns.forEach((c) => (c.code = String(partOf(c.name, c.supplier) === 2 ? 2 : 1)));
+  columns.forEach((c, i) => {
+    const cnt = {};
+    rows.forEach((r) => (cnt[r.cls[i]] = (cnt[r.cls[i]] || 0) + 1));
+    c.code = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || String(partOf(c.name, c.supplier) === 2 ? 2 : 1);
+  });
   const totals = {
     total: rows.reduce((a, r) => a + r.total, 0),
     p1: rows.reduce((a, r) => a + r.p1, 0),
@@ -5144,6 +5167,8 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
   const [settingOpen, setSettingOpen] = useState(false);
   const rulesSaved = useSetting(GS_DAILY_RULES_KEY, authToken);
   const rules = useMemo(() => normalizeDailyRules(rulesSaved), [rulesSaved]);
+  const emRulesSaved = useSetting(DAILY_CHANNELS["이마트"].rulesKey, authToken);
+  const emRules = useMemo(() => normalizeDailyRules(emRulesSaved), [emRulesSaved]);
 
   useEffect(() => {
     apiFetch("/gs-daily/months", authToken)
@@ -5189,12 +5214,12 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
   const table = useMemo(() => {
     const ed = editsSaved || {};
     const t = buildGsDailyTable(month, days, rules, ed.GS);
-    t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf, ed["이마트"]);
+    t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf, ed["이마트"], emRules);
     // 세븐일레븐·BGF: 아직 발주 연동 전이라 날짜 틀만
     t.sheets["세븐일레븐"] = buildBrandDailyTable(month, {}, () => 1);
     t.sheets["BGF"] = buildBrandDailyTable(month, {}, () => 1);
     return t;
-  }, [month, days, emDays, rules, editsSaved]);
+  }, [month, days, emDays, rules, emRules, editsSaved]);
   const sh = table.sheets[sheet];
   const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트";
   const editKeyOf = sheet === "이마트" ? "이마트" : "GS";
@@ -5253,7 +5278,16 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
     if (!confirm(`${month.replace("-", "년 ")}월에 직접 고친 칸 ${editCount}개를 모두 원래 값으로 되돌릴까요?`)) return;
     await updateSetting(dailyEditsKey(month), authToken, () => ({}));
   };
-  const newCount = useMemo(() => dailyNewProducts(days, rulesSaved).length, [days, rulesSaved]);
+  // 지금 보고 있는 시트의 채널 (집계 설정은 그 채널 상품만)
+  const chKey = dailyChannelOfSheet(sheet);
+  const ch = DAILY_CHANNELS[chKey];
+  const chDays = useMemo(() => {
+    const src = chKey === "이마트" ? emDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
+    return Object.fromEntries(Object.entries(src).map(([d, v]) => [d, { ...v, products: ((v && v.products) || []).filter(ch.filter) }]));
+  }, [chKey, days, emDays]);
+  const chRulesSaved = chKey === "이마트" ? emRulesSaved : chKey === "GS" || chKey === "GS슈퍼" ? rulesSaved : SETTING_CACHE[ch.rulesKey] || null;
+  const chRules = chKey === "이마트" ? emRules : chKey === "GS" || chKey === "GS슈퍼" ? rules : normalizeDailyRules(chRulesSaved);
+  const newCount = useMemo(() => dailyNewProducts(chDays, chRulesSaved, ch).length, [chDays, chRulesSaved, chKey]);
   const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
   const nf = (v) => (v ? v.toLocaleString() : "-");
@@ -5268,7 +5302,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
         action={
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={() => setSettingOpen(true)} style={{ ...smallBtnStyle, padding: "9px 14px", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <SettingsGear size={15} /> 집계 설정
+              <SettingsGear size={15} /> {ch.label} 집계 설정
               {newCount > 0 && <span style={{ background: T.danger, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 800 }}>신제품 {newCount}</span>}
             </button>
             <button onClick={() => downloadGsDailyExcel(table, setBusy)} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, whiteSpace: "nowrap", opacity: busy ? 0.6 : 1 }}>
@@ -5277,7 +5311,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
           </div>
         }
       />
-      {settingOpen && <DailySettingsModal days={days} rulesSaved={rulesSaved} rules={rules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
+      {settingOpen && <DailySettingsModal key={chKey} ch={ch} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => (
@@ -5465,14 +5499,15 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
 
 // ---------- 일별 집계 설정 창 ----------
 // 이번 달 집계에 나온 상품 목록: key -> { name, supplier, sheet, first, last, qty: {date: qty} }
-function dailyProductList(days) {
+function dailyProductList(days, ch) {
+  const supOf = ch && ch.supplierOf ? ch.supplierOf : dailySupplierOf;
   const m = new Map();
   Object.keys(days)
     .sort()
     .forEach((d) =>
       ((days[d] && days[d].products) || []).forEach((p) => {
         const k = dailyNameKey(p.name);
-        const x = m.get(k) || { key: k, name: p.name, supplier: dailySupplierOf(p), raw: p, sheet: gsDailySheetOf(p.name), first: d, last: d, qty: {} };
+        const x = m.get(k) || { key: k, name: p.name, supplier: supOf(p), raw: p, sheet: gsDailySheetOf(p.name), first: d, last: d, qty: {} };
         x.last = d;
         x.qty[d] = (x.qty[d] || 0) + p.qty;
         m.set(k, x);
@@ -5481,15 +5516,15 @@ function dailyProductList(days) {
   return Array.from(m.values());
 }
 // 신제품 = 설정에 "확인한 상품(known)"으로 없는 상품. known이 아직 없으면(처음) 신제품 표시 안 함
-function dailyNewProducts(days, saved) {
+function dailyNewProducts(days, saved, ch) {
   if (!saved || !Array.isArray(saved.known)) return [];
   const known = new Set(saved.known);
-  return dailyProductList(days).filter((x) => !known.has(x.key));
+  return dailyProductList(days, ch).filter((x) => !known.has(x.key));
 }
 const newRuleId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // 저장 공통: 예전 형식 목록은 규칙으로 바꿔서 저장
-function saveDailyRules(authToken, fn) {
-  return updateSetting(GS_DAILY_RULES_KEY, authToken, (v) => {
+function saveDailyRules(authToken, fn, key = GS_DAILY_RULES_KEY) {
+  return updateSetting(key, authToken, (v) => {
     const cur = {
       rules: normalizeDailyRules(v).map((r) => {
         if (!r.legacy) return r;
@@ -5502,8 +5537,10 @@ function saveDailyRules(authToken, fn) {
   });
 }
 
-function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
-  const products = useMemo(() => dailyProductList(days), [days]);
+function DailySettingsModal({ ch = DAILY_CHANNELS.GS, days, rulesSaved, rules, authToken, onClose }) {
+  const products = useMemo(() => dailyProductList(days, ch), [days]);
+  const baseOf = (raw) => (ch.base ? ch.base(raw) : undefined);
+  const save = (fn) => saveDailyRules(authToken, fn, ch.rulesKey);
   const dates = useMemo(() => Object.keys(days).filter((d) => days[d] && (days[d].products || []).length).sort(), [days]);
   const [tab, setTab] = useState("products");
   const [baseDate, setBaseDate] = useState(dates[dates.length - 1] || todayStr());
@@ -5520,7 +5557,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
   // 처음 열 때: 지금 있는 상품을 "확인한 상품"으로 저장 → 이후에 새로 뜨는 상품만 신제품으로 표시
   useEffect(() => {
     if (hasKnown || !products.length || !authToken) return;
-    saveDailyRules(authToken, (cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...products.map((x) => x.key)])) }));
+    save((cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...products.map((x) => x.key)])) }));
   }, [hasKnown, products.length]);
   const isNew = (x) => hasKnown && !known.has(x.key);
   const newCount = products.filter(isNew).length;
@@ -5539,12 +5576,12 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
     setSaving(true);
     setMsg("");
     try {
-      await saveDailyRules(authToken, (cur) => {
+      await save((cur) => {
         const same = (r) => r.scope === scope && DAILY_ACTIONS[r.action].group === g && (scope === "supplier" ? dailySupKey(r.supplier) === dailySupKey(target) : dailyNameKey(r.name) === dailyNameKey(target.name)) && (r.from || "") === per.from && (r.to || "") === per.to;
         let list = cur.rules.filter((r) => !same(r));
         if (scope === "product") {
           // 상품 규칙 없이 계산했을 때 값
-          const base = classifyDaily(list.filter((r) => !(r.scope === "product" && dailyNameKey(r.name) === dailyNameKey(target.name) && DAILY_ACTIONS[r.action].group === g)), baseDate, target.raw);
+          const base = classifyDaily(list.filter((r) => !(r.scope === "product" && dailyNameKey(r.name) === dailyNameKey(target.name) && DAILY_ACTIONS[r.action].group === g)), baseDate, target.raw, baseOf(target.raw));
           const baseAction = g === "count" ? (base.excluded ? "exclude" : "include") : g === "temp" ? (base.cold ? "cold" : "normal") : base.part === 2 ? "p2" : "p1";
           const otherActive = list.some((r) => r.scope === "product" && dailyNameKey(r.name) === dailyNameKey(target.name) && DAILY_ACTIONS[r.action].group === g && dailyRuleActive(r, baseDate));
           if (baseAction !== action || otherActive) list.push({ id: newRuleId(), scope, name: target.name, supplier: target.supplier, action, ...per, at: todayStr() });
@@ -5563,7 +5600,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
   const clearSupplierRule = async (supplier, g) => {
     setSaving(true);
     try {
-      await saveDailyRules(authToken, (cur) => ({ ...cur, rules: cur.rules.filter((r) => !(r.scope === "supplier" && dailySupKey(r.supplier) === dailySupKey(supplier) && DAILY_ACTIONS[r.action].group === g && dailyRuleActive(r, baseDate))) }));
+      await save((cur) => ({ ...cur, rules: cur.rules.filter((r) => !(r.scope === "supplier" && dailySupKey(r.supplier) === dailySupKey(supplier) && DAILY_ACTIONS[r.action].group === g && dailyRuleActive(r, baseDate))) }));
     } finally {
       setSaving(false);
     }
@@ -5571,7 +5608,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
   const markKnown = async (keys) => {
     setSaving(true);
     try {
-      await saveDailyRules(authToken, (cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...keys])) }));
+      await save((cur) => ({ ...cur, known: Array.from(new Set([...cur.known, ...keys])) }));
     } finally {
       setSaving(false);
     }
@@ -5579,7 +5616,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
   const editRule = async (id, patch) => {
     setSaving(true);
     try {
-      await saveDailyRules(authToken, (cur) => ({ ...cur, rules: patch === null ? cur.rules.filter((r) => r.id !== id) : cur.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+      await save((cur) => ({ ...cur, rules: patch === null ? cur.rules.filter((r) => r.id !== id) : cur.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
     } finally {
       setSaving(false);
     }
@@ -5628,13 +5665,13 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
       <div style={{ ...cardStyle, width: "min(1100px, 100%)", maxHeight: "94vh", display: "flex", flexDirection: "column", padding: 0 }} onMouseDown={(e) => e.stopPropagation()}>
         <div style={{ padding: "16px 20px 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>일별 집계 설정 (GS)</div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>일별 집계 설정 ({ch.label})</div>
             {saving && <span style={{ fontSize: 12, color: T.inkSoft }}>저장 중...</span>}
             <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>닫기</button>
           </div>
           <div style={{ fontSize: 12.5, color: T.inkSoft, margin: "6px 0 10px", lineHeight: 1.65 }}>
-            상품마다 <b>집계 여부 · 1편/2편 · 상온/냉장</b>을 정해요. 누르는 즉시 저장되고 집계 표·엑셀에 바로 반영돼요 (다른 PC도 몇 초 안에 반영).
-            피킹지·거래명세서에는 영향 없어요. <b>자동</b> = 상품명 끝 숫자(1/2)와 냉장 목록으로 정한 값, <b>공급사</b>/<b>상품</b> = 직원이 정한 값.
+            상품마다 <b>집계 여부 · 1편/2편{ch.showTemp ? " · 상온/냉장" : ""}</b>을 정해요. 누르는 즉시 저장되고 집계 표·엑셀에 바로 반영돼요 (다른 PC도 몇 초 안에 반영).
+            피킹지·거래명세서에는 영향 없어요. <b>자동</b> = {ch.label === "이마트" ? "이마트 편수리스트(공급사별 1편/2편)로 정한 값" : ch.showTemp ? "상품명 끝 숫자(1/2)와 냉장 목록으로 정한 값" : "상품명 끝 숫자(1/2)로 정한 값"}, <b>공급사</b>/<b>상품</b> = 직원이 정한 값. 이 창에는 {ch.label} 상품만 나와요.
           </div>
           <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${T.border}` }}>
             {[
@@ -5701,7 +5738,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
                   {[
                     ["count", ["exclude", "include"]],
                     ["part", ["p1", "p2"]],
-                    ["temp", ["normal", "cold"]],
+                    ...(ch.showTemp ? [["temp", ["normal", "cold"]]] : []),
                   ].map(([g, opts]) => (
                     <span key={g} style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
                       {opts.map((a) => {
@@ -5722,7 +5759,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
                 <table style={{ borderCollapse: "collapse", width: "100%" }}>
                   <thead style={{ position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 }}>
                     <tr>
-                      {["", "공급사", "상품명", `${baseDate.slice(5).replace("-", "/")} 수량`, "집계", "편", "온도"].map((h, i) => (
+                      {["", "공급사", "상품명", `${baseDate.slice(5).replace("-", "/")} 수량`, "집계", "편", ...(ch.showTemp ? ["온도"] : [])].map((h, i) => (
                         <th key={i} style={{ ...cell, textAlign: i === 3 ? "right" : "left", fontWeight: 700 }}>
                           {h}
                         </th>
@@ -5731,7 +5768,7 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
                   </thead>
                   <tbody>
                     {shown.map((x) => {
-                      const c = classifyDaily(rules, baseDate, x.raw);
+                      const c = classifyDaily(rules, baseDate, x.raw, baseOf(x.raw));
                       const nw = isNew(x);
                       return (
                         <tr key={x.key} style={{ background: nw ? "#FFF8E1" : c.excluded ? "#FAFAFA" : "#fff" }}>
@@ -5754,9 +5791,11 @@ function DailySettingsModal({ days, rulesSaved, rules, authToken, onClose }) {
                           <td style={cell}>
                             <Seg options={["p1", "p2"]} value={c.part === 2 ? "p2" : "p1"} src={c.src.part} onPick={(a) => setRule("product", x, a)} />
                           </td>
-                          <td style={cell}>
-                            <Seg options={["normal", "cold"]} value={c.cold ? "cold" : "normal"} src={c.src.temp} onPick={(a) => setRule("product", x, a)} />
-                          </td>
+                          {ch.showTemp && (
+                            <td style={cell}>
+                              <Seg options={["normal", "cold"]} value={c.cold ? "cold" : "normal"} src={c.src.temp} onPick={(a) => setRule("product", x, a)} />
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
