@@ -5981,6 +5981,29 @@ function evalFormula(formula, ctx) {
   const ws = () => {
     while (s[i] === " ") i++;
   };
+  // 비교 (=, <>, <, >, <=, >=) - IF(Q13=0,...) 같은 수식용
+  function parseCmp() {
+    let v = parseExpr();
+    ws();
+    const m = /^(<=|>=|<>|=|<|>)/.exec(s.slice(i));
+    if (!m) return v;
+    i += m[0].length;
+    const b = parseExpr();
+    let x = scalar(v), y = scalar(b);
+    if (isErr(x)) return x;
+    if (isErr(y)) return y;
+    if (x == null) x = typeof y === "string" ? "" : 0;
+    if (y == null) y = typeof x === "string" ? "" : 0;
+    if (typeof x === "string" && typeof y === "number" && x === "") x = 0;
+    if (typeof y === "string" && typeof x === "number" && y === "") y = 0;
+    const op = m[0];
+    if (op === "=") return x === y || String(x) === String(y);
+    if (op === "<>") return !(x === y || String(x) === String(y));
+    if (op === "<") return x < y;
+    if (op === ">") return x > y;
+    if (op === "<=") return x <= y;
+    return x >= y;
+  }
   function parseExpr() {
     let v = parseTerm();
     ws();
@@ -6034,7 +6057,7 @@ function evalFormula(formula, ctx) {
     }
     if (s[i] === "(") {
       i++;
-      const v = parseExpr();
+      const v = parseCmp();
       ws();
       i++; // )
       return v;
@@ -6090,7 +6113,7 @@ function evalFormula(formula, ctx) {
       ws();
       if (s[i] !== ")") {
         for (;;) {
-          args.push(parseExpr());
+          args.push(parseCmp());
           ws();
           if (s[i] === ",") { i++; continue; }
           break;
@@ -6126,6 +6149,28 @@ function evalFormula(formula, ctx) {
       }
       case "TODAY":
         return ctx.today;
+      case "IF": {
+        const c = scalar(args[0]);
+        if (isErr(c)) return c;
+        const t = typeof c === "string" ? c !== "" : !!c;
+        return t ? (args.length > 1 ? scalar(args[1]) : true) : args.length > 2 ? scalar(args[2]) : false;
+      }
+      case "OR": {
+        for (const a of args) {
+          const v = scalar(a);
+          if (isErr(v)) return v;
+          if (v) return true;
+        }
+        return false;
+      }
+      case "AND": {
+        for (const a of args) {
+          const v = scalar(a);
+          if (isErr(v)) return v;
+          if (!v) return false;
+        }
+        return true;
+      }
       case "ROUNDDOWN": {
         const v = num(args[0]);
         if (isErr(v)) return v;
@@ -6174,7 +6219,7 @@ function evalFormula(formula, ctx) {
     }
   }
   try {
-    const v = parseExpr();
+    const v = parseCmp();
     return scalar(v);
   } catch (e) {
     return XLERR("#VALUE!");
@@ -6845,6 +6890,516 @@ async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts 
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   return report;
+}
+
+/* ================= 이마트24 거래명세서 (실물 엑셀 "이마트24 거래명세서" 파일을 그대로 템플릿으로) ================= */
+// 템플릿 구조: 공급사마다 [피벗 시트] + [센터별 명세서 시트들]. 명세서 B1 = 센터명(예: 원주2(저온)), Q열 = VLOOKUP(B1, 피벗, k) 수량,
+// E열 = 상품명, M열 = 입수, AA열 = 소비기한(날짜 글자 또는 =$B$13+일수), B13 = 명세서 날짜, V4/V6/AD6/V8/V10/AD10 = 공급자 사업자 정보.
+// 그날 발주로 피벗을 다시 쓰고, 날짜·소비기한을 그날 기준으로 바꾸고, 발주 있는 공급사·고른 센터 시트만 남긴다.
+// 시트 순서·탭 색·서식·인쇄 설정은 원본 그대로. 설정(invoice_settings_emart)은 GS 거래명세서 설정과 완전히 따로 저장된다.
+const EMART_INVOICE_TEMPLATE_URL = "emart24_invoice_template.xlsx";
+async function getEmartInvoiceTemplateBuffer() {
+  const res = await fetch(EMART_INVOICE_TEMPLATE_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error("이마트 거래명세서 템플릿 파일을 불러오지 못했어요 (emart24_invoice_template.xlsx). 데모 폴더에 이 파일도 같이 올렸는지 확인해주세요.");
+  return res.arrayBuffer();
+}
+// 피벗 시트 이름 -> 공급사 이름 (설정 저장 키). 예: "탭스푸드피벗발주량 (2)" -> "탭스푸드", "대광피벗(재고)" -> "대광"
+const emartInvSupplierOfPivot = (name) =>
+  String(name || "")
+    .replace(/\s*\(\d+\)\s*$/, "")
+    .replace(/\(재고\)/g, "")
+    .replace(/\s*피벗.*$/, "")
+    .replace(/발주량\s*$/, "")
+    .trim() || String(name || "");
+const EM_INV_INFO_CELLS = { regNo: "V4", name: "V6", ceo: "AD6", address: "V8", bizType: "V10", bizItem: "AD10" };
+const xlSerialOf = (ymd) => {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+};
+const ymdOfSerial = (n) => new Date(Date.UTC(1899, 11, 30) + n * 86400000).toISOString().slice(0, 10);
+// "26.11.08" -> 엑셀 날짜 번호
+function emInvParseDot(t) {
+  const m = /^(\d{2})\.(\d{1,2})\.(\d{1,2})/.exec(String(t || "").trim());
+  if (!m) return null;
+  return xlSerialOf(`20${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`);
+}
+const emInvDot = (serial) => {
+  const d = ymdOfSerial(serial);
+  return `${d.slice(2, 4)}.${d.slice(5, 7)}.${d.slice(8, 10)}`;
+};
+
+function analyzeEmartInvoiceTemplate(tpl) {
+  tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
+  // 템플릿 기준 날짜: B13에 날짜가 직접 적힌 시트 (보통 대광 "원주(날짜변경!!)")
+  let baseSerial = null;
+  for (const s of tpl.sheets) {
+    const c = s.cells.get("B13");
+    if (c && !c.f && typeof c.v === "number" && c.v > 40000) {
+      baseSerial = c.v;
+      break;
+    }
+  }
+  const sheets = []; // 명세서 시트
+  tpl.sheets.forEach((s) => {
+    let pivot = null;
+    const rows = [];
+    const seenK = new Set();
+    for (let r = 13; r <= Math.min(s.maxRow, 40); r++) {
+      const q = s.cells.get("Q" + r);
+      if (!q || !q.f) continue;
+      const m = /VLOOKUP\(\$?B\$?1,\s*('(?:[^']|'')*'|[^!,]+)!.*?,(\d+),/.exec(q.f);
+      if (!m) continue;
+      const pv = m[1].replace(/^'|'$/g, "").replace(/''/g, "'");
+      if (!byName.has(pv)) continue;
+      const e = s.cells.get("E" + r);
+      if (!e || e.f || typeof e.v !== "string" || !e.v.trim()) continue; // 아래쪽(공급자 보관용)은 위 칸을 참조
+      const k = Number(m[2]);
+      if (seenK.has(k)) continue;
+      seenK.add(k);
+      pivot = pivot || pv;
+      const mm = s.cells.get("M" + r);
+      const aa = s.cells.get("AA" + r);
+      rows.push({ r, k, name: e.v.replace(/\s*\n\s*/g, "").trim(), pack: mm && typeof mm.v === "number" ? mm.v : 0, aa: aa ? { f: aa.f, v: aa.v } : null });
+    }
+    if (!pivot) return;
+    const b1 = s.cells.get("B1");
+    const b13 = s.cells.get("B13");
+    const off = b13 && b13.f ? Number((/\+(\d+)\s*$/.exec(b13.f) || [])[1] || 0) : 0;
+    sheets.push({ name: s.name, pivot, center: b1 && typeof b1.v === "string" ? b1.v.trim() : "", rows, b13Offset: off });
+  });
+  // 공급사(피벗)별 정리
+  const pivots = new Map();
+  sheets.forEach((sh) => {
+    const p = pivots.get(sh.pivot) || { pivot: sh.pivot, supplier: emartInvSupplierOfPivot(sh.pivot), sheets: [], products: new Map(), info: {} };
+    p.sheets.push(sh);
+    sh.rows.forEach((row) => {
+      if (p.products.has(row.k)) return;
+      let expiry = null;
+      if (row.aa && row.aa.f) {
+        const m = /\$?B\$?13\+(\d+)/.exec(row.aa.f);
+        if (m) expiry = Number(m[1]);
+      }
+      // 글자로 적힌 소비기한(예: "26.11.08")은 직원이 정한 고정 날짜로 보고 그대로 둔다 (설정에서 일수를 넣으면 그때부터 자동 계산)
+      const expiryText = row.aa && !row.aa.f && typeof row.aa.v === "string" ? row.aa.v.trim() : "";
+      p.products.set(row.k, { k: row.k, name: row.name, pack: row.pack, expiry, expiryText });
+    });
+    if (!Object.keys(p.info).length) {
+      const s = byName.get(sh.name);
+      Object.entries(EM_INV_INFO_CELLS).forEach(([key, ref]) => {
+        const c = s.cells.get(ref);
+        if (c && !c.f && c.v != null && String(c.v).trim()) p.info[key] = String(c.v).trim();
+      });
+    }
+    pivots.set(sh.pivot, p);
+  });
+  // 피벗 머리글(2행)도 상품 이름 후보로
+  pivots.forEach((p) => {
+    const pv = byName.get(p.pivot);
+    p.products.forEach((prod) => {
+      const h = pv && pv.cells.get(numToCol(prod.k) + "2");
+      prod.keys = [emartNorm(prod.name)];
+      if (h && typeof h.v === "string" && h.v.trim()) prod.keys.push(emartNorm(h.v));
+    });
+  });
+  const order = tpl.sheets.map((s) => s.name);
+  tpl.inv = { baseSerial, sheets, pivots: Array.from(pivots.values()).sort((a, b) => order.indexOf(a.pivot) - order.indexOf(b.pivot)) };
+  return tpl;
+}
+function matchEmartInvoiceProduct(inv, name) {
+  const n = emartNorm(name);
+  for (const p of inv.pivots) for (const prod of p.products.values()) if (prod.keys.includes(n)) return { pivot: p, prod };
+  for (const p of inv.pivots)
+    for (const prod of p.products.values()) if (prod.keys.some((k) => k.length >= 8 && (n.startsWith(k) || k.startsWith(n)))) return { pivot: p, prod };
+  return null;
+}
+// 화면용 템플릿 정보 (한 번만)
+let EMART_INV_INFO_CACHE = null;
+async function getEmartInvoiceTemplateInfo() {
+  if (!EMART_INV_INFO_CACHE)
+    EMART_INV_INFO_CACHE = getEmartInvoiceTemplateBuffer()
+      .then((b) => loadEmartTemplate(b))
+      .then((t) => analyzeEmartInvoiceTemplate(t))
+      .catch((e) => {
+        EMART_INV_INFO_CACHE = null;
+        throw e;
+      });
+  return EMART_INV_INFO_CACHE;
+}
+function useEmartInvTplInfo() {
+  const [info, setInfo] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    getEmartInvoiceTemplateInfo()
+      .then(setInfo)
+      .catch((e) => setErr(e.message));
+  }, []);
+  return [info, err];
+}
+// 그날 발주 -> 공급사(피벗)별 { qty: {센터: n}, byK: {k: {센터: n}} }, 템플릿에 없는 상품 목록
+function emartInvoicePlan(inv, rows, settings) {
+  const per = new Map();
+  const unknown = new Map();
+  rows.forEach((r) => {
+    const hit = matchEmartInvoiceProduct(inv, r.name);
+    if (!hit) {
+      const u = unknown.get(r.name) || { name: r.name, vendor: emartVendorKey(r.vendor), qty: 0 };
+      u.qty += r.qty;
+      unknown.set(r.name, u);
+      return;
+    }
+    const x = per.get(hit.pivot.pivot) || { pivot: hit.pivot, byK: {}, centerQty: {}, total: 0 };
+    const kq = (x.byK[hit.prod.k] = x.byK[hit.prod.k] || {});
+    kq[r.center] = (kq[r.center] || 0) + r.qty;
+    x.centerQty[r.center] = (x.centerQty[r.center] || 0) + r.qty;
+    x.total += r.qty;
+    per.set(hit.pivot.pivot, x);
+  });
+  const sup = (settings && settings.suppliers) || {};
+  const list = inv.pivots.map((p) => {
+    const x = per.get(p.pivot) || { pivot: p, byK: {}, centerQty: {}, total: 0 };
+    const s = sup[p.supplier] || {};
+    const tplCenters = Array.from(new Set(p.sheets.map((sh) => sh.center)));
+    const selected = s.centers && s.centers.mode === "selected" ? s.centers.list || [] : null;
+    const centers = selected ? selected : tplCenters.filter((c) => (x.centerQty[c] || 0) > 0);
+    return { ...x, supplier: p.supplier, settings: s, tplCenters, centers, selectedMode: !!selected, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
+  });
+  return { list, unknown: Array.from(unknown.values()) };
+}
+
+async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settings, onlySuppliers) {
+  const tpl = analyzeEmartInvoiceTemplate(await loadEmartTemplate(templateBuffer));
+  const inv = tpl.inv;
+  tpl.newParts = [];
+  tpl.definedNames = Array.from(tpl.wbXml.getElementsByTagName("definedName")).map((el) => {
+    const id = el.getAttribute("localSheetId");
+    return { el, sheet: id != null && tpl.sheets[Number(id)] ? tpl.sheets[Number(id)].name : null };
+  });
+  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
+  const plan = emartInvoicePlan(inv, orderRows, settings);
+  const dateSerial = xlSerialOf(date);
+  const keep = new Set();
+  const report = { suppliers: [], unknown: plan.unknown, missingCenters: [] };
+
+  plan.list.forEach((x) => {
+    const p = x.pivot;
+    const active = x.total > 0 || x.selectedMode;
+    if (!active || (onlySuppliers && !onlySuppliers.includes(p.supplier))) return;
+    // 1) 피벗 다시 쓰기 (템플릿 상품 열 그대로, 수량만 그날 값)
+    const pv = byName.get(p.pivot);
+    const cols = Array.from(p.products.values()).map((prod) => {
+      const h = pv.cells.get(numToCol(prod.k) + "2");
+      return { k: prod.k, header: h && typeof h.v === "string" && h.v.trim() ? h.v : prod.name, qty: x.byK[prod.k] || {} };
+    });
+    const regs = [...EMART_STD_REGIONS, ...Object.keys(x.centerQty).filter((c) => !EMART_STD_REGIONS.includes(c))];
+    rewritePivot(pv, date, cols, regs, Math.max(...cols.map((c) => c.k)));
+    keep.add(p.pivot);
+    const s = x.settings || {};
+    const ps = s.products || {};
+    // 2) 고른 센터 명세서 시트
+    const centerSet = new Set(x.centers);
+    let kept = 0;
+    p.sheets.forEach((sh) => {
+      if (!centerSet.has(sh.center)) return;
+      keep.add(sh.name);
+      kept++;
+      const ws = byName.get(sh.name);
+      const sheetSerial = dateSerial + (sh.b13Offset || 0);
+      // 날짜 (다른 시트 참조 대신 그날 날짜를 직접)
+      setCellXml(ws, "B13", sheetSerial);
+      sh.rows.forEach((row) => {
+        const prod = p.products.get(row.k);
+        const o = ps[prod.name] || ps[row.name] || {};
+        if (o.displayName) setCellXml(ws, "E" + row.r, o.displayName);
+        if (o.packQty > 0) setCellXml(ws, "M" + row.r, Number(o.packQty));
+        // 소비기한: 설정값(일수 = 명세서 날짜 + 일수 / "26.11.08" 같은 글자 = 그 날짜 고정) > 원본 파일 값 그대로
+        const aa = row.aa;
+        const ov = o.expiryDays;
+        if (ov == null || ov === "") return;
+        const ref = "AA" + row.r;
+        const c = ws.cells.get(ref);
+        if (typeof ov === "string" && /\./.test(ov)) {
+          if (c) {
+            const fEl = c.el.getElementsByTagName("f")[0];
+            if (fEl) c.el.removeChild(fEl);
+          }
+          setCellXml(ws, ref, ov);
+          return;
+        }
+        const days = Number(ov);
+        if (!Number.isFinite(days)) return;
+        const fEl = c && c.el.getElementsByTagName("f")[0];
+        if (aa && aa.f && fEl && /\$?B\$?13\+\d+/.test(aa.f)) fEl.textContent = aa.f.replace(/(\$?B\$?13\+)\d+/, `$1${days}`);
+        else {
+          if (fEl) c.el.removeChild(fEl);
+          setCellXml(ws, ref, emInvDot(sheetSerial + days)); // 원본처럼 "26.11.08" 모양 글자로
+        }
+      });
+      // 공급자 사업자 정보 (설정에서 바꾼 경우만)
+      const info = s.info || {};
+      Object.entries(EM_INV_INFO_CELLS).forEach(([key, ref]) => info[key] && setCellXml(ws, ref, info[key]));
+      if (info.agent) {
+        for (let r = 18; r <= 30; r++) {
+          const c = ws.cells.get("B" + r);
+          if (c && !c.f && typeof c.v === "string" && /3자물류|담당자/.test(c.v)) {
+            setCellXml(ws, "B" + r, info.agent);
+            break;
+          }
+        }
+      }
+    });
+    x.missingCenters.forEach((c) => report.missingCenters.push({ supplier: p.supplier, center: c }));
+    report.suppliers.push({ supplier: p.supplier, total: x.total, sheets: kept });
+  });
+  if (keep.size === 0) throw new Error("이 날짜에 거래명세서로 나갈 이마트 발주가 없어요.");
+
+  // 3) 수식 결과값 다시 계산해서 넣기 (엑셀을 안 열고 미리보기해도 숫자가 보이게)
+  tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+  const byName2 = new Map(tpl.sheets.map((s) => [s.name, s]));
+  const cache = new Map();
+  const ctx = {
+    today: dateSerial,
+    hasSheet: (n) => byName2.has(n),
+    maxRow: (n) => (byName2.get(n) ? byName2.get(n).maxRow : 0),
+    cell(sheetName, c, r) {
+      const s = byName2.get(sheetName);
+      if (!s) return XLERR("#REF!");
+      const ref = numToCol(c) + r;
+      const key = sheetName + "!" + ref;
+      if (cache.has(key)) return cache.get(key);
+      const cell = s.cells.get(ref);
+      if (!cell) return null;
+      if (!cell.f) return cell.v;
+      cache.set(key, XLERR("#CIRC"));
+      const v = evalFormula(cell.f, { ...ctx, sheet: sheetName });
+      cache.set(key, v);
+      return v;
+    },
+  };
+  tpl.sheets.forEach((s) => {
+    if (!keep.has(s.name)) return;
+    s.cells.forEach((cell, ref) => {
+      if (!cell.f) return;
+      const pp = splitRef(ref);
+      const v = ctx.cell(s.name, pp.c, pp.r);
+      if (isErr(v) && v.err === "#CIRC") return;
+      writeCachedValue(s.doc, cell.el, v);
+    });
+  });
+
+  // 4) 안 쓰는 시트 지우기
+  let ct = await tpl.zip.file("[Content_Types].xml").async("string");
+  for (const sh of tpl.sheets.filter((x) => !keep.has(x.name))) {
+    const relPath = sh.path.replace("worksheets/", "worksheets/_rels/") + ".rels";
+    if (tpl.zip.file(relPath)) {
+      const rels = await tpl.zip.file(relPath).async("string");
+      const dm = /Target="\.\.\/drawings\/(drawing\d+\.xml)"/.exec(rels);
+      if (dm) {
+        tpl.zip.remove(`xl/drawings/${dm[1]}`);
+        tpl.zip.remove(`xl/drawings/_rels/${dm[1]}.rels`);
+        ct = ct.replace(new RegExp(`<Override PartName="/xl/drawings/${dm[1].replace(".", "\\.")}"[^>]*/>`), "");
+      }
+      const pm = /Target="\.\.\/printerSettings\/(printerSettings\d+\.bin)"/.exec(rels);
+      if (pm) tpl.zip.remove(`xl/printerSettings/${pm[1]}`);
+      tpl.zip.remove(relPath);
+    }
+    tpl.zip.remove(sh.path);
+    ct = ct.replace(new RegExp(`<Override PartName="/${sh.path.replace(".", "\\.")}"[^>]*/>`), "");
+    const rid = sh.el.getAttribute("r:id") || sh.el.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+    Array.from(tpl.relsXml.getElementsByTagName("Relationship"))
+      .filter((r) => r.getAttribute("Id") === rid)
+      .forEach((r) => r.parentNode.removeChild(r));
+    sh.el.parentNode.removeChild(sh.el);
+  }
+  tpl.sheets = tpl.sheets.filter((x) => keep.has(x.name));
+  tpl.zip.file("[Content_Types].xml", ct);
+  // 숨김 시트였던 공급사(뚠뚠·가메골 등)도 발주가 있으면 보이게
+  tpl.sheets.forEach((s) => s.el.removeAttribute("state"));
+  if (tpl.zip.file("docProps/app.xml")) {
+    let app = await tpl.zip.file("docProps/app.xml").async("string");
+    app = app.replace(/<HeadingPairs>[\s\S]*?<\/HeadingPairs>/, "").replace(/<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/, "");
+    tpl.zip.file("docProps/app.xml", app);
+  }
+  const finalOrder = Array.from(tpl.wbXml.getElementsByTagName("sheet")).map((el) => el.getAttribute("name"));
+  (tpl.definedNames || []).forEach((d) => {
+    if (d.sheet == null) return;
+    const idx = finalOrder.indexOf(d.sheet);
+    if (idx === -1) {
+      if (d.el.parentNode) d.el.parentNode.removeChild(d.el);
+    } else d.el.setAttribute("localSheetId", String(idx));
+  });
+  const dnWrap = tpl.wbXml.getElementsByTagName("definedNames")[0];
+  if (dnWrap && dnWrap.getElementsByTagName("definedName").length === 0) dnWrap.parentNode.removeChild(dnWrap);
+  const wv = tpl.wbXml.getElementsByTagName("workbookView")[0];
+  if (wv) {
+    wv.setAttribute("activeTab", "0");
+    wv.setAttribute("firstSheet", "0");
+  }
+  const sheetByName = new Map(tpl.sheets.map((x) => [x.name, x]));
+  finalOrder.forEach((n, i) => {
+    const sh = sheetByName.get(n);
+    if (sh) Array.from(sh.doc.getElementsByTagName("sheetView")).forEach((v) => (i === 0 ? v.setAttribute("tabSelected", "1") : v.removeAttribute("tabSelected")));
+  });
+  // 5) 저장
+  const ser = new XMLSerializer();
+  const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+  const out = (doc) => {
+    const x2 = ser.serializeToString(doc);
+    return x2.startsWith("<?xml") ? x2 : XML_DECL + x2;
+  };
+  tpl.sheets.forEach((s) => xmlSetSheetZoom(s.doc));
+  tpl.sheets.forEach((s) => tpl.zip.file(s.path, out(s.doc)));
+  const calc = tpl.wbXml.getElementsByTagName("calcPr")[0];
+  if (calc) calc.setAttribute("fullCalcOnLoad", "1");
+  tpl.zip.file("xl/workbook.xml", out(tpl.wbXml));
+  tpl.zip.file("xl/_rels/workbook.xml.rels", out(tpl.relsXml));
+  if (tpl.zip.file("xl/calcChain.xml")) {
+    tpl.zip.remove("xl/calcChain.xml");
+    let ct2 = await tpl.zip.file("[Content_Types].xml").async("string");
+    ct2 = ct2.replace(/<Override PartName="\/xl\/calcChain\.xml"[^>]*\/>/, "");
+    tpl.zip.file("[Content_Types].xml", ct2);
+  }
+  report.sheetCount = finalOrder.length;
+  const bytes = await tpl.zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  return { bytes, report };
+}
+async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers) {
+  const buf = await getEmartInvoiceTemplateBuffer();
+  const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers);
+  const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const one = onlySuppliers && onlySuppliers.length === 1 ? `_${onlySuppliers[0].replace(/[\\/:*?"<>|]/g, "")}` : "";
+  a.download = `이마트24_거래명세서${one}_${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return report;
+}
+
+// ---------- 화면: 이마트 거래명세서 ----------
+function EmartInvoiceView({ emartOrders, authToken }) {
+  const [inv, tplErr] = useEmartInvTplInfo();
+  const dates = useMemo(() => Array.from(new Set(emartOrders.map((o) => o.createdAt).filter(Boolean))).sort().reverse(), [emartOrders]);
+  const [date, setDate] = useState(dates[0] || "");
+  useEffect(() => {
+    if (!date && dates[0]) setDate(dates[0]);
+  }, [dates]); // eslint-disable-line
+  const settings = useSetting(brandSettingKey("invoice_settings", "EMART"), authToken);
+  const rows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === date)), [emartOrders, date]);
+  const plan = useMemo(() => (inv && inv.inv ? emartInvoicePlan(inv.inv, rows, settings) : null), [inv, rows, settings]);
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+  const [setOpen, setSetOpen] = useState(false);
+  // 설정 창용 목록: 템플릿의 모든 공급사·상품(기본 입수·소비기한)·센터 + 사업자 정보 기본값
+  const detected = useMemo(
+    () =>
+      inv && inv.inv
+        ? inv.inv.pivots.map((p) => ({
+            key: p.supplier,
+            products: Array.from(p.products.values()).map((x) => ({ name: x.name, pack: x.pack, expiry: x.expiry, expiryText: x.expiryText })),
+            centers: Array.from(new Set(p.sheets.map((s) => s.center))),
+            info: p.info,
+          }))
+        : [],
+    [inv]
+  );
+  const run = async (key, only) => {
+    setBusy(key);
+    setMsg("");
+    try {
+      const rep = await downloadEmartInvoiceFile(rows, date, settings, only);
+      const miss = rep.missingCenters.length ? ` · 템플릿에 시트가 없는 센터: ${rep.missingCenters.map((m) => `${m.supplier} ${m.center}`).join(", ")}` : "";
+      setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${miss}`);
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+  const nf = (v) => (v ? v.toLocaleString() : "-");
+  const active = plan ? plan.list.filter((x) => x.total > 0 || x.selectedMode) : [];
+  return (
+    <div>
+      <PageHeader
+        title="거래명세서 · 이마트"
+        sub="실물 이마트24 거래명세서 파일 그대로 만들어요. 공급사마다 피벗 + 센터별 명세서, 시트 순서·탭 색도 원본과 같아요. 설정은 GS와 따로 저장돼요."
+        action={
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="no-print" onClick={() => setSetOpen(true)} style={settingBtnStyle} title="이마트 공급사 사업자 정보·발행 센터·상품(입수·소비기한) 설정">
+              <SettingsGear size={15} /> 거래명세서 설정
+            </button>
+            <button onClick={() => run("all", null)} disabled={!!busy || !active.length} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !active.length ? 0.55 : 1 }}>
+              <Download size={15} /> {busy === "all" ? "만드는 중..." : "전체 엑셀 다운로드"}
+            </button>
+          </div>
+        }
+      />
+      {setOpen && <BrandInvoiceSettingsModal brand="EMART" label="이마트" authToken={authToken} detected={detected} onClose={() => setSetOpen(false)} />}
+      <div style={{ ...cardStyle, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)}>
+          {dates.length === 0 && <option value="">이마트 발주 없음</option>}
+          {dates.map((d) => (
+            <option key={d} value={d}>
+              {d} ({gsWeekday(d)})
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 12.5, color: T.inkSoft }}>{plan ? `명세서 나갈 공급사 ${active.length}곳` : tplErr || "템플릿 불러오는 중..."}</span>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("다운로드") ? T.teal : T.danger }}>{msg}</span>}
+      </div>
+      {plan && plan.unknown.length > 0 && (
+        <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: T.amber, background: "#FFF8E8", fontSize: 12.5 }}>
+          <b>명세서 템플릿에 없는 상품 {plan.unknown.length}개</b> (이 상품들은 명세서에 안 나가요. 신제품이면 템플릿 파일에 줄을 추가해야 해요):{" "}
+          {plan.unknown.map((u) => `${u.name}(${u.vendor} ${u.qty.toLocaleString()})`).join(", ")}
+        </div>
+      )}
+      <div style={{ ...cardStyle, padding: 0, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "#F7F6F2" }}>
+              {["공급사", "총수량", "발행 센터", "", ""].map((h, i) => (
+                <th key={i} style={{ padding: "9px 12px", textAlign: i === 1 ? "right" : "left", borderBottom: `1px solid ${T.border}` }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(plan ? plan.list : []).map((x) => {
+              const on = x.total > 0 || x.selectedMode;
+              return (
+                <tr key={x.pivot.pivot} style={{ opacity: on ? 1 : 0.45, borderBottom: `1px solid ${T.border}` }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 700 }}>{x.supplier}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{nf(x.total)}</td>
+                  <td style={{ padding: "8px 12px", fontSize: 12, color: T.inkSoft }}>
+                    {on ? `${x.centers.length}곳${x.selectedMode ? " (설정에서 고른 센터)" : ""} · ${x.centers.map((c) => c.replace(/\(.*\)$/, "")).join(", ")}` : "발주 없음"}
+                  </td>
+                  <td style={{ padding: "8px 12px", fontSize: 11.5, color: T.inkSoft }}>{x.settings && Object.keys(x.settings).length ? "설정 있음" : ""}</td>
+                  <td style={{ padding: "6px 12px", textAlign: "right" }}>
+                    {on && (
+                      <button disabled={!!busy} onClick={() => run(x.supplier, [x.supplier])} style={{ ...smallBtnStyle, padding: "5px 10px", fontSize: 12 }}>
+                        <Download size={13} /> {busy === x.supplier ? "만드는 중..." : "이 공급사만"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {!plan && (
+              <tr>
+                <td colSpan={5} style={{ padding: 24, textAlign: "center", color: tplErr ? T.danger : T.inkSoft }}>
+                  {tplErr || "템플릿 불러오는 중..."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 // 저장된 이마트 발주(orders, channel "EMART") -> 피킹지 엔진이 쓰는 줄 형식
@@ -7731,7 +8286,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
   const supplierKeys = Array.from(new Set([...detected.map((d) => d.key), ...Object.keys(savedSup), ...extraSup]));
   const [selKey, setSelKey] = useState(null);
   const cur = selKey && supplierKeys.includes(selKey) ? selKey : supplierKeys[0] || null;
-  const det = detected.find((d) => d.key === cur) || { products: [], centers: [] };
+  const det = detected.find((d) => d.key === cur) || { products: [], centers: [], info: {} };
   const [tab, setTab] = useState("info");
   const [form, setForm] = useState(null);
   const [dirty, setDirty] = useState(false);
@@ -7784,8 +8339,10 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
         o.packQty = Number(v.packQty);
       }
       if (String(v.expiryDays ?? "").trim() !== "") {
-        if (!Number.isFinite(Number(v.expiryDays))) return setMsg(`"${n}" 소비기한은 숫자(일수)로 넣어주세요.`);
-        o.expiryDays = Number(v.expiryDays);
+        const ev = String(v.expiryDays).trim();
+        if (/^\d{2}\.\d{1,2}\.\d{1,2}/.test(ev)) o.expiryDays = ev; // 고정 날짜 글자 (예: 26.11.08)
+        else if (!Number.isFinite(Number(ev))) return setMsg(`"${n}" 소비기한은 일수(숫자) 또는 26.11.08 같은 날짜로 넣어주세요.`);
+        else o.expiryDays = Number(ev);
       }
       if (Object.keys(o).length) prods[n] = o;
     }
@@ -7882,9 +8439,9 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                       <div key={f.key} style={{ gridColumn: f.key === "address" || f.multiline ? "1 / -1" : "auto" }}>
                         <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>{f.label}</div>
                         {f.multiline ? (
-                          <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                          <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} value={form.info[f.key]} placeholder={(det.info && det.info[f.key]) || ""} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
                         ) : (
-                          <input style={{ ...inputStyle, width: "100%" }} value={form.info[f.key]} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
+                          <input style={{ ...inputStyle, width: "100%" }} value={form.info[f.key]} placeholder={(det.info && det.info[f.key]) || ""} onChange={(e) => upd((n) => (n.info[f.key] = e.target.value))} />
                         )}
                       </div>
                     ))}
@@ -7936,7 +8493,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                 )}
                 {tab === "products" && (
                   <div>
-                    <div style={{ ...hint, marginTop: 0, marginBottom: 10 }}>비워두면 기본값(회색 글씨)을 써요. 여기서 바꾼 상품명·입수는 거래명세서에만 적용돼요.</div>
+                    <div style={{ ...hint, marginTop: 0, marginBottom: 10 }}>비워두면 기본값(회색 글씨, 명세서 원본 파일 값)을 써요. 소비기한에 숫자(예: 30)를 넣으면 명세서 날짜 + 30일로 매일 자동 계산, 26.11.08처럼 날짜를 넣으면 그 날짜로 고정돼요. 여기서 바꾼 상품명·입수·소비기한은 거래명세서에만 적용돼요.</div>
                     {productList.length === 0 ? (
                       <EmptyRow text="이 공급사 상품 발주가 아직 없어요." />
                     ) : (
@@ -7945,7 +8502,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                           <tr>
                             <th>명세서 상품명</th>
                             <th style={{ width: 96, textAlign: "center" }}>입수</th>
-                            <th style={{ width: 116, textAlign: "center" }}>소비기한 (+일)</th>
+                            <th style={{ width: 130, textAlign: "center" }}>소비기한 (+일 또는 날짜)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -7958,7 +8515,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                                 <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} type="number" min="1" value={pv(p.name, "packQty")} placeholder={p.pack ? String(p.pack) : "-"} onChange={(e) => setPv(p.name, "packQty", e.target.value)} />
                               </td>
                               <td>
-                                <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} type="number" value={pv(p.name, "expiryDays")} placeholder="공란" onChange={(e) => setPv(p.name, "expiryDays", e.target.value)} />
+                                <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} value={pv(p.name, "expiryDays")} type="text" placeholder={p.expiry != null ? `${p.expiry}일` : p.expiryText ? p.expiryText : "공란"} title="숫자 = 명세서 날짜 + 그 일수 (매일 자동), 26.11.08 처럼 쓰면 그 날짜로 고정" onChange={(e) => setPv(p.name, "expiryDays", e.target.value)} />
                               </td>
                             </tr>
                           ))}
@@ -8694,7 +9251,7 @@ function InvoiceCenter({ channel, onChannel, gsView, emartOrders, authToken }) {
       channel={channel}
       onChannel={onChannel}
       title="거래명세서"
-      renderReady={(c) => (c === "gs" ? gsView : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartInvoiceView emartOrders={emartOrders} authToken={authToken} /> : null)}
       placeholderAction={(ch) => <BrandInvoiceSettingsButton ch={ch} authToken={authToken} detected={ch.brand === "EMART" ? emartDet : []} />}
     />
   );
