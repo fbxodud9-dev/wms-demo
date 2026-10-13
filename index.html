@@ -6468,7 +6468,8 @@ async function cloneEmartSheet(tpl, srcName, newName, mutate) {
   // 복제본이 원본과 같은 고유번호·선택 탭 상태를 갖지 않도록
   doc.documentElement.removeAttribute("xr:uid");
   Array.from(doc.getElementsByTagName("sheetView")).forEach((v) => v.removeAttribute("tabSelected"));
-  const nums = Object.keys(tpl.zip.files).map((f) => /^xl\/worksheets\/sheet(\d+)\.xml$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
+  // 새 시트 파일 번호: zip에 있는 것 + 이번에 이미 복제한 것(아직 zip에 안 씀) 중 가장 큰 번호 + 1
+  const nums = [...Object.keys(tpl.zip.files), ...tpl.sheets.map((x) => x.path)].map((f) => /^xl\/worksheets\/sheet(\d+)\.xml$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
   const n = Math.max(...nums) + 1;
   const path = `xl/worksheets/sheet${n}.xml`;
   // 시트 rels(그림·프린터 설정)도 복제
@@ -7036,66 +7037,386 @@ function useEmartInvTplInfo() {
   }, []);
   return [info, err];
 }
-// 그날 발주 -> 공급사(피벗)별 { qty: {센터: n}, byK: {k: {센터: n}} }, 템플릿에 없는 상품 목록
+// 그날 발주 -> 공급사(피벗)별 수량. 명세서 파일에 없는 상품은 같은 거래처(또는 이름이 같은 공급사)의 블록에 새 줄로 자동 추가,
+// 명세서 파일에 아예 없는 공급사(예: 데어리젠)는 다른 공급사 블록을 복사해 새 공급사 블록을 만든다.
 function emartInvoicePlan(inv, rows, settings) {
-  const per = new Map();
-  const unknown = new Map();
+  const sup = (settings && settings.suppliers) || {};
+  const per = new Map(); // 피벗 이름 -> 집계
+  const getX = (p) => {
+    if (!per.has(p.pivot)) per.set(p.pivot, { pivot: p, byK: {}, centerQty: {}, total: 0, added: [] });
+    return per.get(p.pivot);
+  };
+  const vendorPivot = {};
+  const unknownRows = [];
   rows.forEach((r) => {
     const hit = matchEmartInvoiceProduct(inv, r.name);
-    if (!hit) {
-      const u = unknown.get(r.name) || { name: r.name, vendor: emartVendorKey(r.vendor), qty: 0 };
-      u.qty += r.qty;
-      unknown.set(r.name, u);
-      return;
-    }
-    const x = per.get(hit.pivot.pivot) || { pivot: hit.pivot, byK: {}, centerQty: {}, total: 0 };
+    if (!hit) return unknownRows.push(r);
+    vendorPivot[emartVendorKey(r.vendor)] = hit.pivot;
+    const x = getX(hit.pivot);
     const kq = (x.byK[hit.prod.k] = x.byK[hit.prod.k] || {});
     kq[r.center] = (kq[r.center] || 0) + r.qty;
     x.centerQty[r.center] = (x.centerQty[r.center] || 0) + r.qty;
     x.total += r.qty;
-    per.set(hit.pivot.pivot, x);
   });
-  const sup = (settings && settings.suppliers) || {};
-  const list = inv.pivots.map((p) => {
-    const x = per.get(p.pivot) || { pivot: p, byK: {}, centerQty: {}, total: 0 };
+  // 템플릿에 없는 상품: 공급사 찾기 (같은 거래처 상품이 있던 블록 > 이름이 겹치는 공급사 블록 > 새 공급사)
+  const nk = (s) => String(s || "").replace(/[\s()㈜]|주식회사|\(주\)/g, "").toUpperCase();
+  const newSup = new Map(); // 거래처 -> { supplier, items }
+  const addedBy = new Map(); // 피벗 -> Map(상품명 -> item)
+  unknownRows.forEach((r) => {
+    const vk = emartVendorKey(r.vendor);
+    let p = vendorPivot[vk];
+    if (!p) {
+      const v = nk(vk);
+      p = inv.pivots.find((x) => {
+        const s = nk(x.supplier);
+        return s.length >= 2 && v.length >= 2 && (v.includes(s) || s.includes(v));
+      });
+    }
+    let bucket;
+    if (p) {
+      if (!addedBy.has(p.pivot)) addedBy.set(p.pivot, new Map());
+      bucket = addedBy.get(p.pivot);
+    } else {
+      if (!newSup.has(vk)) newSup.set(vk, { supplier: vk, items: new Map() });
+      bucket = newSup.get(vk).items;
+    }
+    const it = bucket.get(r.name) || { name: r.name, vendor: vk, box: r.box || 0, qty: {}, total: 0 };
+    it.qty[r.center] = (it.qty[r.center] || 0) + r.qty;
+    it.total += r.qty;
+    if (!it.box && r.box) it.box = r.box;
+    bucket.set(r.name, it);
+  });
+  // 기존 블록에 새 상품 열(k) 붙이기
+  addedBy.forEach((items, pivotName) => {
+    const p = inv.pivots.find((x) => x.pivot === pivotName);
+    const x = getX(p);
+    let k = Math.max(1, ...Array.from(p.products.keys()));
+    items.forEach((it) => {
+      k += 1;
+      x.added.push({ ...it, k });
+      x.byK[k] = it.qty;
+      Object.entries(it.qty).forEach(([c, q]) => {
+        x.centerQty[c] = (x.centerQty[c] || 0) + q;
+        x.total += q;
+      });
+    });
+  });
+  const finish = (x, isNew) => {
+    const p = x.pivot;
     const s = sup[p.supplier] || {};
-    const tplCenters = Array.from(new Set(p.sheets.map((sh) => sh.center)));
+    const tplCenters = isNew ? [...EMART_STD_REGIONS] : Array.from(new Set(p.sheets.map((sh) => sh.center)));
     const selected = s.centers && s.centers.mode === "selected" ? s.centers.list || [] : null;
     const centers = selected ? selected : tplCenters.filter((c) => (x.centerQty[c] || 0) > 0);
-    return { ...x, supplier: p.supplier, settings: s, tplCenters, centers, selectedMode: !!selected, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
+    return { ...x, supplier: p.supplier, settings: s, tplCenters, centers, selectedMode: !!selected, isNew: !!isNew, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
+  };
+  const list = inv.pivots.map((p) => finish(per.get(p.pivot) || { pivot: p, byK: {}, centerQty: {}, total: 0, added: [] }));
+  // 명세서 파일에 없는 새 공급사
+  newSup.forEach((ns) => {
+    const x = { pivot: { pivot: null, supplier: ns.supplier, sheets: [], products: new Map(), info: {} }, byK: {}, centerQty: {}, total: 0, added: [] };
+    let k = 1;
+    ns.items.forEach((it) => {
+      k += 1;
+      x.added.push({ ...it, k });
+      x.byK[k] = it.qty;
+      Object.entries(it.qty).forEach(([c, q]) => {
+        x.centerQty[c] = (x.centerQty[c] || 0) + q;
+        x.total += q;
+      });
+    });
+    list.push(finish(x, true));
   });
-  return { list, unknown: Array.from(unknown.values()) };
+  const added = [];
+  list.forEach((x) => x.added.forEach((a) => added.push({ name: a.name, supplier: x.supplier, isNewSupplier: x.isNew, qty: a.total })));
+  return { list, added, unknown: [] };
+}
+
+// ----- 명세서 시트에 줄 끼워 넣기 (엑셀 "행 삽입"과 같게: 아래 줄·수식·병합·조건부서식·인쇄영역 모두 밀기) -----
+function emInvRowShiftFormula(f, at, n) {
+  // 셀/범위 단위로 (시트이름!A1:B2 처럼 다른 시트 범위는 뒤쪽 끝 칸까지 통째로 그대로 둠)
+  return f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?[A-Z]{1,3}\$?\d+)(:\$?[A-Z]{1,3}\$?\d+)?(?![\d(])/g, (all, sheet, a, b, off, str) => {
+    const before = str.slice(0, off);
+    if ((before.match(/"/g) || []).length % 2 === 1) return all;
+    if (sheet) return all; // 다른 시트 참조는 그대로
+    const sh = (ref) => ref.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/, (m0, c, r) => (Number(r) >= at ? c + (Number(r) + n) : m0));
+    return sh(a) + (b ? ":" + sh(b.slice(1)) : "");
+  });
+}
+const emInvShiftRange = (ref, at, n) => String(ref).replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (a, c, r) => (Number(r) >= at ? c + (Number(r) + n) : a));
+function emInvUnshare(ws, sst) {
+  readSheetCells(ws, sst);
+  ws.cells.forEach((c) => {
+    const f = c.el.getElementsByTagName("f")[0];
+    if (f && f.getAttribute("t") === "shared") {
+      f.textContent = c.f || "";
+      f.removeAttribute("t");
+      f.removeAttribute("ref");
+      f.removeAttribute("si");
+    }
+  });
+}
+function emInvInsertRows(tpl, ws, at, n, cloneRow) {
+  const doc = ws.doc;
+  const sd = doc.getElementsByTagName("sheetData")[0];
+  const rowNo = (el) => Number(el.getAttribute("r"));
+  Array.from(sd.getElementsByTagName("row"))
+    .filter((el) => rowNo(el) >= at)
+    .sort((a, b) => rowNo(b) - rowNo(a))
+    .forEach((el) => {
+      const nr = rowNo(el) + n;
+      el.setAttribute("r", String(nr));
+      Array.from(el.getElementsByTagName("c")).forEach((c) => {
+        const p = splitRef(c.getAttribute("r"));
+        c.setAttribute("r", numToCol(p.c) + nr);
+      });
+    });
+  Array.from(doc.getElementsByTagName("f")).forEach((f) => f.textContent && (f.textContent = emInvRowShiftFormula(f.textContent, at, n)));
+  Array.from(doc.getElementsByTagName("mergeCell")).forEach((m) => m.setAttribute("ref", emInvShiftRange(m.getAttribute("ref"), at, n)));
+  Array.from(doc.getElementsByTagName("conditionalFormatting")).forEach((cf) => cf.setAttribute("sqref", emInvShiftRange(cf.getAttribute("sqref"), at, n)));
+  Array.from(doc.getElementsByTagName("dataValidation")).forEach((dv) => dv.setAttribute("sqref", emInvShiftRange(dv.getAttribute("sqref"), at, n)));
+  ["formula", "formula1", "formula2"].forEach((t) => Array.from(doc.getElementsByTagName(t)).forEach((x) => (x.textContent = emInvRowShiftFormula(x.textContent, at, n))));
+  const dim = doc.getElementsByTagName("dimension")[0];
+  if (dim) dim.setAttribute("ref", emInvShiftRange(dim.getAttribute("ref"), at, n));
+  // 새 줄: 바로 위 줄(cloneRow)의 서식을 복사한 빈 줄
+  const src = Array.from(sd.getElementsByTagName("row")).find((el) => rowNo(el) === cloneRow);
+  const before = Array.from(sd.getElementsByTagName("row")).find((el) => rowNo(el) >= at + n);
+  for (let i = 0; i < n; i++) {
+    const nr = at + i;
+    let el;
+    if (src) {
+      el = src.cloneNode(true);
+      Array.from(el.getElementsByTagName("c")).forEach((c) => {
+        const p = splitRef(c.getAttribute("r"));
+        c.setAttribute("r", numToCol(p.c) + nr);
+        while (c.firstChild) c.removeChild(c.firstChild);
+        c.removeAttribute("t");
+      });
+    } else el = doc.createElementNS(XL_NS, "row");
+    el.setAttribute("r", String(nr));
+    sd.insertBefore(el, before || null);
+  }
+  // 병합: cloneRow의 한 줄짜리 병합을 새 줄에도
+  const mc = doc.getElementsByTagName("mergeCells")[0];
+  if (mc) {
+    const single = Array.from(mc.getElementsByTagName("mergeCell"))
+      .map((m) => m.getAttribute("ref"))
+      .filter((ref) => {
+        const [a, b] = ref.split(":");
+        return b && splitRef(a).r === cloneRow && splitRef(b).r === cloneRow;
+      });
+    for (let i = 0; i < n; i++)
+      single.forEach((ref) => {
+        const m = doc.createElementNS(XL_NS, "mergeCell");
+        m.setAttribute("ref", ref.replace(/\d+/g, String(at + i)));
+        mc.appendChild(m);
+      });
+    mc.setAttribute("count", String(mc.getElementsByTagName("mergeCell").length));
+  }
+  // 인쇄 영역
+  (tpl.definedNames || [])
+    .filter((d) => d.sheet === ws.name && /Print_Area/.test(d.el.getAttribute("name") || ""))
+    .forEach((d) => (d.el.textContent = d.el.textContent.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (a, c, r) => (Number(r) >= at ? c + (Number(r) + n) : a))));
+  readSheetCells(ws, tpl.sst);
+}
+function emInvSetFormula(ws, ref, f, s) {
+  const c = setCellXml(ws, ref, null, s != null ? { s } : {});
+  if (s != null && !c.getAttribute("s")) c.setAttribute("s", s);
+  const fe = ws.doc.createElementNS(XL_NS, "f");
+  fe.textContent = f;
+  c.appendChild(fe);
+  return c;
+}
+// 명세서 시트의 상품 줄 틀 (첫 상품 줄 + 아래쪽 공급자 보관용 줄) 읽기 - 시트를 바꾸기 전에
+function emInvCaptureCaps(ws) {
+  const cellOf = (ref) => ws.cells.get(ref);
+  const sOf = (ref) => {
+    const c = cellOf(ref);
+    return c ? c.el.getAttribute("s") : null;
+  };
+  let totalRow = null;
+  for (let r = 14; r <= Math.min(ws.maxRow, 80); r++) {
+    const b = cellOf("B" + r);
+    if (b && !b.f && typeof b.v === "string" && b.v.replace(/\s/g, "") === "총수량") {
+      totalRow = r;
+      break;
+    }
+  }
+  if (!totalRow) return null;
+  const caps = { row: 13, totalRow, cells: {} };
+  ["E", "M", "Q", "T", "W", "AA"].forEach((col) => {
+    const c = cellOf(col + "13");
+    caps.cells[col] = { f: c ? c.f : null, v: c ? c.v : null, s: sOf(col + "13") };
+  });
+  // 아래쪽 공급자 보관용: E 칸이 =E13 인 줄
+  for (let r = totalRow + 1; r <= ws.maxRow; r++) {
+    const e = cellOf("E" + r);
+    if (e && e.f && e.f.replace(/\$/g, "").trim() === "E13") {
+      const cols = {};
+      ws.cells.forEach((c, ref) => {
+        const p = splitRef(ref);
+        if (p.r === r && c.f && p.c >= 5) cols[numToCol(p.c)] = { f: c.f, s: c.el.getAttribute("s") };
+      });
+      caps.mirror = { row: r, cols };
+      break;
+    }
+  }
+  return caps;
+}
+// 새 상품들을 시트에 채우기 (빈 줄 먼저, 모자라면 줄 삽입). 아래쪽 공급자 보관용 줄도 같은 순서로 다시 맞춘다
+function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial) {
+  if (!caps || !prods.length) return;
+  readSheetCells(ws, tpl.sst);
+  const isEmptyRow = (r) => {
+    const e = ws.cells.get("E" + r);
+    return !e || (!e.f && (e.v == null || String(e.v).trim() === ""));
+  };
+  let endRow = caps.totalRow - 1;
+  let spares = [];
+  for (let r = 13; r <= endRow; r++) if (isEmptyRow(r)) spares.push(r);
+  const need = prods.length - spares.length;
+  let mirrorRow = caps.mirror ? caps.mirror.row : null;
+  if (need > 0) {
+    emInvInsertRows(tpl, ws, endRow, need, Math.max(13, endRow - 1));
+    if (mirrorRow) mirrorRow += need;
+    endRow += need;
+    spares = [];
+    for (let r = 13; r <= endRow; r++) if (isEmptyRow(r)) spares.push(r);
+  }
+  const C = caps.cells;
+  prods.forEach((p, i) => {
+    const r = spares[i];
+    if (!r) return;
+    const dr = r - 13;
+    setCellXml(ws, "E" + r, p.name);
+    setCellXml(ws, "M" + r, p.pack > 0 ? p.pack : null);
+    if (C.Q.f) emInvSetFormula(ws, "Q" + r, shiftFormula(C.Q.f, dr, 0).replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/, `$1${p.k}$2`), C.Q.s);
+    if (C.T.f) emInvSetFormula(ws, "T" + r, shiftFormula(C.T.f, dr, 0), C.T.s);
+    if (C.W.f) emInvSetFormula(ws, "W" + r, shiftFormula(C.W.f, dr, 0), C.W.s);
+    const ex = expiryOf(p);
+    if (typeof ex === "string" && ex) setCellXml(ws, "AA" + r, ex);
+    else if (typeof ex === "number" && Number.isFinite(ex)) {
+      if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(\$?B\$?13\+)\d+/, `$1${ex}`), C.AA.s);
+      else setCellXml(ws, "AA" + r, emInvDot(dateSerial + ex));
+    } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, shiftFormula(C.AA.f, dr, 0), C.AA.s);
+    else emInvSetFormula(ws, "AA" + r, '""', C.AA.s); // 소비기한 미설정: 빈칸 (아래쪽 보관용에 0이 안 나오게)
+  });
+  readSheetCells(ws, tpl.sst);
+  // 아래쪽 공급자 보관용: 위쪽 상품 줄 수만큼 자리를 만들고, 위쪽과 같은 순서로 =E13 같은 수식을 다시 건다
+  if (mirrorRow && caps.mirror) {
+    const findMirrorTotal = () => {
+      for (let r = mirrorRow; r <= ws.maxRow; r++) {
+        const bc = ws.cells.get("B" + r);
+        if (bc && ((bc.f && /^\$?B\$?\d+$/.test(bc.f.trim()) && Number(bc.f.replace(/\D/g, "")) > 13) || (!bc.f && typeof bc.v === "string" && bc.v.replace(/\s/g, "") === "총수량"))) return r;
+      }
+      return null;
+    };
+    let mTotal = findMirrorTotal();
+    if (mTotal) {
+      const firstCount = endRow - 13 + 1;
+      const lack = firstCount - (mTotal - mirrorRow);
+      if (lack > 0) {
+        emInvInsertRows(tpl, ws, Math.max(mirrorRow + 1, mTotal - 1), lack, Math.max(mirrorRow, mTotal - 2));
+        mTotal += lack;
+      }
+      const off = mirrorRow - 13;
+      for (let r = 13; r <= endRow; r++) {
+        const m = r + off;
+        if (m >= mTotal) break;
+        const has = !isEmptyRow(r);
+        Object.entries(caps.mirror.cols).forEach(([col, x]) => {
+          if (has) emInvSetFormula(ws, col + m, shiftFormula(x.f, m - caps.mirror.row - (mirrorRow - caps.mirror.row), 0), x.s);
+          else setCellXml(ws, col + m, null);
+        });
+      }
+      readSheetCells(ws, tpl.sst);
+    }
+  }
 }
 
 async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settings, onlySuppliers) {
   const tpl = analyzeEmartInvoiceTemplate(await loadEmartTemplate(templateBuffer));
-  const inv = tpl.inv;
+  let inv = tpl.inv;
   tpl.newParts = [];
   tpl.definedNames = Array.from(tpl.wbXml.getElementsByTagName("definedName")).map((el) => {
     const id = el.getAttribute("localSheetId");
     return { el, sheet: id != null && tpl.sheets[Number(id)] ? tpl.sheets[Number(id)].name : null };
   });
-  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
   const plan = emartInvoicePlan(inv, orderRows, settings);
   const dateSerial = xlSerialOf(date);
   const keep = new Set();
-  const report = { suppliers: [], unknown: plan.unknown, missingCenters: [] };
+  const report = { suppliers: [], added: plan.added, missingCenters: [], newSuppliers: [] };
+  const supSettings = (settings && settings.suppliers) || {};
+  const want = (x) => (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier));
+
+  // 새 공급사: 다른 공급사 블록(피벗 + 센터 12장)을 복사해서 만든다
+  const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
+  const srcBlock = inv.pivots.find((p) => p.supplier === "신성베이커리") || inv.pivots.find((p) => p.sheets.length >= 12) || inv.pivots[0];
+  tpl.lastSheetOfPivot = {};
+  for (const x of plan.list.filter((y) => y.isNew && want(y))) {
+    const label = x.supplier;
+    const newPivot = safeEmartSheetName(`${label}피벗`, usedNames);
+    tpl.lastSheetOfPivot[newPivot] = tpl.sheets[tpl.sheets.length - 1].name; // 맨 뒤에
+    const pvMut = () => {};
+    pvMut.pivot = newPivot;
+    await cloneEmartSheet(tpl, srcBlock.pivot, newPivot, pvMut);
+    const q = (s) => `'${s.replace(/'/g, "''")}'`;
+    const srcRef = new RegExp(`(${q(srcBlock.pivot).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${srcBlock.pivot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})!`, "g");
+    const sheetsInfo = [];
+    for (const sh of srcBlock.sheets) {
+      const srcWs = tpl.sheets.find((s) => s.name === sh.name);
+      emInvUnshare(srcWs, tpl.sst);
+      const caps0 = emInvCaptureCaps(srcWs);
+      // 복사본은 새 피벗을 보게: 틀 수식의 피벗 이름도 바꿔 둔다
+      const caps = caps0 && JSON.parse(JSON.stringify(caps0));
+      if (caps) {
+        Object.values(caps.cells).forEach((c) => c.f && (c.f = c.f.replace(srcRef, `${q(newPivot)}!`)));
+        if (caps.mirror) Object.values(caps.mirror.cols).forEach((c) => c.f && (c.f = c.f.replace(srcRef, `${q(newPivot)}!`)));
+      }
+      const nm = safeEmartSheetName(`${sh.center.replace(/\(.*$/, "")}(${label})`, usedNames);
+      const mut = (sheet) => {
+        Array.from(sheet.doc.getElementsByTagName("f")).forEach((f) => f.textContent && (f.textContent = f.textContent.replace(srcRef, `${q(newPivot)}!`)));
+        const tmp = { doc: sheet.doc };
+        // 원래 공급사 상품 줄 비우기 (위·아래)
+        if (caps) {
+          for (let r = 13; r < caps.totalRow; r++) ["E", "M", "Q", "T", "W", "AA"].forEach((col) => setCellXml(tmp, col + r, null));
+          if (caps.mirror) {
+            const cols = Object.keys(caps.mirror.cols);
+            for (let r = caps.mirror.row; r < caps.mirror.row + (caps.totalRow - 13); r++) {
+              const bc = srcWs.cells.get("B" + r);
+              if (bc && r > caps.mirror.row && ((bc.f && /^\$?B\$?\d+$/.test(bc.f.trim())) || (typeof bc.v === "string" && bc.v.replace(/\s/g, "") === "총수량"))) break; // 보관용 총수량 줄은 남김
+              cols.forEach((col) => setCellXml(tmp, col + r, null));
+            }
+          }
+        }
+        // 공급자 사업자 정보: 설정값 (없으면 빈칸 - 설정에서 넣어야 함)
+        const info = (supSettings[label] && supSettings[label].info) || {};
+        Object.entries(EM_INV_INFO_CELLS).forEach(([key, ref]) => setCellXml(tmp, ref, info[key] || null));
+      };
+      mut.pivot = newPivot;
+      await cloneEmartSheet(tpl, sh.name, nm, mut);
+      sheetsInfo.push({ name: nm, pivot: newPivot, center: sh.center, rows: [], b13Offset: sh.b13Offset, caps });
+    }
+    x.pivot = { pivot: newPivot, supplier: label, sheets: sheetsInfo, products: new Map(), info: {} };
+    report.newSuppliers.push(label);
+  }
+  tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+  const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
 
   plan.list.forEach((x) => {
+    if (!want(x)) return;
     const p = x.pivot;
-    const active = x.total > 0 || x.selectedMode;
-    if (!active || (onlySuppliers && !onlySuppliers.includes(p.supplier))) return;
-    // 1) 피벗 다시 쓰기 (템플릿 상품 열 그대로, 수량만 그날 값)
+    if (!p.pivot) return;
+    const s = x.settings || {};
+    const ps = s.products || {};
+    // 1) 피벗 다시 쓰기 (템플릿 상품 열 + 새 상품 열, 수량은 그날 값)
     const pv = byName.get(p.pivot);
     const cols = Array.from(p.products.values()).map((prod) => {
       const h = pv.cells.get(numToCol(prod.k) + "2");
       return { k: prod.k, header: h && typeof h.v === "string" && h.v.trim() ? h.v : prod.name, qty: x.byK[prod.k] || {} };
     });
+    x.added.forEach((a) => cols.push({ k: a.k, header: a.name, qty: a.qty }));
     const regs = [...EMART_STD_REGIONS, ...Object.keys(x.centerQty).filter((c) => !EMART_STD_REGIONS.includes(c))];
-    rewritePivot(pv, date, cols, regs, Math.max(...cols.map((c) => c.k)));
+    rewritePivot(pv, date, cols, regs, Math.max(1, ...cols.map((c) => c.k)));
     keep.add(p.pivot);
-    const s = x.settings || {};
-    const ps = s.products || {};
     // 2) 고른 센터 명세서 시트
     const centerSet = new Set(x.centers);
     let kept = 0;
@@ -7105,7 +7426,6 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       kept++;
       const ws = byName.get(sh.name);
       const sheetSerial = dateSerial + (sh.b13Offset || 0);
-      // 날짜 (다른 시트 참조 대신 그날 날짜를 직접)
       setCellXml(ws, "B13", sheetSerial);
       sh.rows.forEach((row) => {
         const prod = p.products.get(row.k);
@@ -7132,14 +7452,30 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (aa && aa.f && fEl && /\$?B\$?13\+\d+/.test(aa.f)) fEl.textContent = aa.f.replace(/(\$?B\$?13\+)\d+/, `$1${days}`);
         else {
           if (fEl) c.el.removeChild(fEl);
-          setCellXml(ws, ref, emInvDot(sheetSerial + days)); // 원본처럼 "26.11.08" 모양 글자로
+          setCellXml(ws, ref, emInvDot(sheetSerial + days));
         }
       });
+      // 새 상품 줄 (명세서 파일에 없던 상품)
+      if (x.added.length) {
+        emInvUnshare(ws, tpl.sst);
+        const caps = sh.caps || emInvCaptureCaps(ws);
+        const prods = x.added.map((a) => {
+          const o = ps[a.name] || {};
+          return { name: o.displayName || a.name, k: a.k, pack: Number(o.packQty) > 0 ? Number(o.packQty) : a.box || 0, raw: a, o };
+        });
+        const expiryOf = (pr) => {
+          const ov = pr.o.expiryDays;
+          if (ov == null || ov === "") return null;
+          if (typeof ov === "string" && /\./.test(ov)) return ov;
+          return Number(ov);
+        };
+        emInvAddProducts(tpl, ws, caps, prods, expiryOf, sheetSerial);
+      }
       // 공급자 사업자 정보 (설정에서 바꾼 경우만)
       const info = s.info || {};
       Object.entries(EM_INV_INFO_CELLS).forEach(([key, ref]) => info[key] && setCellXml(ws, ref, info[key]));
       if (info.agent) {
-        for (let r = 18; r <= 30; r++) {
+        for (let r = 18; r <= 40; r++) {
           const c = ws.cells.get("B" + r);
           if (c && !c.f && typeof c.v === "string" && /3자물류|담당자/.test(c.v)) {
             setCellXml(ws, "B" + r, info.agent);
@@ -7148,8 +7484,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         }
       }
     });
-    x.missingCenters.forEach((c) => report.missingCenters.push({ supplier: p.supplier, center: c }));
-    report.suppliers.push({ supplier: p.supplier, total: x.total, sheets: kept });
+    x.missingCenters.forEach((c) => report.missingCenters.push({ supplier: x.supplier, center: c }));
+    report.suppliers.push({ supplier: x.supplier, total: x.total, sheets: kept });
   });
   if (keep.size === 0) throw new Error("이 날짜에 거래명세서로 나갈 이마트 발주가 없어요.");
 
@@ -7294,18 +7630,23 @@ function EmartInvoiceView({ emartOrders, authToken }) {
   const [msg, setMsg] = useState("");
   const [setOpen, setSetOpen] = useState(false);
   // 설정 창용 목록: 템플릿의 모든 공급사·상품(기본 입수·소비기한)·센터 + 사업자 정보 기본값
-  const detected = useMemo(
-    () =>
-      inv && inv.inv
-        ? inv.inv.pivots.map((p) => ({
-            key: p.supplier,
-            products: Array.from(p.products.values()).map((x) => ({ name: x.name, pack: x.pack, expiry: x.expiry, expiryText: x.expiryText })),
-            centers: Array.from(new Set(p.sheets.map((s) => s.center))),
-            info: p.info,
-          }))
-        : [],
-    [inv]
-  );
+  const detected = useMemo(() => {
+    if (!inv || !inv.inv) return [];
+    const list = inv.inv.pivots.map((p) => ({
+      key: p.supplier,
+      products: Array.from(p.products.values()).map((x) => ({ name: x.name, pack: x.pack, expiry: x.expiry, expiryText: x.expiryText })),
+      centers: Array.from(new Set(p.sheets.map((s) => s.center))),
+      info: p.info,
+    }));
+    // 그날 발주에 있는 새 상품·새 공급사도 설정에서 고를 수 있게
+    (plan ? plan.list : []).forEach((x) => {
+      if (!x.added.length) return;
+      let d = list.find((y) => y.key === x.supplier);
+      if (!d) list.push((d = { key: x.supplier, products: [], centers: [...EMART_STD_REGIONS], info: {} }));
+      x.added.forEach((a) => !d.products.some((pp) => pp.name === a.name) && d.products.push({ name: a.name, pack: a.box || 0, expiry: null, expiryText: "", isNew: true }));
+    });
+    return list;
+  }, [inv, plan]);
   const run = async (key, only) => {
     setBusy(key);
     setMsg("");
@@ -7350,10 +7691,16 @@ function EmartInvoiceView({ emartOrders, authToken }) {
         <span style={{ fontSize: 12.5, color: T.inkSoft }}>{plan ? `명세서 나갈 공급사 ${active.length}곳` : tplErr || "템플릿 불러오는 중..."}</span>
         {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("다운로드") ? T.teal : T.danger }}>{msg}</span>}
       </div>
-      {plan && plan.unknown.length > 0 && (
-        <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: T.amber, background: "#FFF8E8", fontSize: 12.5 }}>
-          <b>명세서 템플릿에 없는 상품 {plan.unknown.length}개</b> (이 상품들은 명세서에 안 나가요. 신제품이면 템플릿 파일에 줄을 추가해야 해요):{" "}
-          {plan.unknown.map((u) => `${u.name}(${u.vendor} ${u.qty.toLocaleString()})`).join(", ")}
+      {plan && plan.added.length > 0 && (
+        <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#9BC2E6", background: "#F2F8FD", fontSize: 12.5, lineHeight: 1.6 }}>
+          <b>명세서 원본 파일에 없던 상품 {plan.added.length}개는 자동으로 줄을 추가해서 넣어요</b> (같은 공급사 명세서 맨 아래 상품 줄에 추가, 빈 줄이 모자라면 줄을 늘려요).
+          {" "}입수는 발주파일 값, 소비기한은 [거래명세서 설정 → 상품]에서 넣어주세요.
+          {plan.list.some((x) => x.isNew && x.total > 0) && (
+            <div style={{ color: T.danger, fontWeight: 700 }}>
+              명세서 파일에 아예 없는 공급사: {plan.list.filter((x) => x.isNew && x.total > 0).map((x) => x.supplier).join(", ")} → 다른 공급사 명세서 모양을 복사해 새로 만들어요. 사업자 정보(등록번호·상호·주소 등)를 [거래명세서 설정]에서 꼭 넣어주세요.
+            </div>
+          )}
+          <div style={{ color: T.inkSoft, marginTop: 4 }}>{plan.added.map((u) => `${u.name}(${u.supplier} ${u.qty.toLocaleString()})`).join(", ")}</div>
         </div>
       )}
       <div style={{ ...cardStyle, padding: 0, overflow: "auto" }}>
