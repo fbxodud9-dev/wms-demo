@@ -1866,7 +1866,8 @@ function WMSApp() {
   // GS 일별 발주 집계: 발주가 남아 있는 날짜마다 상품별 총수량을 계산해서 서버에 스냅샷으로 저장한다.
   // (발주 원본은 14일 뒤 지워지지만, 스냅샷은 남아서 월별 집계에 쓰인다) 바뀐 날짜만 저장.
   const gsDailySavedRef = useRef(new Map()); // 날짜 -> 마지막으로 저장한 JSON
-  const gsRulesForSnap = useSetting(GS_DAILY_RULES_KEY, authToken); // 지역 제외 설정이 바뀌면 스냅샷도 다시 저장
+  const gsRulesForSnap = useSetting(GS_DAILY_RULES_KEY, authToken);
+  const emRulesForSnap = useSetting("emart_daily_rules", authToken); // 이마트 지역 제외 // 지역 제외 설정이 바뀌면 스냅샷도 다시 저장
   const gsDailyMonthsLoaded = useRef(new Set());
   useEffect(() => {
     if (!authToken || !orders.length) return;
@@ -1896,9 +1897,9 @@ function WMSApp() {
   // 이마트 일별 집계 스냅샷: 월별로 서버 설정(daily_emart_YYYYMM)에 저장 (발주 원본이 지워져도 남게)
   useEffect(() => {
     if (!authToken || !emartOrders.length) return;
-    const timer = setTimeout(() => syncEmartDaily(emartOrders, authToken).catch((e) => console.warn("이마트 일별 집계 저장 실패:", e.message)), 2500);
+    const timer = setTimeout(() => syncEmartDaily(emartOrders, authToken, normalizeDailyRules(emRulesForSnap)).catch((e) => console.warn("이마트 일별 집계 저장 실패:", e.message)), 2500);
     return () => clearTimeout(timer);
-  }, [emartOrders, authToken]);
+  }, [emartOrders, authToken, emRulesForSnap]);
 
   // 거래명세서 설정(사업자 정보·발행 지역·명세서용 상품명/입수/소비기한)을 로그인 후 한 번 불러온다
   const [invoiceSettings, setInvoiceSettingsState] = useState({ suppliers: {} });
@@ -2808,7 +2809,7 @@ function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
 function computeEmartAuto(emartOrders, date, rules, editsEm, savedMonth) {
   const hasOrders = emartOrders.some((o) => o.createdAt === date);
   const stored = packEmartMonth(savedMonth)[date];
-  const day = hasOrders || !stored ? computeEmartDailySnapshot(emartOrders, date) : stored;
+  const day = hasOrders || !stored ? computeEmartDailySnapshot(emartOrders, date, rules) : stored;
   const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, emartPartOf, editsEm && editsEm[date] ? { [date]: editsEm[date] } : null, rules);
   const r = t.rows.find((x) => x.date === date);
   return { emart_1: r ? r.p1 : 0, emart_2: r ? r.p2 : 0 };
@@ -4781,9 +4782,9 @@ function classifyDaily(rules, date, p, base) {
 // 채널별 집계 설정: 채널마다 자기 상품만 보이고, 규칙도 채널별로 따로 저장
 // (GS와 GS슈퍼는 같은 GS 발주파일에서 나와서 규칙 저장소는 같고, 화면에서 보이는 상품만 나눔)
 const DAILY_CHANNELS = {
-  GS: { label: "GS", rulesKey: "gs_daily_rules", showTemp: true, filter: (p) => gsDailySheetOf(p.name) !== "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
-  GS슈퍼: { label: "GS슈퍼", rulesKey: "gs_daily_rules", showTemp: false, filter: (p) => gsDailySheetOf(p.name) === "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
-  이마트: { label: "이마트", rulesKey: "emart_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: emartPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+  GS: { label: "GS", region: "gs", rulesKey: "gs_daily_rules", showTemp: true, filter: (p) => gsDailySheetOf(p.name) !== "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
+  GS슈퍼: { label: "GS슈퍼", region: "gs", rulesKey: "gs_daily_rules", showTemp: false, filter: (p) => gsDailySheetOf(p.name) === "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
+  이마트: { label: "이마트", region: "emart", rulesKey: "emart_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: emartPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   세븐일레븐: { label: "세븐일레븐", rulesKey: "seven_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   BGF: { label: "BGF", rulesKey: "bgf_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
 };
@@ -4828,6 +4829,50 @@ function dailySupplierRegionQty(orders, date, supplier) {
   });
   return out;
 }
+
+// 이마트 센터(발주파일 "센터" 값 그대로) 권역
+const EMART_ZONE_LIST = ["수도권", "강원·충청", "영남", "호남", "기타"];
+function emartZoneOf(center) {
+  const c = String(center || "");
+  if (/화성|청라|평택|포천|양지|이천|용인|김포|인천|부천|광주\(경기\)|오산|안성/.test(c)) return "수도권";
+  if (/원주|세종|청주|대전|천안|춘천|강릉|충주/.test(c)) return "강원·충청";
+  if (/김해|양산|김천|경산|부산|대구|칠곡|창원|울산|진주/.test(c)) return "영남";
+  if (/장성|광주|전주|익산|순천|목포/.test(c)) return "호남";
+  return "기타";
+}
+function emartSupplierRegionQty(emartOrders, date, supplier) {
+  const out = {};
+  const k = dailySupKey(supplier);
+  emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === date)).forEach((r) => {
+    if (dailySupKey(emartVendorKey(r.vendor)) !== k) return;
+    out[r.center] = (out[r.center] || 0) + r.qty;
+  });
+  return out;
+}
+// 채널별 지역 목록 (설정창 "지역 제외" 탭) - 채널마다 실제 지역에 맞춤
+const DAILY_REGION_SOURCES = {
+  gs: {
+    zones: DAILY_ZONE_LIST,
+    codes: () => dailyRegionCodes(),
+    zoneOf: (c) => realZoneOf(c),
+    nameOf: (c) => dailyRegionName(c),
+    codeText: (c) => c,
+    qtyOf: (orders, date, sup) => dailySupplierRegionQty(orders, date, sup),
+    example: "그린델리카 수도권",
+    note: "GS 센터 37곳 (당착 권역표 기준 수도권·영남·호남)",
+  },
+  emart: {
+    zones: EMART_ZONE_LIST,
+    // 표준 저온 센터 12곳 + 발주파일에 실제로 나온 센터
+    codes: (orders) => Array.from(new Set([...EMART_STD_REGIONS, ...orders.map((o) => o.storeCode || o.customer).filter(Boolean)])).sort((a, b) => EMART_ZONE_LIST.indexOf(emartZoneOf(a)) - EMART_ZONE_LIST.indexOf(emartZoneOf(b)) || EMART_STD_REGIONS.indexOf(a) - EMART_STD_REGIONS.indexOf(b) || a.localeCompare(b, "ko")),
+    zoneOf: (c) => emartZoneOf(c),
+    nameOf: (c) => String(c).replace(/\(저온\)$/, ""),
+    codeText: (c) => (/\(저온\)$/.test(c) ? "저온" : ""),
+    qtyOf: (orders, date, sup) => emartSupplierRegionQty(orders, date, sup),
+    example: "그린델리카 화성2·청라2",
+    note: "이마트 센터 (발주파일 센터 기준)",
+  },
+};
 
 // 그날 상품별 총수량 스냅샷 (일시중지·삭제한 상품은 buildProductsForDate에서 이미 빠짐, 지역 제외 설정 지역도 뺌)
 function computeGsDailySnapshot(orders, date, rules) {
@@ -4998,9 +5043,15 @@ function emartVendorPart(vendor) {
   return hit ? hit.part : null;
 }
 const emartPartOf = (name, vendor) => emartVendorPart(vendor) || (/2편/.test(String(name || "")) ? 2 : 1);
-function computeEmartDailySnapshot(emartOrders, date) {
+function computeEmartDailySnapshot(emartOrders, date, rules) {
   const m = new Map();
+  const allRules = rules || normalizeDailyRules(SETTING_CACHE[DAILY_CHANNELS["이마트"].rulesKey]);
+  const regionRules = allRules.filter((r) => r.scope === "region" && dailyRuleActive(r, date));
   emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === date)).forEach((r) => {
+    if (regionRules.length) {
+      const sup = dailySupKey(emartVendorKey(r.vendor));
+      if (regionRules.some((x) => dailySupKey(x.supplier) === sup && (x.regions || []).includes(r.center))) return; // 지역 제외
+    }
     const x = m.get(r.name) || { name: r.name, supplier: emartVendorKey(r.vendor), qty: 0 };
     x.qty += r.qty;
     m.set(r.name, x);
@@ -5013,14 +5064,14 @@ function packEmartMonth(v) {
   Object.entries((v && v.days) || {}).forEach(([d, list]) => (out[d] = { products: (list || []).map(([name, si, qty]) => ({ name, supplier: (v.sups || [])[si] || "미지정", qty })) }));
   return out;
 }
-async function syncEmartDaily(emartOrders, authToken) {
+async function syncEmartDaily(emartOrders, authToken, rules) {
   const dates = Array.from(new Set(emartOrders.map((o) => o.createdAt).filter(Boolean)));
   for (const month of new Set(dates.map((d) => d.slice(0, 7)))) {
     const key = emartDailyKey(month);
     const cur = SETTING_CACHE[key];
     const curDays = cur === undefined ? null : packEmartMonth(cur);
     const fresh = {};
-    dates.filter((d) => d.startsWith(month)).forEach((d) => (fresh[d] = computeEmartDailySnapshot(emartOrders, d)));
+    dates.filter((d) => d.startsWith(month)).forEach((d) => (fresh[d] = computeEmartDailySnapshot(emartOrders, d, rules)));
     if (curDays && Object.entries(fresh).every(([d, snap]) => JSON.stringify(curDays[d]) === JSON.stringify(snap))) continue;
     await updateSetting(key, authToken, (v) => {
       const sups = [...(v.sups || [])];
@@ -5274,9 +5325,9 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
   const emSaved = useSetting(emartDailyKey(month), authToken);
   const emDays = useMemo(() => {
     const d = packEmartMonth(emSaved);
-    Array.from(new Set(emartOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeEmartDailySnapshot(emartOrders, x)));
+    Array.from(new Set(emartOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeEmartDailySnapshot(emartOrders, x, emRules)));
     return d;
-  }, [emSaved, emartOrders, month]);
+  }, [emSaved, emartOrders, month, emRules]);
   const editsSaved = useSetting(dailyEditsKey(month), authToken);
   const [editing, setEditing] = useState(null); // { date, idx }
   const [editVal, setEditVal] = useState("");
@@ -5382,7 +5433,7 @@ function GsDailyPage({ orders, emartOrders = [], authToken, productInfo }) {
           </div>
         }
       />
-      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
+      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={chKey === "이마트" ? emartOrders : orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => (
@@ -5609,7 +5660,8 @@ function saveDailyRules(authToken, fn, key = GS_DAILY_RULES_KEY) {
 }
 
 // 집계 설정 > "지역 제외" 탭: 공급사 고르고 → 지역을 눌러 고르고 → [저장]
-function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, setSaving }) {
+function DailyRegionExcludeTab({ ch, orders, suppliers, dates, rules, save, saving, setSaving }) {
+  const src = DAILY_REGION_SOURCES[ch.region];
   const [sup, setSup] = useState("");
   const [baseDate, setBaseDate] = useState(dates[dates.length - 1] || todayStr());
   const [period, setPeriod] = useState("always");
@@ -5618,7 +5670,8 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
   const [pick, setPick] = useState(null); // 고르는 중인 지역 Set (null = 저장된 값 그대로)
   const [msg, setMsg] = useState("");
   const regionRules = rules.filter((r) => r.scope === "region");
-  const codes = useMemo(() => dailyRegionCodes(), []);
+  const codes = useMemo(() => (src ? src.codes(orders) : []), [orders, src]);
+  const zones = src ? src.zones.filter((z) => codes.some((c) => src.zoneOf(c) === z)) : [];
   const perOf = () => (period === "always" ? { from: "", to: "" } : period === "day" ? { from: baseDate, to: baseDate } : { from: from || "", to: to || "" });
   // 지금 기간 설정과 같은 기간의 이 공급사 규칙 (있으면 그 지역들이 선택된 상태로 시작)
   const per = perOf();
@@ -5626,7 +5679,7 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
   const savedSet = useMemo(() => new Set((sameRule && sameRule.regions) || []), [sameRule && sameRule.id, sameRule && (sameRule.regions || []).join(",")]);
   useEffect(() => setPick(null), [sup, period, from, to, baseDate]);
   const sel = pick || savedSet;
-  const qty = useMemo(() => (sup ? dailySupplierRegionQty(orders, baseDate, sup) : {}), [orders, baseDate, sup]);
+  const qty = useMemo(() => (sup && src ? src.qtyOf(orders, baseDate, sup) : {}), [orders, baseDate, sup, src]);
   const selQty = Array.from(sel).reduce((a, c) => a + (qty[c] || 0), 0);
   const totalQty = Object.values(qty).reduce((a, b) => a + b, 0);
   const dirty = pick !== null && (pick.size !== savedSet.size || Array.from(pick).some((c) => !savedSet.has(c)));
@@ -5637,19 +5690,19 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
   };
   const setZone = (zone, on) => {
     const n = new Set(sel);
-    codes.filter((c) => realZoneOf(c) === zone).forEach((c) => (on ? n.add(c) : n.delete(c)));
+    codes.filter((c) => src.zoneOf(c) === zone).forEach((c) => (on ? n.add(c) : n.delete(c)));
     setPick(n);
   };
   const periodLabel = (r) => (!r.from && !r.to ? "계속" : r.from === r.to ? `${r.from.slice(5).replace("-", "/")} 하루` : `${r.from ? r.from.slice(5).replace("-", "/") : "처음"} ~ ${r.to ? r.to.slice(5).replace("-", "/") : "계속"}`);
   const regionsText = (list) => {
     const set = new Set(list || []);
     const parts = [];
-    DAILY_ZONE_LIST.forEach((z) => {
-      const zc = codes.filter((c) => realZoneOf(c) === z);
+    zones.forEach((z) => {
+      const zc = codes.filter((c) => src.zoneOf(c) === z);
       const inZ = zc.filter((c) => set.has(c));
       if (!inZ.length) return;
       if (inZ.length === zc.length) parts.push(`${z} 전체(${zc.length}곳)`);
-      else parts.push(inZ.map(dailyRegionName).join("·"));
+      else parts.push(inZ.map(src.nameOf).join("·"));
     });
     return parts.join(" / ") || "-";
   };
@@ -5691,10 +5744,18 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
       <input type="radio" checked={period === k} onChange={() => setPeriod(k)} /> {label}
     </label>
   );
+  if (!src)
+    return (
+      <div style={{ padding: 28, textAlign: "center", color: T.inkSoft, fontSize: 13, lineHeight: 1.7, border: `1px dashed ${T.border}`, borderRadius: 8 }}>
+        {ch.label}는 아직 발주가 시스템에 연동되지 않아서 지역 목록이 없어요.
+        <br />
+        발주가 연동되면 {ch.label} 센터에 맞춘 지역으로 똑같이 지역 제외를 쓸 수 있어요.
+      </div>
+    );
   return (
     <div>
       <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: 1.65, marginBottom: 10, background: "#F7F6F2", borderRadius: 8, padding: "9px 12px" }}>
-        우리가 납품하지 않는 <b>공급사 + 지역</b>을 일별 집계에서 빼요. 예) 그린델리카 수도권 → ① 공급사에서 <b>그린델리카</b> 고르기 ② <b>[수도권 전체]</b>를 누르거나 지역을 하나씩 눌러 고르기 ③ <b>[저장]</b>.
+        우리가 납품하지 않는 <b>공급사 + 지역</b>을 {ch.label} 일별 집계에서 빼요. 예) {src ? src.example : ""} → ① 공급사 고르기 ② <b>[권역 전체 빼기]</b>를 누르거나 지역을 하나씩 눌러 고르기 ③ <b>[저장]</b>. 지역 목록: {src ? src.note : "-"}.
         피킹지시서·거래명세서에는 영향 없어요. 지역별 수량은 발주 원본에만 있어서 <b>발주가 남아 있는 날짜(최근 약 2주)</b>부터 적용돼요.
       </div>
       {msg && <div style={{ color: msg.startsWith("저장 실패") || msg.includes("늦어요") ? T.danger : T.teal, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{msg}</div>}
@@ -5749,8 +5810,8 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
               </button>
             </span>
           </div>
-          {DAILY_ZONE_LIST.map((z) => {
-            const zc = codes.filter((c) => realZoneOf(c) === z);
+          {zones.map((z) => {
+            const zc = codes.filter((c) => src.zoneOf(c) === z);
             const allOn = zc.every((c) => sel.has(c));
             return (
               <div key={z} style={{ marginBottom: 12 }}>
@@ -5773,9 +5834,9 @@ function DailyRegionExcludeTab({ orders, suppliers, dates, rules, save, saving, 
                         title={on ? "누르면 다시 집계" : "누르면 집계에서 빼기"}
                         style={{ textAlign: "left", cursor: "pointer", borderRadius: 7, padding: "6px 9px", fontFamily: "inherit", border: changed ? `2px dashed ${T.amber}` : `1px solid ${on ? "#E6A9A2" : T.border}`, background: on ? "#FDECEA" : "#fff", color: on ? "#B03A2E" : T.ink }}
                       >
-                        <div style={{ fontSize: 12.5, fontWeight: 800, textDecoration: on ? "line-through" : "none" }}>{dailyRegionName(c)}</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 800, textDecoration: on ? "line-through" : "none" }}>{src.nameOf(c)}</div>
                         <div style={{ fontSize: 11, color: on ? "#B03A2E" : T.inkSoft, fontVariantNumeric: "tabular-nums" }}>
-                          {c} · {(qty[c] || 0).toLocaleString()}개{on ? " 빠짐" : ""}
+                          {src.codeText(c) ? `${src.codeText(c)} · ` : ""}{(qty[c] || 0).toLocaleString()}개{on ? " 빠짐" : ""}
                         </div>
                       </button>
                     );
@@ -5957,7 +6018,7 @@ function DailySettingsModal({ ch = DAILY_CHANNELS.GS, orders = [], days, rulesSa
           <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${T.border}` }}>
             {[
               ["products", `상품별 설정`],
-              ...(ch.rulesKey === GS_DAILY_RULES_KEY ? [["regions", `지역 제외${rules.some((r) => r.scope === "region") ? ` (${rules.filter((r) => r.scope === "region").length})` : ""}`]] : []),
+              ...(true ? [["regions", `지역 제외${rules.some((r) => r.scope === "region") ? ` (${rules.filter((r) => r.scope === "region").length})` : ""}`]] : []),
               ["rules", `적용 중인 설정 (${rules.length})`],
             ].map(([k, label]) => (
               <button key={k} onClick={() => setTab(k)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13.5, fontWeight: tab === k ? 800 : 600, borderBottom: tab === k ? `2px solid ${T.steel}` : "2px solid transparent", cursor: "pointer", color: T.ink }}>
@@ -5970,7 +6031,7 @@ function DailySettingsModal({ ch = DAILY_CHANNELS.GS, orders = [], days, rulesSa
         <div style={{ padding: "12px 20px 18px", overflow: "auto", flex: 1 }}>
           {msg && <div style={{ color: T.danger, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{msg}</div>}
           {tab === "regions" ? (
-            <DailyRegionExcludeTab orders={orders} suppliers={suppliers} dates={dates} rules={rules} save={save} saving={saving} setSaving={setSaving} />
+            <DailyRegionExcludeTab ch={ch} orders={orders} suppliers={suppliers} dates={dates} rules={rules} save={save} saving={saving} setSaving={setSaving} />
           ) : tab === "products" ? (
             <>
               {/* 필터 */}
