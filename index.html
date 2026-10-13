@@ -1735,7 +1735,7 @@ function WMSApp() {
   const [tab, setTabState] = useState(() => {
     try {
       const h = window.location.hash.replace("#", "");
-      return h || "dashboard";
+      return h && h !== "pickingconfirm" ? h : "dashboard"; // 피킹 확정 화면은 없앰
     } catch (e) {
       return "dashboard";
     }
@@ -2200,7 +2200,7 @@ function WMSApp() {
       try {
         await apiFetch("/orders/convert-to-picking", authToken, { method: "POST", body: { supplierKey } });
         await loadCoreData();
-        setTab("pickingconfirm");
+        setTab("pickinginspection"); // (피킹 확정 화면은 메뉴에서 뺌)
       } catch (e) {
         setApiErr(e.message);
       }
@@ -2467,7 +2467,6 @@ function WMSApp() {
       label: "보충 · 피킹",
       items: [
         { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
-        { key: "pickingconfirm", label: "V. 피킹 확정", icon: ListOrdered, badgeKey: "alloc" },
         { key: "pickinginspection", label: "피킹지시서 출력", icon: Grid3x3 },
         { key: "pickingedit", label: "피킹지 수정", icon: Pencil },
       ],
@@ -2688,9 +2687,6 @@ function WMSApp() {
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickingconfirm" && (
-          <PickingList orders={orders} items={itemsView} onToggle={togglePicked} onConfirm={confirmPicking} onCancelConfirm={cancelPickingConfirm} onReallocate={allocateOrder} />
-        )}
         {tab === "pickingedit" && <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} />}
         {tab === "pickinginspection" && (
           <PickingCenter
@@ -7386,6 +7382,10 @@ function useEmartInvTplInfo() {
 // 명세서 파일에 아예 없는 공급사(예: 데어리젠)는 다른 공급사 블록을 복사해 새 공급사 블록을 만든다.
 function emartInvoicePlan(inv, rows, settings) {
   const sup = (settings && settings.suppliers) || {};
+  // 거래명세서 설정에서 "발행 안 함"으로 뺀 공급사·상품은 수량에서 제외
+  const hid = brandHiddenOf(settings);
+  const skipped = [];
+  const isHid = (supplier, ...names) => hid.suppliers.includes(supplier) || names.some((n) => n && (hid.products[supplier] || []).includes(n));
   const per = new Map(); // 피벗 이름 -> 집계
   const getX = (p) => {
     if (!per.has(p.pivot)) per.set(p.pivot, { pivot: p, byK: {}, centerQty: {}, total: 0, added: [] });
@@ -7397,6 +7397,7 @@ function emartInvoicePlan(inv, rows, settings) {
     const hit = matchEmartInvoiceProduct(inv, r.name);
     if (!hit) return unknownRows.push(r);
     vendorPivot[emartVendorKey(r.vendor)] = hit.pivot;
+    if (isHid(hit.pivot.supplier, hit.prod.name, r.name)) return skipped.push(r);
     const x = getX(hit.pivot);
     const kq = (x.byK[hit.prod.k] = x.byK[hit.prod.k] || {});
     kq[r.center] = (kq[r.center] || 0) + r.qty;
@@ -7418,6 +7419,7 @@ function emartInvoicePlan(inv, rows, settings) {
       });
     }
     let bucket;
+    if (isHid(p ? p.supplier : vk, r.name)) return skipped.push(r);
     if (p) {
       if (!addedBy.has(p.pivot)) addedBy.set(p.pivot, new Map());
       bucket = addedBy.get(p.pivot);
@@ -7456,7 +7458,8 @@ function emartInvoicePlan(inv, rows, settings) {
       .filter((c) => (x.centerQty[c] || 0) > 0 && !tplCenters.includes(c))
       .sort((a, b) => (EMART_STD_REGIONS.indexOf(a) + 1 || 99) - (EMART_STD_REGIONS.indexOf(b) + 1 || 99) || a.localeCompare(b, "ko"));
     const centers = selected ? selected : [...tplCenters.filter((c) => (x.centerQty[c] || 0) > 0), ...extra];
-    return { ...x, supplier: p.supplier, settings: s, tplCenters, centers, selectedMode: !!selected, isNew: !!isNew, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
+    const hidden = hid.suppliers.includes(p.supplier);
+    return { ...x, supplier: p.supplier, settings: s, tplCenters, centers: hidden ? [] : centers, selectedMode: !hidden && !!selected, hidden, hiddenProducts: hid.products[p.supplier] || [], isNew: !!isNew, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
   };
   const list = inv.pivots.map((p) => finish(per.get(p.pivot) || { pivot: p, byK: {}, centerQty: {}, total: 0, added: [] }));
   // 명세서 파일에 없는 새 공급사
@@ -7476,7 +7479,7 @@ function emartInvoicePlan(inv, rows, settings) {
   });
   const added = [];
   list.forEach((x) => x.added.forEach((a) => added.push({ name: a.name, supplier: x.supplier, isNewSupplier: x.isNew, qty: a.total })));
-  return { list, added, unknown: [] };
+  return { list, added, unknown: [], skipped };
 }
 
 // ----- 명세서 시트에 줄 끼워 넣기 (엑셀 "행 삽입"과 같게: 아래 줄·수식·병합·조건부서식·인쇄영역 모두 밀기) -----
@@ -7700,7 +7703,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   const keep = new Set();
   const report = { suppliers: [], added: plan.added, missingCenters: [], newSuppliers: [] };
   const supSettings = (settings && settings.suppliers) || {};
-  const want = (x) => (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier));
+  const want = (x) => !x.hidden && (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier));
 
   // 새 공급사: 다른 공급사 블록(피벗 + 센터 12장)을 복사해서 만든다
   const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
@@ -7828,8 +7831,29 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       const ws = byName.get(sh.name);
       const sheetSerial = dateSerial + (sh.b13Offset || 0);
       setCellXml(ws, "B13", sheetSerial);
+      // 발행 안 함으로 뺀 상품 줄: 위(공급받는자 보관용) 줄을 비우면 아래 보관용 줄도 따라서 비워짐
+      const hidRows = sh.rows.filter((row) => {
+        const prod = p.products.get(row.k);
+        return (x.hiddenProducts || []).some((n) => n === row.name || (prod && n === prod.name));
+      });
+      if (hidRows.length) {
+        emInvUnshare(ws, tpl.sst);
+        hidRows.forEach((row) =>
+          ["E", "M", "Q", "T", "W", "AA"].forEach((col) => {
+            const c = ws.cells.get(col + row.r);
+            const st = c ? c.el.getAttribute("s") : null;
+            if (c) {
+              const fEl = c.el.getElementsByTagName("f")[0];
+              if (fEl) c.el.removeChild(fEl);
+            }
+            emInvSetFormula(ws, col + row.r, '""', st);
+          })
+        );
+        readSheetCells(ws, tpl.sst);
+      }
       sh.rows.forEach((row) => {
         const prod = p.products.get(row.k);
+        if (hidRows.includes(row)) return;
         const o = ps[prod.name] || ps[row.name] || {};
         if (o.displayName) setCellXml(ws, "E" + row.r, o.displayName);
         if (o.packQty > 0) setCellXml(ws, "M" + row.r, Number(o.packQty));
@@ -8377,12 +8401,14 @@ function EmartPickingView({ emartOrders, authToken }) {
   const rows = useMemo(
     () =>
       allRows.filter((r) => {
+        if (isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)) return false; // 피킹지 순서 설정에서 뺀(삭제한) 공급사·상품
         const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
         return !(ov && (ov.paused || ov.discontinued));
       }),
-    [allRows, emInfo, tplInfo] // eslint-disable-line
+    [allRows, emInfo, tplInfo, orderCfg] // eslint-disable-line
   );
   const hiddenCount = useMemo(() => new Set(allRows.map((r) => r.name)).size - new Set(rows.map((r) => r.name)).size, [allRows, rows]);
+  const removedByOrderCfg = useMemo(() => new Set(allRows.filter((r) => isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)).map((r) => r.name)).size, [allRows, orderCfg]);
   // 상품 목록: 템플릿 시트 순서(공급사별)대로, 템플릿에 없는 상품은 맨 뒤
   const products = useMemo(() => {
     const m = new Map();
@@ -8536,7 +8562,13 @@ function EmartPickingView({ emartOrders, authToken }) {
       )}
       {tplErr && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
       {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
-      {hiddenCount > 0 && <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 10 }}>※ 상품 정보 관리에서 일시중지·삭제한 상품 {hiddenCount}개는 빠져 있어요.</div>}
+      {hiddenCount > 0 && (
+        <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 10 }}>
+          ※ 빠진 상품 {hiddenCount}개: {removedByOrderCfg > 0 ? `피킹지 순서 설정에서 삭제 ${removedByOrderCfg}개` : ""}
+          {removedByOrderCfg > 0 && hiddenCount - removedByOrderCfg > 0 ? " · " : ""}
+          {hiddenCount - removedByOrderCfg > 0 ? `상품 정보 관리에서 일시중지·삭제 ${hiddenCount - removedByOrderCfg}개` : ""} (복구는 각 설정창에서)
+        </div>
+      )}
       {dateOptions.length === 0 ? (
         <div style={cardStyle}>
           <EmptyRow text="이마트 발주가 없습니다. 먼저 주문정보 (E.MART)에서 발주파일을 업로드해주세요." />
@@ -8805,6 +8837,70 @@ async function updateSetting(key, authToken, updater) {
   }
 }
 const brandSettingKey = (prefix, brand) => `${prefix}_${String(brand).toLowerCase()}`;
+// ----- 브랜드 설정의 "빼기(삭제)" 목록: 피킹 안 함 / 명세서 발행 안 함 (복구 가능) -----
+// cfg.hidden = { suppliers: [공급사...], products: { 공급사: [상품명...] }, at: { "공급사" | "공급사|상품": 날짜 } }
+function brandHiddenOf(cfg) {
+  const h = (cfg && cfg.hidden) || {};
+  return { suppliers: Array.isArray(h.suppliers) ? h.suppliers : [], products: h.products && typeof h.products === "object" ? h.products : {}, at: h.at || {} };
+}
+function isBrandHidden(cfg, sup, name) {
+  const h = brandHiddenOf(cfg);
+  if (h.suppliers.includes(sup)) return true;
+  if (name == null) return false;
+  return (h.products[sup] || []).includes(name);
+}
+// op: { type: "hide"|"restore", sup, name? }
+async function setBrandHidden(key, authToken, op) {
+  return updateSetting(key, authToken, (v) => {
+    const h = brandHiddenOf(v);
+    const n = { suppliers: [...h.suppliers], products: Object.fromEntries(Object.entries(h.products).map(([k, a]) => [k, [...(a || [])]])), at: { ...h.at } };
+    const id = op.name == null ? op.sup : `${op.sup}|${op.name}`;
+    if (op.name == null) {
+      n.suppliers = n.suppliers.filter((x) => x !== op.sup);
+      if (op.type === "hide") n.suppliers.push(op.sup);
+    } else {
+      const arr = (n.products[op.sup] || []).filter((x) => x !== op.name);
+      if (op.type === "hide") arr.push(op.name);
+      if (arr.length) n.products[op.sup] = arr;
+      else delete n.products[op.sup];
+    }
+    if (op.type === "hide") n.at[id] = todayStr();
+    else delete n.at[id];
+    return { ...v, hidden: n };
+  });
+}
+// 빼 둔 목록 + 복구 버튼 (설정창 공통)
+function BrandHiddenList({ cfg, title, emptyText, onRestore, busy }) {
+  const h = brandHiddenOf(cfg);
+  const items = [...h.suppliers.map((sup) => ({ sup, name: null })), ...Object.entries(h.products).flatMap(([sup, arr]) => (arr || []).map((name) => ({ sup, name })))];
+  return (
+    <div style={{ border: `1px solid ${items.length ? "#E6A9A2" : T.border}`, borderRadius: 10, padding: "12px 14px", background: items.length ? "#FFF8F7" : "#FBFAF7" }}>
+      <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 6 }}>
+        {title} ({items.length})
+      </div>
+      {!items.length ? (
+        <div style={{ fontSize: 12, color: T.inkSoft }}>{emptyText}</div>
+      ) : (
+        items.map((it) => {
+          const at = h.at[it.name == null ? it.sup : `${it.sup}|${it.name}`];
+          return (
+            <div key={it.sup + "|" + it.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${T.border}` }}>
+              <span style={{ fontSize: 11, fontWeight: 800, padding: "2px 7px", borderRadius: 99, background: it.name == null ? "#FDECEA" : "#F3EDE7", color: it.name == null ? "#B03A2E" : "#6D4C41", whiteSpace: "nowrap" }}>{it.name == null ? "공급사 전체" : "상품"}</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 13, textDecoration: "line-through", color: T.inkSoft }}>
+                {it.name == null ? it.sup : it.name}
+                {it.name != null && <span style={{ fontSize: 11.5 }}> · {it.sup}</span>}
+              </span>
+              {at && <span style={{ fontSize: 11, color: T.inkSoft, whiteSpace: "nowrap" }}>{at.slice(5).replace("-", "/")} 뺌</span>}
+              <button disabled={busy} onClick={() => onRestore(it)} style={{ ...smallBtnStyle, padding: "3px 10px", fontSize: 12, fontWeight: 700, color: T.tealDeep, borderColor: T.teal }}>
+                ↺ 복구
+              </button>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
 
 // 브랜드 순서 설정 적용: 설정에 있는 공급사 먼저(설정 순서), 없는 공급사는 원래 순서대로 뒤에. 공급사 안의 상품도 같은 방식.
 function applyBrandOrder(list, cfg, supOf, nameOf) {
@@ -8865,13 +8961,27 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
     if (!dirty) setDraft({ suppliers: (saved && saved.suppliers) || null, products: { ...((saved && saved.products) || {}) } });
   }, [saved]); // eslint-disable-line
 
+  const hiddenCfg = brandHiddenOf(saved);
   const detSup = detected.map((d) => d.key);
   const base = (draft && draft.suppliers) || [];
-  const supplierList = [...base, ...detSup.filter((k) => !base.includes(k))];
+  const supplierList = [...base, ...detSup.filter((k) => !base.includes(k))].filter((k) => !hiddenCfg.suppliers.includes(k));
   const curSup = selSup && supplierList.includes(selSup) ? selSup : supplierList[0] || null;
   const detNames = (detected.find((d) => d.key === curSup) || { names: [] }).names;
   const savedNames = (draft && draft.products[curSup]) || [];
-  const productNames = [...savedNames, ...detNames.filter((n) => !savedNames.includes(n))];
+  const productNames = [...savedNames, ...detNames.filter((n) => !savedNames.includes(n))].filter((n) => !(hiddenCfg.products[curSup] || []).includes(n));
+  // 피킹 안 함(빼기)·복구: 바로 저장
+  const hideOrRestore = async (op) => {
+    const what = op.name == null ? `[${op.sup}] 공급사 전체` : `[${op.name}]`;
+    const text =
+      op.type === "hide"
+        ? `${what}를 ${label} 피킹지에서 뺄까요?\n\n· 피킹지 화면·엑셀에서 안 나와요\n· 거래명세서는 그대로예요 (명세서는 거래명세서 설정에서 따로 빼요)\n· 잘못 뺐으면 아래 "피킹 안 하는 목록"에서 [복구]를 누르면 돼요`
+        : `${what}를 다시 피킹지에 넣을까요?`;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    const r = await setBrandHidden(key, authToken, op);
+    setBusy(false);
+    setMsg(r.ok ? (op.type === "hide" ? `${what}를 피킹지에서 뺐어요.` : `${what}를 복구했어요.`) : `저장 실패 (${r.error})`);
+  };
 
   const change = (fn) => {
     setDraft((d) => {
@@ -8897,8 +9007,7 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
   }
   async function save() {
     setBusy(true);
-    const value = { suppliers: draft.suppliers, products: draft.products };
-    const r = await updateSetting(key, authToken, () => value);
+    const r = await updateSetting(key, authToken, (v) => ({ ...v, suppliers: draft.suppliers, products: draft.products })); // 빼기 목록(hidden)은 그대로 둠
     setBusy(false);
     setDirty(false);
     setMsg(r.ok ? "저장했어요. 피킹지 화면과 엑셀에 바로 반영돼요." : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
@@ -8915,7 +9024,7 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
         <button onClick={() => change((n) => ((n.suppliers = null), (n.products = {})))} style={smallBtnStyle}>
           전부 기본 순서로 되돌리기
         </button>
-        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</span>}
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장 실패") || msg.startsWith("서버에") ? T.danger : T.teal }}>{msg}</span>}
       </div>
       {!draft ? (
         <div style={{ padding: 24, fontSize: 13, color: T.inkSoft }}>불러오는 중...</div>
@@ -8944,9 +9053,13 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
                 <button style={rowBtn} onClick={() => moveSup(i, i + 1)} disabled={i === supplierList.length - 1} title="아래로">
                   ▼
                 </button>
-                {!detSup.includes(k) && (
+                {!detSup.includes(k) ? (
                   <button style={{ ...rowBtn, color: T.danger }} title="순서표에서 빼기" onClick={() => change((n) => ((n.suppliers = supplierList.filter((x) => x !== k)), delete n.products[k]))}>
                     ✕
+                  </button>
+                ) : (
+                  <button style={{ ...rowBtn, color: T.danger, fontSize: 11.5, fontWeight: 700 }} disabled={busy} title="이 공급사 전체를 피킹지에서 빼기 (복구 가능)" onClick={() => hideOrRestore({ type: "hide", sup: k })}>
+                    🗑 삭제
                   </button>
                 )}
               </div>
@@ -9000,6 +9113,9 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
                 <button style={rowBtn} onClick={() => moveProd(i, productNames.length - 1)} disabled={i === productNames.length - 1} title="맨 아래로">
                   ⤓
                 </button>
+                <button style={{ ...rowBtn, color: T.danger, fontSize: 11.5, fontWeight: 700 }} disabled={busy} title="이 상품을 피킹지에서 빼기 (복구 가능)" onClick={() => hideOrRestore({ type: "hide", sup: curSup, name: n })}>
+                  🗑
+                </button>
               </div>
             ))}
             {curSup && (
@@ -9019,6 +9135,9 @@ function BrandOrderSettingsModal({ brand, label, authToken, detected, onClose })
               </div>
             )}
           </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <BrandHiddenList cfg={saved} busy={busy} title="3. 피킹 안 하는 공급사·상품" emptyText="없어요. 공급사 옆 [🗑 삭제] 또는 상품 옆 [🗑]을 누르면 피킹지에서 빠지고 여기에 모여요. 잘못 뺐으면 [복구]." onRestore={(it) => hideOrRestore({ type: "restore", sup: it.sup, name: it.name })} />
+          </div>
         </div>
       )}
     </BrandModalFrame>
@@ -9031,8 +9150,9 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
   const key = brandSettingKey("invoice_settings", brand);
   const saved = useSetting(key, authToken);
   const savedSup = (saved && saved.suppliers) || {};
+  const hiddenCfg = brandHiddenOf(saved);
   const [extraSup, setExtraSup] = useState([]);
-  const supplierKeys = Array.from(new Set([...detected.map((d) => d.key), ...Object.keys(savedSup), ...extraSup]));
+  const supplierKeys = Array.from(new Set([...detected.map((d) => d.key), ...Object.keys(savedSup), ...extraSup])).filter((k) => !hiddenCfg.suppliers.includes(k));
   const [selKey, setSelKey] = useState(null);
   const cur = selKey && supplierKeys.includes(selKey) ? selKey : supplierKeys[0] || null;
   const det = detected.find((d) => d.key === cur) || { products: [], centers: [], info: {} };
@@ -9070,7 +9190,24 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
     setMsg("");
   };
   const allCenters = Array.from(new Set([...det.centers, ...((form && form.centers.list) || [])]));
-  const productList = Array.from(new Set([...det.products.map((p) => p.name), ...Object.keys((form && form.products) || {})])).map((n) => det.products.find((p) => p.name === n) || { name: n, pack: 0 });
+  const productList = Array.from(new Set([...det.products.map((p) => p.name), ...Object.keys((form && form.products) || {})]))
+    .filter((n) => !(hiddenCfg.products[cur] || []).includes(n))
+    .map((n) => det.products.find((p) => p.name === n) || { name: n, pack: 0 });
+  // 명세서 발행 안 함(빼기)·복구: 바로 저장
+  const hideOrRestore = async (op) => {
+    const what = op.name == null ? `[${op.sup}] 공급사 전체` : `[${op.name}]`;
+    const text =
+      op.type === "hide"
+        ? `${what}를 ${label} 거래명세서에서 뺄까요?\n\n· ${op.name == null ? "이 공급사 명세서(피벗·센터 시트)가 아예 안 나와요" : "명세서에서 이 상품 줄이 비워지고 수량도 안 들어가요"}\n· 피킹지는 그대로예요 (피킹은 피킹지 순서 설정에서 따로 빼요)\n· 잘못 뺐으면 "발행 안 하는 목록"에서 [복구]를 누르면 돼요`
+        : `${what}를 다시 거래명세서에 넣을까요?`;
+    if (op.type === "hide" && op.name == null && !confirmLeave()) return;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    const r = await setBrandHidden(key, authToken, op);
+    setBusy(false);
+    if (op.type === "hide" && op.name == null) setDirty(false);
+    setMsg(r.ok ? (op.type === "hide" ? `저장했어요. ${what}를 명세서에서 뺐어요.` : `저장했어요. ${what}를 복구했어요.`) : `서버에 저장하지 못했어요 (${r.error})`);
+  };
 
   async function save() {
     if (form.centers.mode === "selected" && form.centers.list.length === 0) return setMsg('발행할 센터를 하나 이상 고르거나 "발주 있는 센터 전부"로 바꿔주세요.');
@@ -9107,7 +9244,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
     setMsg(r.ok ? "저장했어요. 고정값으로 남고, 거래명세서를 만들 때 이 값으로 나가요." : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
   }
   async function removeSupplier() {
-    if (!window.confirm(`${cur}의 거래명세서 설정을 지울까요?`)) return;
+    if (!window.confirm(`${cur}의 거래명세서 설정값(사업자 정보·발행 센터·상품 입수/소비기한)을 지우고 기본값으로 돌릴까요?\n(명세서 발행은 계속돼요. 발행 자체를 안 하려면 [발행 안 함]을 누르세요)`)) return;
     setBusy(true);
     await updateSetting(key, authToken, (v) => {
       const next = { ...v, suppliers: { ...(v.suppliers || {}) } };
@@ -9158,6 +9295,14 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
           </div>
           <div style={{ overflowY: "auto", flex: 1, padding: "0 8px 10px" }}>
             {shown.length === 0 && <div style={{ fontSize: 12, color: T.inkSoft, padding: 8 }}>아직 {label} 발주가 없어요. 위에서 공급사를 추가해 미리 설정할 수 있어요.</div>}
+            {(hiddenCfg.suppliers.length > 0 || Object.keys(hiddenCfg.products).length > 0) && (
+              <button
+                onClick={() => setTab("hidden")}
+                style={{ width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 6, border: `1px dashed #E6A9A2`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: tab === "hidden" ? "#FDECEA" : "#fff", color: "#B03A2E" }}
+              >
+                🗑 발행 안 하는 목록 ({hiddenCfg.suppliers.length + Object.values(hiddenCfg.products).reduce((a, x) => a + (x || []).length, 0)}) · 복구
+              </button>
+            )}
             {shown.map((k) => (
               <button
                 key={k}
@@ -9171,7 +9316,15 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
           </div>
         </div>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          {!cur || !form ? (
+          {tab === "hidden" ? (
+            <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+              {msg && <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+              <BrandHiddenList cfg={saved} busy={busy} title={`${label} 거래명세서 발행 안 하는 공급사·상품`} emptyText="없어요." onRestore={(it) => hideOrRestore({ type: "restore", sup: it.sup, name: it.name })} />
+              <button onClick={() => setTab("info")} style={{ ...smallBtnStyle, marginTop: 12 }}>
+                ← 공급사 설정으로
+              </button>
+            </div>
+          ) : !cur || !form ? (
             <div style={{ padding: 24, fontSize: 13, color: T.inkSoft }}>왼쪽에서 공급사를 고르거나 추가해 주세요.</div>
           ) : (
             <>
@@ -9252,6 +9405,7 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                             <th>명세서 상품명</th>
                             <th style={{ width: 96, textAlign: "center" }}>입수</th>
                             <th style={{ width: 130, textAlign: "center" }}>소비기한 (+일 또는 날짜)</th>
+                            <th style={{ width: 80, textAlign: "center" }}>발행</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -9266,6 +9420,11 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
                               <td>
                                 <input style={{ ...inputStyle, width: "100%", textAlign: "center" }} value={pv(p.name, "expiryDays")} type="text" placeholder={p.expiry != null ? `${p.expiry}일` : p.expiryText ? p.expiryText : "공란"} title="숫자 = 명세서 날짜 + 그 일수 (매일 자동), 26.11.08 처럼 쓰면 그 날짜로 고정" onChange={(e) => setPv(p.name, "expiryDays", e.target.value)} />
                               </td>
+                              <td style={{ textAlign: "center" }}>
+                                <button disabled={busy} onClick={() => hideOrRestore({ type: "hide", sup: cur, name: p.name })} title="이 상품을 명세서에서 빼기 (복구 가능)" style={{ ...smallBtnStyle, padding: "4px 9px", fontSize: 12, color: T.danger, borderColor: T.danger + "55" }}>
+                                  🗑 삭제
+                                </button>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -9276,12 +9435,15 @@ function BrandInvoiceSettingsModal({ brand, label, authToken, detected, onClose 
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7" }}>
                 {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했어요") ? T.teal : T.danger }}>{msg}</div>}
+                <button onClick={() => hideOrRestore({ type: "hide", sup: cur })} disabled={busy} title="이 공급사 명세서를 아예 안 만들기 (복구 가능)" style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger, fontWeight: 700 }}>
+                  🗑 이 공급사 명세서 발행 안 함
+                </button>
                 {savedSup[cur] && (
-                  <button onClick={removeSupplier} disabled={busy} style={{ ...smallBtnStyle, marginLeft: "auto", color: T.danger, borderColor: T.danger + "55" }}>
-                    이 공급사 설정 지우기
+                  <button onClick={removeSupplier} disabled={busy} title="사업자 정보·센터·상품 설정값만 지우기 (명세서는 계속 나감)" style={{ ...smallBtnStyle, color: T.inkSoft }}>
+                    설정값 초기화
                   </button>
                 )}
-                <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, marginLeft: savedSup[cur] ? 0 : "auto", opacity: busy || !dirty ? 0.55 : 1 }}>
+                <button onClick={save} disabled={busy || !dirty} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty ? 0.55 : 1 }}>
                   <Check size={14} /> {busy ? "저장 중..." : dirty ? "저장" : "저장할 변경 없음"}
                 </button>
               </div>
