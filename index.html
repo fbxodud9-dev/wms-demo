@@ -2660,7 +2660,7 @@ function WMSApp() {
             </button>
           </div>
         )}
-        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} authToken={authToken} />}
+        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
         {tab === "inbound" && <Inbound items={itemsView} onSubmit={applyInbound} />}
@@ -2729,7 +2729,7 @@ function WMSApp() {
 
 /* ---------- 물동량 (대시보드) ---------- */
 // 매일 받는 "금일 물량" 표(채널별 1편/2편 수량)를 그대로 옮긴 구조. GS 1편/2편/냉장·당착은 주문 데이터에서 자동 집계하고,
-// 나머지 채널(이마트·세븐·CU·냉동 등)은 아직 시스템에 주문이 없어서 화면에서 직접 입력한다(날짜별로 서버에 저장).
+// 이마트 1편/2편도 일별 발주 집계에서 자동. 나머지 채널(세븐·CU·냉동 등)은 아직 시스템에 주문이 없어서 화면에서 직접 입력한다(날짜별로 서버에 저장).
 const VOLUME_ROW_DEFS = [
   // [key, 화면 라벨, 채널 id, 수기입력 시 표시하는 전체 이름]
   ["emart_1", "1편", "emart", "이마트 1편"],
@@ -2765,7 +2765,7 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2"]; // 주문 데이터에서 자동 집계되는 칸
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -2802,6 +2802,17 @@ function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
   return auto;
 }
 
+// 이마트 자동 집계: "일별 발주 집계 > 이마트" 시트와 같은 계산 (이마트 집계 설정·직접 고친 칸 반영)
+//   1편 = 이마트 시트 1편수량, 2편 = 2편수량
+function computeEmartAuto(emartOrders, date, rules, editsEm, savedMonth) {
+  const hasOrders = emartOrders.some((o) => o.createdAt === date);
+  const stored = packEmartMonth(savedMonth)[date];
+  const day = hasOrders || !stored ? computeEmartDailySnapshot(emartOrders, date) : stored;
+  const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, emartPartOf, editsEm && editsEm[date] ? { [date]: editsEm[date] } : null, rules);
+  const r = t.rows.find((x) => x.date === date);
+  return { emart_1: r ? r.p1 : 0, emart_2: r ? r.p2 : 0 };
+}
+
 // saved: 그 날짜에 직접 입력해 저장한 값({key: 숫자}). GS 3칸은 입력이 없으면 주문 데이터 자동값을 쓴다.
 function computeVolumeDay(auto, saved) {
   const rows = {};
@@ -2809,7 +2820,7 @@ function computeVolumeDay(auto, saved) {
     const s = saved ? saved[key] : undefined;
     const entered = s !== undefined && s !== null && s !== "";
     const isAuto = VOLUME_AUTO_KEYS.includes(key);
-    // GS 1편·냉장·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
+    // GS 1편·냉장·2편, 이마트 1편·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
     if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
     else rows[key] = { value: entered ? Number(s) : 0, entered, fromOrders: false, autoValue: null };
   });
@@ -2908,7 +2919,7 @@ function VolumePanel({ variant, date, day, prevDay, onEdit }) {
           </div>
         ) : (
           <div style={{ fontSize: 12.5, color: T.inkSoft, background: "#F7F6F1", border: `1px dashed ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 16 }}>
-            이 날짜에 집계된 물동량이 없어요. GS는 주문 파일을 올리면 자동으로 채워지고, 다른 채널은 “입력·수정”에서 숫자를 넣어주세요.
+            이 날짜에 집계된 물동량이 없어요. GS·이마트는 발주 파일을 올리면 일별 발주 집계 숫자로 자동으로 채워지고, 다른 채널은 “입력·수정”에서 숫자를 넣어주세요.
           </div>
         )}
 
@@ -3031,7 +3042,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
-            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편)은 일별 발주 집계 화면의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
+            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편, 이마트 1편·2편)은 일별 발주 집계 화면(GS·이마트 시트)의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5" }}>
@@ -3053,7 +3064,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   );
 }
 
-function VolumeDashboard({ orders, authToken }) {
+function VolumeDashboard({ orders, emartOrders = [], authToken }) {
   const today = localDateStr();
   const [baseDate, setBaseDate] = useState(today);
   const [savedMap, setSavedMap] = useState({});
@@ -3086,7 +3097,7 @@ function VolumeDashboard({ orders, authToken }) {
     };
   }, [authToken, baseDate]);
 
-  const orderDates = useMemo(() => new Set(orders.map((o) => o.createdAt)), [orders]);
+  const orderDates = useMemo(() => new Set([...orders, ...emartOrders].map((o) => o.createdAt)), [orders, emartOrders]);
   const prevDate = useMemo(() => {
     for (let i = 1; i <= 21; i++) {
       const d = shiftDateStr(baseDate, -i);
@@ -3119,8 +3130,17 @@ function VolumeDashboard({ orders, authToken }) {
       cancelled = true;
     };
   }, [authToken, baseDate, prevDate]);
-  const autoToday = useMemo(() => computeGsAuto(orders, baseDate, dailyRules, editsBase && editsBase.GS, gsStored[baseDate]), [orders, baseDate, dailyRules, editsBase, gsStored]);
-  const autoPrev = useMemo(() => computeGsAuto(orders, prevDate, dailyRules, editsPrev && editsPrev.GS, gsStored[prevDate]), [orders, prevDate, dailyRules, editsPrev, gsStored]);
+  // 이마트: 일별 집계 이마트 시트와 같은 설정·저장값 사용
+  const emRulesSaved = useSetting(DAILY_CHANNELS["이마트"].rulesKey, authToken);
+  const emRules = useMemo(() => normalizeDailyRules(emRulesSaved), [emRulesSaved]);
+  const emSavedBase = useSetting(emartDailyKey(baseDate.slice(0, 7)), authToken);
+  const emSavedPrev = useSetting(emartDailyKey(prevDate.slice(0, 7)), authToken);
+  const autoOf = (date, edits, emSaved) => ({
+    ...computeGsAuto(orders, date, dailyRules, edits && edits.GS, gsStored[date]),
+    ...computeEmartAuto(emartOrders, date, emRules, edits && edits["이마트"], emSaved),
+  });
+  const autoToday = useMemo(() => autoOf(baseDate, editsBase, emSavedBase), [orders, emartOrders, baseDate, dailyRules, emRules, editsBase, emSavedBase, gsStored]);
+  const autoPrev = useMemo(() => autoOf(prevDate, editsPrev, emSavedPrev), [orders, emartOrders, prevDate, dailyRules, emRules, editsPrev, emSavedPrev, gsStored]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
 
@@ -3162,7 +3182,7 @@ function VolumeDashboard({ orders, authToken }) {
         <VolumeEditModal
           key={editingDate}
           date={editingDate}
-          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : computeGsAuto(orders, editingDate, dailyRules, ((SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}).GS), gsStored[editingDate])}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : autoOf(editingDate, SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}, SETTING_CACHE[emartDailyKey(editingDate.slice(0, 7))])}
           saved={savedMap[editingDate]}
           onSave={handleSave}
           onClose={() => setEditingDate(null)}
@@ -3173,13 +3193,13 @@ function VolumeDashboard({ orders, authToken }) {
 }
 
 /* ---------- dashboard ---------- */
-function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, authToken }) {
+function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, emartOrders, authToken }) {
   const inCount = todayTx.filter((t) => t.type === "IN").length;
   const outCount = todayTx.filter((t) => t.type === "OUT").length;
   return (
     <div>
       <PageHeader title="대시보드" sub={`오늘, ${fmtDate(localDateStr())}`} />
-      <VolumeDashboard orders={orders || []} authToken={authToken} />
+      <VolumeDashboard orders={orders || []} emartOrders={emartOrders || []} authToken={authToken} />
       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>재고 · 입출고</div>
       <div style={{ display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" }}>
         <Metric label="총 품목 수" value={items.length} sub="등록된 상품코드" />
