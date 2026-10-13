@@ -11905,6 +11905,7 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const dk = getDangchakInfo(name);
+  const rows = product.regionRows;
   const baseDk = getDangchakInfoBase(name);
   const partNow = detectPart(name);
   const partAuto = detectPartByName(name);
@@ -11932,26 +11933,46 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
       else e.part = p;
       return e;
     }, `${p}편으로 정했어요. 피킹지·명세서·일별 집계에 바로 반영돼요.`);
+  // 지역 줄은 여러 개 눌러서 고르고(저장 전), [당착 변환]을 눌러야 안내 후 저장
+  const [pick, setPick] = useState(() => new Set(regionsNow));
+  useEffect(() => setPick(new Set(regionsNow)), [regionsNow.join()]); // eslint-disable-line
   const clickRegion = (r) => {
     if (mode === "full") return;
-    const on = regionsNow.includes(r.key);
-    const label = r.shortName || r.key;
-    if (on) {
-      if (!window.confirm(`"${label}"을(를) 당착에서 빼고 평소 피킹지로 돌릴까요?`)) return;
-      const next = regionsNow.filter((c) => c !== r.key);
-      setDk(next.length ? { style: "combined", regions: next, group } : null, `"${label}" 당착을 풀었어요.`);
-    } else {
-      const raw = r.rawQty ?? r.qty;
-      if (!window.confirm(`이 상품은 "${label}" 지역만 당착인가요?\n\n확인을 누르면\n· 평소 피킹지에서 ${label}은(는) 0으로 바뀌고\n· 당착 피킹지 "${group}(오전현장-${label})"에 ${label} ${raw}개가 나가요 (${group} 맨 뒤 시트)`)) return;
-      const next = REGION_ORDER_TABLE.map((x) => x.code).filter((c) => c === r.key || regionsNow.includes(c));
-      const extra = [...regionsNow, r.key].filter((c) => !next.includes(c));
-      setDk({ style: "combined", regions: [...next, ...extra], group }, `"${label}"을(를) 당착으로 정했어요.`);
-    }
+    setPick((prev) => {
+      const n = new Set(prev);
+      n.has(r.key) ? n.delete(r.key) : n.add(r.key);
+      return n;
+    });
   };
-  const rows = product.regionRows;
+  const nameOf = (code) => (rows.find((x) => x.key === code) || {}).shortName || code;
+  const pickList = rows.map((x) => x.key).filter((c) => pick.has(c));
+  const changed = pickList.slice().sort().join() !== regionsNow.slice().sort().join();
+  const convert = () => {
+    if (!changed) return;
+    const added = pickList.filter((c) => !regionsNow.includes(c));
+    const removed = regionsNow.filter((c) => !pick.has(c));
+    const qtyTxt = (c) => {
+      const r = rows.find((x) => x.key === c);
+      return `${nameOf(c)} ${(r ? r.rawQty ?? r.qty : 0).toLocaleString()}개`;
+    };
+    const sheet = `${group}(오전현장${pickList.length === 1 ? "-" + nameOf(pickList[0]) : ""})`;
+    const lines = [];
+    if (pickList.length) {
+      lines.push(`당착 지역: ${pickList.map(nameOf).join(", ")} (${pickList.length}곳)`);
+      if (added.length) lines.push(`새로 당착: ${added.map(qtyTxt).join(", ")}`);
+      if (removed.length) lines.push(`당착 해제(평소 피킹지로): ${removed.map(nameOf).join(", ")}`);
+      lines.push("");
+      lines.push(`확인을 누르면`);
+      lines.push(`· 평소 피킹지에서 이 지역들은 0으로 바뀌고`);
+      lines.push(`· 당착 피킹지 "${sheet}"에 이 지역 수량이 나가요 (${group} 시트들 맨 뒤)`);
+      lines.push(`· 거래명세서도 이 지역은 당착 명세서로 나가요`);
+    } else lines.push(`당착 지역을 모두 풀고 평소 피킹지로 돌릴까요?`);
+    if (!window.confirm(lines.join("\n"))) return;
+    setDk(pickList.length ? { style: "combined", regions: pickList, group } : null, pickList.length ? `당착으로 바꿨어요: ${pickList.map(nameOf).join(", ")}` : "당착을 모두 풀었어요.");
+  };
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
-  const dkRows = mode === "full" ? rows.filter((r) => (r.rawQty ?? r.qty) > 0 || true) : rows.filter((r) => regionsNow.includes(r.key));
+  const dkRows = mode === "full" ? rows : rows.filter((r) => pick.has(r.key));
   const seg = (on) => ({ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${on ? T.steel : T.border}`, background: on ? T.steel : "#fff", color: on ? "#fff" : T.ink, fontWeight: 700, fontSize: 13, cursor: busy ? "wait" : "pointer", fontFamily: "inherit" });
   const cell = { padding: "5px 8px", borderBottom: `1px solid ${T.border}`, fontSize: 12.5 };
   const num = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
@@ -11962,7 +11983,7 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div>
               <div style={{ fontSize: 17, fontWeight: 800 }}>피킹지 설정 · {product.displayName || name}</div>
-              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{pickingSupplierKey(product.supplier || "")} · 누르는 즉시 저장되고 피킹지시서·거래명세서·일별 집계에 바로 반영돼요</div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{pickingSupplierKey(product.supplier || "")} · 편 버튼은 바로 저장, 당착 지역은 여러 개 고른 뒤 [당착 변환]을 누르면 저장돼요 (피킹지시서·거래명세서·일별 집계에 바로 반영)</div>
             </div>
             <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>닫기</button>
           </div>
@@ -11994,8 +12015,23 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
         <div style={{ display: "flex", gap: 16, padding: 16, overflow: "auto", flexWrap: "wrap", alignItems: "flex-start" }}>
           <div style={{ flex: "3 1 460px", minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>{mode === "full" ? "(전 지역 당착이라 당착 피킹지로 나가요)" : "· 당착인 지역 줄을 누르세요"}</span>
+              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>{mode === "full" ? "(전 지역 당착이라 당착 피킹지로 나가요)" : "· 당착인 지역 줄을 모두 누른 뒤 [당착 변환]"}</span>
             </div>
+            {mode !== "full" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap", position: "sticky", top: 0, background: T.surface, zIndex: 2, padding: "4px 0" }}>
+                <button disabled={busy || !changed} onClick={convert} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !changed ? 0.5 : 1 }}>
+                  당착 변환{changed ? ` (${pickList.length}곳)` : ""}
+                </button>
+                {changed && (
+                  <button disabled={busy} onClick={() => setPick(new Set(regionsNow))} style={smallBtnStyle}>
+                    선택 취소
+                  </button>
+                )}
+                <span style={{ fontSize: 12, color: changed ? T.danger : T.inkSoft, fontWeight: changed ? 700 : 500 }}>
+                  {changed ? `저장 전: ${pickList.length ? pickList.map(nameOf).join(", ") : "당착 없음"}` : regionsNow.length ? `지금 당착: ${regionsNow.map(nameOf).join(", ")}` : "지금 당착 없음"}
+                </span>
+              </div>
+            )}
             <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
               <div style={{ background: "#F7F6F2", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124", textAlign: "center" }}>{pickingSupplierKey(product.supplier || "")}</div>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -12010,7 +12046,9 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
                 </thead>
                 <tbody>
                   {rows.map((r) => {
-                    const isDk = mode === "full" || regionsNow.includes(r.key);
+                    const saved = mode === "full" || regionsNow.includes(r.key);
+                    const isDk = mode === "full" || pick.has(r.key); // 고른 상태(저장 전 포함)
+                    const pending = isDk !== saved;
                     const raw = r.rawQty ?? r.qty;
                     const q = isDk ? 0 : r.qty;
                     const b = bd(q);
@@ -12018,8 +12056,8 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
                       <tr
                         key={r.key}
                         onClick={() => !busy && clickRegion(r)}
-                        title={mode === "full" ? "" : isDk ? "눌러서 당착 풀기" : "눌러서 이 지역만 당착으로"}
-                        style={{ cursor: mode === "full" ? "default" : "pointer", background: isDk ? "#FFF2CC" : undefined }}
+                        title={mode === "full" ? "" : isDk ? "눌러서 선택 해제" : "눌러서 당착 지역으로 선택 (여러 개 가능)"}
+                        style={{ cursor: mode === "full" ? "default" : "pointer", background: isDk ? (pending ? "#FFE699" : "#FFF2CC") : pending ? "#FDECEA" : undefined, outline: pending ? `2px dashed ${T.amberDeep}` : undefined, outlineOffset: -2 }}
                         onMouseEnter={(e) => mode !== "full" && !isDk && (e.currentTarget.style.background = "#F2F8FD")}
                         onMouseLeave={(e) => mode !== "full" && !isDk && (e.currentTarget.style.background = "")}
                       >
@@ -12032,7 +12070,8 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
                         <td style={num}>{b.box || "- 0"}</td>
                         <td style={{ ...cell, textAlign: "center", fontWeight: 800 }}>
                           {r.shortName || r.key}
-                          {isDk && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>당착</span>}
+                          {isDk && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: pending ? T.danger : T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>{pending ? "선택" : "당착"}</span>}
+                          {!isDk && pending && <span style={{ marginLeft: 4, fontSize: 10.5, color: T.danger, fontWeight: 700 }}>해제</span>}
                         </td>
                         <td style={num}>{b.rem || "- 0"}</td>
                       </tr>
@@ -12044,12 +12083,12 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
           </div>
           <div style={{ flex: "2 1 280px", minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>당착 피킹지 미리보기</div>
-            {mode === "none" ? (
-              <div style={{ ...cardStyle, fontSize: 12.5, color: T.inkSoft }}>당착 없음 — 왼쪽 표에서 당착인 지역을 누르면 여기에 당착 피킹지가 생겨요.</div>
+            {mode === "none" && pick.size === 0 ? (
+              <div style={{ ...cardStyle, fontSize: 12.5, color: T.inkSoft }}>당착 없음 — 왼쪽 표에서 당착인 지역을 누르고 [당착 변환]을 누르면 당착 피킹지가 생겨요.</div>
             ) : (
               <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
                 <div style={{ background: "#FFF2CC", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124" }}>
-                  {mode === "full" ? `${product.displayName || name} (전 지역 당착 시트)` : `${group}(오전현장${regionsNow.length === 1 ? "-" + (rows.find((x) => x.key === regionsNow[0]) || {}).shortName : ""})`}
+                  {mode === "full" ? `${product.displayName || name} (전 지역 당착 시트)` : `${group}(오전현장${pickList.length === 1 ? "-" + nameOf(pickList[0]) : ""})${changed ? " · 저장 전" : ""}`}
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <tbody>
