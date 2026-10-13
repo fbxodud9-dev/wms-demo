@@ -9420,8 +9420,9 @@ const JOIN_NAME_FILL = "FFF2CC"; // 연한 노란색 (엑셀 "금색, 강조 4, 
 function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero, sheetNameOverride) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
-  // skipZero: 당착(현장출고) 상품용 - 37개 지역 전부가 아니라 그날 실제 주문 있는 지역만 보여줌(구역 합계는 유지)
-  const regionRowsUsed = skipZero ? product.regionRows.filter((r) => r.qty > 0) : product.regionRows;
+  // skipZero: 당착(현장출고) 상품용 - 영남/호남/수도권 권역으로 묶고 당착 지역 순서로 정렬 (발주 없는 지역도 0으로 표시)
+  // (2026-10-13 현장 요청) 당착 피킹지도 발주 없는 지역을 지우지 않고 0으로 남긴다 - 현장에서 행사제(수기 추가)를 하기 때문
+  const regionRowsUsed = product.regionRows;
   const ws = workbook.addWorksheet(safeSheetName(sheetNameOverride || product.displayName || product.name, usedNames));
   ws.__sheetMeta = { supplier: pickingSupplierKey(product.supplier || ""), type: skipZero ? "dangchak" : "product" }; // 시트 탭 색상용
   // 열 너비는 실물 피킹지 그대로 (G·H는 "소분박스/소분낱개"가 들어가서 17)
@@ -9668,7 +9669,7 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
   const regionNames = new Set();
   products.forEach((p) => {
     const dk = getDangchakInfo(p.name);
-    p.regionRows.forEach((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0 && regionNames.add(r.shortName));
+    p.regionRows.forEach((r) => dangchakHasRegion(dk, r.key) && regionNames.add(r.shortName)); // 발주 없어도 당착 지역이면 표시
   });
   const regionSuffix = regionNames.size === 1 ? `-${[...regionNames][0]}` : "";
   const ws = workbook.addWorksheet(safeSheetName(`${supplierLabel}(오전현장${regionSuffix})`, usedNames));
@@ -9695,9 +9696,8 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
     // 당착 몫은 그 상품에 지정된 지역 하나만 (나머지 지역 주문은 평소 피킹지시서로 정상적으로 나감)
     const dk = getDangchakInfo(product.name);
-    const rows = product.regionRows
-      .filter((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0)
-      .map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
+    // 당착 지역은 발주가 없어도 0으로 남긴다 (현장 행사제용)
+    const rows = product.regionRows.filter((r) => dangchakHasRegion(dk, r.key)).map((r) => ({ ...r, qty: r.rawQty ?? r.qty }));
     if (rows.length === 0) return;
     const totalQty = rows.reduce((a, r) => a + r.qty, 0);
 
@@ -9841,8 +9841,49 @@ function supplierCopySheetName(p) {
   return base.slice(0, 28 - SUPPLIER_COPY_SUFFIX.length) + SUPPLIER_COPY_SUFFIX; // 시트 이름은 28자까지 (safeSheetName)
 }
 
+// 당착 상품 중 그날 발주가 하나도 없는 상품도 시트가 사라지지 않게 0짜리 상품으로 채워 넣는다
+// (같은 당착 묶음(공급사)의 다른 상품이 그날 발주에 있을 때만 - 공급사 전체 발주가 없으면 넣지 않음)
+const LAST_PACK_BY_NAME = {}; // 상품명 -> 최근 발주파일 입수 (buildProductsForDate가 채움)
+function withZeroDangchakProducts(products) {
+  if (!products || products.length < 2) return products;
+  const names = new Set(Object.keys(DANGCHAK_PRODUCTS));
+  Object.entries(PRODUCT_INFO || {}).forEach(([n, ov]) => ov && ov.dangchak && ov.dangchak.style && names.add(n));
+  const groupOf = (name) => {
+    const dk = getDangchakInfo(name);
+    if (!dk) return null;
+    return dk.style === "full" ? "full:" + (dcVendorKey(name) || "당착") : "comb:" + dk.group;
+  };
+  const out = [...products];
+  names.forEach((name) => {
+    const dk = getDangchakInfo(name);
+    if (!dk || isProductInactive(name)) return;
+    if (out.some((p) => p.name === name || String(p.name).startsWith(name))) return;
+    const g = groupOf(name);
+    const sameGroup = out.filter((p) => groupOf(p.name) === g);
+    if (!sameGroup.length) return;
+    const part = detectPart(name);
+    const tpl = sameGroup.find((p) => p.part === part) || out.find((p) => p.part === part) || sameGroup[0];
+    const zero = {
+      ...tpl,
+      sku: `zero-${name}`,
+      name,
+      displayName: displayNameOf(name),
+      packQty: packQtyOverrideOf(name) ?? LAST_PACK_BY_NAME[name] ?? INVOICE_KNOWN_PACK[name] ?? tpl.packQty,
+      regionRows: tpl.regionRows.map((r) => ({ ...r, qty: 0, rawQty: 0 })),
+      totalQty: 0,
+      part,
+      baseName: String(name || "").replace(/(\d)\s*편?\s*$/, "").trim(),
+    };
+    // 같은 묶음 마지막 상품 바로 뒤에 넣어 공급사 순서를 유지
+    const lastIdx = out.lastIndexOf(sameGroup[sameGroup.length - 1]);
+    out.splice(lastIdx + 1, 0, zero);
+  });
+  return out;
+}
+
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
+  products = withZeroDangchakProducts(products);
   try {
     const workbook = new ExcelJS.Workbook();
     const usedNames = new Set();
@@ -11188,6 +11229,7 @@ function buildProductsForDate(orders, activeDate, opts = {}) {
       const zeroKey = dcVendorKey(l.name) || supplierKey;
       const zeroed = regionKey && (isQtyZeroOverride(zeroKey, regionKey) || isQtyZeroByName(l.name, regionKey));
       if (!bySku[l.sku]) bySku[l.sku] = { sku: l.sku, name: l.name, packQty: l.packQty, supplier: o.supplier || "", regions: {} };
+      if (Number(l.packQty) > 0) LAST_PACK_BY_NAME[l.name] = Number(l.packQty); // 발주 없는 날 0짜리 당착 시트의 입수용
       if (!bySku[l.sku].regions[regionKey]) {
         bySku[l.sku].regions[regionKey] = {
           key: regionKey,
