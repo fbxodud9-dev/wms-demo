@@ -7451,7 +7451,11 @@ function emartInvoicePlan(inv, rows, settings) {
     const s = sup[p.supplier] || {};
     const tplCenters = isNew ? [...EMART_STD_REGIONS] : Array.from(new Set(p.sheets.map((sh) => sh.center)));
     const selected = s.centers && s.centers.mode === "selected" ? s.centers.list || [] : null;
-    const centers = selected ? selected : tplCenters.filter((c) => (x.centerQty[c] || 0) > 0);
+    // 발주가 있는 센터는 전부 명세서로 (템플릿에 그 공급사 센터 시트가 없으면 다른 센터 시트를 복사해서 만든다)
+    const extra = Object.keys(x.centerQty)
+      .filter((c) => (x.centerQty[c] || 0) > 0 && !tplCenters.includes(c))
+      .sort((a, b) => (EMART_STD_REGIONS.indexOf(a) + 1 || 99) - (EMART_STD_REGIONS.indexOf(b) + 1 || 99) || a.localeCompare(b, "ko"));
+    const centers = selected ? selected : [...tplCenters.filter((c) => (x.centerQty[c] || 0) > 0), ...extra];
     return { ...x, supplier: p.supplier, settings: s, tplCenters, centers, selectedMode: !!selected, isNew: !!isNew, missingCenters: centers.filter((c) => !tplCenters.includes(c)) };
   };
   const list = inv.pivots.map((p) => finish(per.get(p.pivot) || { pivot: p, byK: {}, centerQty: {}, total: 0, added: [] }));
@@ -7633,7 +7637,13 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial) {
     const dr = r - 13;
     setCellXml(ws, "E" + r, p.name);
     setCellXml(ws, "M" + r, p.pack > 0 ? p.pack : null);
-    if (C.Q.f) emInvSetFormula(ws, "Q" + r, shiftFormula(C.Q.f, dr, 0).replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/, `$1${p.k}$2`), C.Q.s);
+    if (C.Q.f) {
+      // 줄을 내려도 찾는 값(센터 이름 B1)은 그대로: 템플릿에 $ 없이 B1로 적힌 공급사(스윗밸런스 등)가 B8처럼 밀리던 문제 수정
+      const key0 = (/VLOOKUP\(([^,]+),/.exec(C.Q.f) || [])[1];
+      let fq = shiftFormula(C.Q.f, dr, 0).replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/, `$1${p.k}$2`);
+      if (key0) fq = fq.replace(/VLOOKUP\([^,]+,/, () => `VLOOKUP(${key0},`);
+      emInvSetFormula(ws, "Q" + r, fq, C.Q.s);
+    }
     if (C.T.f) emInvSetFormula(ws, "T" + r, shiftFormula(C.T.f, dr, 0), C.T.s);
     if (C.W.f) emInvSetFormula(ws, "W" + r, shiftFormula(C.W.f, dr, 0), C.W.s);
     const ex = expiryOf(p);
@@ -7743,6 +7753,52 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     x.pivot = { pivot: newPivot, supplier: label, sheets: sheetsInfo, products: new Map(), info: {} };
     report.newSuppliers.push(label);
   }
+  // 템플릿에 이 공급사 센터 시트가 없는데 발주가 있는 센터 (예: 그린델리카 화성·청라 등):
+  // 같은 공급사의 다른 센터 시트를 복사하고, 공급받는자(센터명·주소)는 그 센터 시트가 있는 다른 공급사에서 가져온다
+  {
+    tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+    const byN = new Map(tpl.sheets.map((s) => [s.name, s]));
+    const txt = (sheetName, ref) => {
+      const c = byN.get(sheetName) && byN.get(sheetName).cells.get(ref);
+      return c && !c.f && typeof c.v === "string" ? c.v : null;
+    };
+    const donorOf = new Map();
+    inv.sheets.forEach((sh) => !donorOf.has(sh.center) && donorOf.set(sh.center, sh.name));
+    for (const x of plan.list) {
+      if (!want(x)) continue;
+      const p = x.pivot;
+      if (!p.pivot || !p.sheets.length) continue;
+      const have = new Set(p.sheets.map((sh) => sh.center));
+      for (const c of x.centers.filter((cc) => !have.has(cc))) {
+        const sh0 = p.sheets[0];
+        const srcWs = byN.get(sh0.name) || tpl.sheets.find((s) => s.name === sh0.name);
+        if (!srcWs) continue;
+        readSheetCells(srcWs, tpl.sst);
+        const order = tpl.sheets.map((s) => s.name);
+        if (!tpl.lastSheetOfPivot[p.pivot]) tpl.lastSheetOfPivot[p.pivot] = p.sheets.map((sh) => sh.name).sort((a, b) => order.indexOf(a) - order.indexOf(b)).pop();
+        const short = c.replace(/\(.*$/, "");
+        const nm = safeEmartSheetName(`${short}(${x.supplier})`, usedNames);
+        const donor = donorOf.get(c);
+        const from = { B1: txt(sh0.name, "B1"), L6: txt(sh0.name, "L6"), G8: txt(sh0.name, "G8") };
+        const to = { B1: c, L6: (donor && txt(donor, "L6")) || `${short.replace(/\d+$/, "")}센터(저온)`, G8: (donor && txt(donor, "G8")) || "" };
+        const mut = (sheet) => {
+          const tmp = { doc: sheet.doc };
+          setCellXml(tmp, "B1", c);
+          // 센터명·주소가 적힌 칸(위·아래 보관용 모두) 바꾸기
+          srcWs.cells.forEach((cell, ref) => {
+            if (cell.f || typeof cell.v !== "string") return;
+            if (from.L6 && cell.v === from.L6) setCellXml(tmp, ref, to.L6);
+            else if (from.G8 && cell.v === from.G8) setCellXml(tmp, ref, to.G8 || null);
+          });
+        };
+        mut.pivot = p.pivot;
+        await cloneEmartSheet(tpl, srcWs.name, nm, mut);
+        p.sheets.push({ ...sh0, name: nm, center: c });
+        report.createdCenters = report.createdCenters || [];
+        report.createdCenters.push({ supplier: x.supplier, center: c, sheet: nm, noDonor: !donor });
+      }
+    }
+  }
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
   const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
 
@@ -7829,7 +7885,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         }
       }
     });
-    x.missingCenters.forEach((c) => report.missingCenters.push({ supplier: x.supplier, center: c }));
+    x.centers.filter((c) => !p.sheets.some((sh) => sh.center === c)).forEach((c) => report.missingCenters.push({ supplier: x.supplier, center: c }));
     report.suppliers.push({ supplier: x.supplier, total: x.total, sheets: kept });
   });
   if (keep.size === 0) throw new Error("이 날짜에 거래명세서로 나갈 이마트 발주가 없어요.");
@@ -7997,8 +8053,9 @@ function EmartInvoiceView({ emartOrders, authToken }) {
     setMsg("");
     try {
       const rep = await downloadEmartInvoiceFile(rows, date, settings, only);
+      const made = (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${m.center.replace(/\(.*$/, "")}`).join(", ")}` : "";
       const miss = rep.missingCenters.length ? ` · 템플릿에 시트가 없는 센터: ${rep.missingCenters.map((m) => `${m.supplier} ${m.center}`).join(", ")}` : "";
-      setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${miss}`);
+      setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${made}${miss}`);
     } catch (e) {
       setMsg(e.message);
     } finally {
