@@ -1853,6 +1853,7 @@ function WMSApp() {
 
   const [emartOrders, setEmartOrders] = useState([]);
   const [frozenOrders, setFrozenOrders] = useState([]); // GS 냉동 발주 (channel "GSFROZEN")
+  const [emFrozenOrders, setEmFrozenOrders] = useState([]); // 이마트 냉동 발주 (channel "EMARTFROZEN")
   const [pickChannel, setPickChannel] = useState("gs"); // 피킹지시서 출력 화면의 브랜드 탭
   const [invChannel, setInvChannel] = useState("gs"); // 거래명세서 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
@@ -1868,7 +1869,8 @@ function WMSApp() {
       setItems(itemsRes.items.map(mapItemFromApi));
       // 이마트 발주(channel "EMART")는 GS 화면·집계와 섞이지 않게 따로 보관
       const allOrders = ordersRes.orders.map(mapOrderFromApi);
-      setOrders(allOrders.filter((o) => o.channel !== "EMART" && o.channel !== "GSFROZEN"));
+      setOrders(allOrders.filter((o) => o.channel !== "EMART" && o.channel !== "GSFROZEN" && o.channel !== "EMARTFROZEN"));
+      setEmFrozenOrders(allOrders.filter((o) => o.channel === "EMARTFROZEN"));
       setEmartOrders(allOrders.filter((o) => o.channel === "EMART"));
       setFrozenOrders(allOrders.filter((o) => o.channel === "GSFROZEN"));
       setTx(txRes.transactions.map(mapTxFromApi));
@@ -1943,6 +1945,15 @@ function WMSApp() {
     }, 2000);
     return () => clearTimeout(timer);
   }, [orders, productInfo, authToken, gsRulesForSnap]);
+
+  // 이마트 냉동 일별 집계 스냅샷 (daily_emfrozen_YYYYMM)
+  const efRulesForSnap = useSetting("emfrozen_daily_rules", authToken);
+  useEffect(() => {
+    if (!authToken || !emFrozenOrders.length) return;
+    const rulesN = normalizeDailyRules(efRulesForSnap);
+    const timer = setTimeout(() => syncPackedDaily(emFrozenOrders, authToken, emFrozenDailyKey, (d) => computeEmartDailySnapshot(emFrozenOrders, d, rulesN)).catch((e) => console.warn("이마트 냉동 일별 집계 저장 실패:", e.message)), 3100);
+    return () => clearTimeout(timer);
+  }, [emFrozenOrders, authToken, efRulesForSnap]);
 
   // GS 냉동 일별 집계 스냅샷: 월별로 서버 설정(daily_gsfrozen_YYYYMM)에 저장
   const frRulesForSnap = useSetting("gsfrozen_daily_rules", authToken);
@@ -2079,6 +2090,7 @@ function WMSApp() {
     setOrders([]);
     setEmartOrders([]);
     setFrozenOrders([]);
+    setEmFrozenOrders([]);
     setPickingDocs([]);
     setReady(false);
     try {
@@ -2411,9 +2423,19 @@ function WMSApp() {
   const deleteOrdersByDate = useCallback(
     async (date, channel) => {
       try {
-        if (channel === "GSFROZEN") {
-          // GS 냉동만 지우는 전용 주소 (백엔드 업데이트 필요 - 예전 백엔드는 404라서 GS 발주가 잘못 지워질 일 없음)
-          await apiFetch(`/orders/by-date/${date}/channel/GSFROZEN`, authToken, { method: "DELETE" });
+        if (channel === "GSFROZEN" || channel === "EMARTFROZEN") {
+          // 냉동만 지우는 전용 주소 (백엔드 업데이트 필요 - 예전 백엔드는 404라서 다른 발주가 잘못 지워질 일 없음)
+          await apiFetch(`/orders/by-date/${date}/channel/${channel}`, authToken, { method: "DELETE" });
+          if (channel === "EMARTFROZEN")
+            await updateSetting(emFrozenDailyKey(date.slice(0, 7)), authToken, (v) => {
+              if (v.days) delete v.days[date];
+              return v;
+            }).catch(() => {});
+          if (channel === "GSFROZEN")
+            await updateSetting(gsFrozenDailyKey(date.slice(0, 7)), authToken, (v) => {
+              if (v.days) delete v.days[date];
+              return v;
+            }).catch(() => {});
           await loadCoreData();
           return;
         }
@@ -2530,6 +2552,7 @@ function WMSApp() {
         { key: "orderinfo-gsfrozen", label: "주문정보 (GS 냉동)", icon: ClipboardList },
         { key: "orderinfo-bgf", label: "주문정보 (BGF)", icon: ClipboardList },
         { key: "orderinfo-emart", label: "주문정보 (E.MART)", icon: ClipboardList },
+        { key: "orderinfo-emfrozen", label: "주문정보 (이마트 냉동)", icon: ClipboardList },
       ],
     },
     {
@@ -2730,7 +2753,7 @@ function WMSApp() {
             </button>
           </div>
         )}
-        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} authToken={authToken} />}
+        {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
         {tab === "inbound" && <Inbound items={itemsView} onSubmit={applyInbound} />}
@@ -2771,6 +2794,18 @@ function WMSApp() {
             onDeleteDate={(d) => deleteOrdersByDate(d, "GSFROZEN")}
           />
         )}
+        {tab === "orderinfo-emfrozen" && (
+          <EmartOrderPage
+            channelTag="EMARTFROZEN"
+            title="주문정보 (이마트 냉동)"
+            sub="이마트24 냉동 발주파일을 올려요. 이마트 일반·GS와 섞이지 않고 피킹지시서 출력 > 이마트 냉동에서 피킹지를 받아요. 예전 형식·새 형식 둘 다 돼요."
+            emartOrders={emFrozenOrders}
+            authToken={authToken}
+            onUpload={addOrdersBulk}
+            onRegisterItems={registerItemsBulk}
+            onDeleteDate={(d) => deleteOrdersByDate(d, "EMARTFROZEN")}
+          />
+        )}
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
@@ -2781,6 +2816,7 @@ function WMSApp() {
             onChannel={setPickChannel}
             emartOrders={emartOrders}
             frozenOrders={frozenOrders}
+            emFrozenOrders={emFrozenOrders}
             authToken={authToken}
             gsView={<PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
           />
@@ -2789,7 +2825,7 @@ function WMSApp() {
         {tab === "shipping" && (
           <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
-        {tab === "gsdaily" && <GsDailyPage orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} authToken={authToken} productInfo={productInfo} />}
+        {tab === "gsdaily" && <GsDailyPage orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} productInfo={productInfo} />}
         {tab === "invoice" && (
           <InvoiceCenter
             channel={invChannel}
@@ -2851,7 +2887,7 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -2907,6 +2943,16 @@ function computeFrozenAuto(frozenOrders, date, rules, editsFr, savedMonth) {
   const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, (n) => detectPartByName(n), editsFr && editsFr[date] ? { [date]: editsFr[date] } : null, rules);
   const r = t.rows.find((x) => x.date === date);
   return { gs_frozen: r ? r.total : 0 };
+}
+
+// 이마트 냉동 자동 집계: "일별 발주 집계 > 이마트 냉동" 시트의 일일물동량
+function computeEmFrozenAuto(emFrozenOrders, date, rules, edits, savedMonth) {
+  const hasOrders = emFrozenOrders.some((o) => o.createdAt === date);
+  const stored = packEmartMonth(savedMonth)[date];
+  const day = hasOrders || !stored ? computeEmartDailySnapshot(emFrozenOrders, date, rules) : stored;
+  const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, (n) => detectPartByName(n), edits && edits[date] ? { [date]: edits[date] } : null, rules);
+  const r = t.rows.find((x) => x.date === date);
+  return { e24_frozen: r ? r.total : 0 };
 }
 
 // saved: 그 날짜에 직접 입력해 저장한 값({key: 숫자}). GS 3칸은 입력이 없으면 주문 데이터 자동값을 쓴다.
@@ -3138,7 +3184,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
-            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편, 이마트 1편·2편, GS 냉동)은 일별 발주 집계 화면(GS·이마트·GS 냉동 시트)의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
+            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편, 이마트 1편·2편, GS 냉동, 이마트 냉동)은 일별 발주 집계 화면(GS·이마트·GS 냉동·이마트 냉동 시트)의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5" }}>
@@ -3160,7 +3206,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   );
 }
 
-function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], authToken }) {
+function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozenOrders = [], authToken }) {
   const today = localDateStr();
   const [baseDate, setBaseDate] = useState(today);
   const [savedMap, setSavedMap] = useState({});
@@ -3193,7 +3239,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], authToke
     };
   }, [authToken, baseDate]);
 
-  const orderDates = useMemo(() => new Set([...orders, ...emartOrders, ...frozenOrders].map((o) => o.createdAt)), [orders, emartOrders, frozenOrders]);
+  const orderDates = useMemo(() => new Set([...orders, ...emartOrders, ...frozenOrders, ...emFrozenOrders].map((o) => o.createdAt)), [orders, emartOrders, frozenOrders, emFrozenOrders]);
   const prevDate = useMemo(() => {
     for (let i = 1; i <= 21; i++) {
       const d = shiftDateStr(baseDate, -i);
@@ -3235,13 +3281,18 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], authToke
   const frRules = useMemo(() => normalizeDailyRules(frRulesSaved), [frRulesSaved]);
   const frSavedBase = useSetting(gsFrozenDailyKey(baseDate.slice(0, 7)), authToken);
   const frSavedPrev = useSetting(gsFrozenDailyKey(prevDate.slice(0, 7)), authToken);
-  const autoOf = (date, edits, emSaved, frSaved) => ({
+  const efRulesSaved = useSetting("emfrozen_daily_rules", authToken);
+  const efRules = useMemo(() => normalizeDailyRules(efRulesSaved), [efRulesSaved]);
+  const efSavedBase = useSetting(emFrozenDailyKey(baseDate.slice(0, 7)), authToken);
+  const efSavedPrev = useSetting(emFrozenDailyKey(prevDate.slice(0, 7)), authToken);
+  const autoOf = (date, edits, emSaved, frSaved, efSaved) => ({
+    ...computeEmFrozenAuto(emFrozenOrders, date, efRules, edits && edits["이마트냉동"], efSaved),
     ...computeGsAuto(orders, date, dailyRules, edits && edits.GS, gsStored[date]),
     ...computeEmartAuto(emartOrders, date, emRules, edits && edits["이마트"], emSaved),
     ...computeFrozenAuto(frozenOrders, date, frRules, edits && edits["GS냉동"], frSaved),
   });
-  const autoToday = useMemo(() => autoOf(baseDate, editsBase, emSavedBase, frSavedBase), [orders, emartOrders, frozenOrders, baseDate, dailyRules, emRules, frRules, editsBase, emSavedBase, frSavedBase, gsStored]);
-  const autoPrev = useMemo(() => autoOf(prevDate, editsPrev, emSavedPrev, frSavedPrev), [orders, emartOrders, frozenOrders, prevDate, dailyRules, emRules, frRules, editsPrev, emSavedPrev, frSavedPrev, gsStored]);
+  const autoToday = useMemo(() => autoOf(baseDate, editsBase, emSavedBase, frSavedBase, efSavedBase), [orders, emartOrders, frozenOrders, emFrozenOrders, baseDate, dailyRules, emRules, frRules, efRules, editsBase, emSavedBase, frSavedBase, efSavedBase, gsStored]);
+  const autoPrev = useMemo(() => autoOf(prevDate, editsPrev, emSavedPrev, frSavedPrev, efSavedPrev), [orders, emartOrders, frozenOrders, emFrozenOrders, prevDate, dailyRules, emRules, frRules, efRules, editsPrev, emSavedPrev, frSavedPrev, efSavedPrev, gsStored]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
 
@@ -3283,7 +3334,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], authToke
         <VolumeEditModal
           key={editingDate}
           date={editingDate}
-          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : autoOf(editingDate, SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}, SETTING_CACHE[emartDailyKey(editingDate.slice(0, 7))], SETTING_CACHE[gsFrozenDailyKey(editingDate.slice(0, 7))])}
+          auto={editingDate === baseDate ? autoToday : editingDate === prevDate ? autoPrev : autoOf(editingDate, SETTING_CACHE[dailyEditsKey(editingDate.slice(0, 7))] || {}, SETTING_CACHE[emartDailyKey(editingDate.slice(0, 7))], SETTING_CACHE[gsFrozenDailyKey(editingDate.slice(0, 7))], SETTING_CACHE[emFrozenDailyKey(editingDate.slice(0, 7))])}
           saved={savedMap[editingDate]}
           onSave={handleSave}
           onClose={() => setEditingDate(null)}
@@ -3294,13 +3345,13 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], authToke
 }
 
 /* ---------- dashboard ---------- */
-function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, emartOrders, frozenOrders, authToken }) {
+function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, emartOrders, frozenOrders, emFrozenOrders, authToken }) {
   const inCount = todayTx.filter((t) => t.type === "IN").length;
   const outCount = todayTx.filter((t) => t.type === "OUT").length;
   return (
     <div>
       <PageHeader title="대시보드" sub={`오늘, ${fmtDate(localDateStr())}`} />
-      <VolumeDashboard orders={orders || []} emartOrders={emartOrders || []} frozenOrders={frozenOrders || []} authToken={authToken} />
+      <VolumeDashboard orders={orders || []} emartOrders={emartOrders || []} frozenOrders={frozenOrders || []} emFrozenOrders={emFrozenOrders || []} authToken={authToken} />
       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>재고 · 입출고</div>
       <div style={{ display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" }}>
         <Metric label="총 품목 수" value={items.length} sub="등록된 상품코드" />
@@ -4891,6 +4942,7 @@ const DAILY_CHANNELS = {
   GS: { label: "GS", region: "gs", rulesKey: "gs_daily_rules", showTemp: true, filter: (p) => gsDailySheetOf(p.name) !== "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
   GS슈퍼: { label: "GS슈퍼", region: "gs", rulesKey: "gs_daily_rules", showTemp: false, filter: (p) => gsDailySheetOf(p.name) === "GS슈퍼", base: null, supplierOf: (p) => dailySupplierOf(p) },
   GS냉동: { label: "GS냉동", region: "gsfrozen", rulesKey: "gsfrozen_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: detectPartByName(p.name), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+  이마트냉동: { label: "이마트냉동", region: "emart", rulesKey: "emfrozen_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: detectPartByName(p.name), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   이마트: { label: "이마트", region: "emart", rulesKey: "emart_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: emartPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   세븐일레븐: { label: "세븐일레븐", rulesKey: "seven_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   BGF: { label: "BGF", rulesKey: "bgf_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
@@ -4939,6 +4991,7 @@ function dailySupplierRegionQty(orders, date, supplier) {
 
 // ----- GS 냉동 일별 집계 (발주 원본은 GS 형식: 납품처 = VV코드) -----
 const gsFrozenDailyKey = (month) => `daily_gsfrozen_${month.replace("-", "")}`;
+const emFrozenDailyKey = (month) => `daily_emfrozen_${month.replace("-", "")}`;
 function computeFrozenDailySnapshot(frozenOrders, date, rules) {
   const allRules = rules || normalizeDailyRules(SETTING_CACHE["gsfrozen_daily_rules"]);
   const regionRules = allRules.filter((r) => r.scope === "region" && dailyRuleActive(r, date));
@@ -5305,6 +5358,7 @@ const DAILY_SHEETS = [
   { name: "GS냉동", head: "GS냉동", cold: false },
   { name: "GS슈퍼", head: "GS슈퍼", cold: false },
   { name: "이마트", head: "이마트", cold: false },
+  { name: "이마트냉동", head: "이마트냉동", cold: false },
 ];
 
 async function downloadGsDailyExcel(table, setBusy) {
@@ -5449,7 +5503,7 @@ async function downloadGsDailyExcel(table, setBusy) {
   }
 }
 
-function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, productInfo }) {
+function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrders = [], authToken, productInfo }) {
   const orderDates = useMemo(() => Array.from(new Set(orders.map((o) => o.createdAt).filter(Boolean))).sort(), [orders]);
   const [months, setMonths] = useState([]);
   const defaultMonth = (orderDates[orderDates.length - 1] || todayStr()).slice(0, 7);
@@ -5466,6 +5520,8 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
   const emRules = useMemo(() => normalizeDailyRules(emRulesSaved), [emRulesSaved]);
   const frRulesSaved = useSetting(DAILY_CHANNELS["GS냉동"].rulesKey, authToken);
   const frRules = useMemo(() => normalizeDailyRules(frRulesSaved), [frRulesSaved]);
+  const efRulesSaved = useSetting(DAILY_CHANNELS["이마트냉동"].rulesKey, authToken);
+  const efRules = useMemo(() => normalizeDailyRules(efRulesSaved), [efRulesSaved]);
 
   useEffect(() => {
     apiFetch("/gs-daily/months", authToken)
@@ -5510,6 +5566,13 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
     Array.from(new Set(frozenOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeFrozenDailySnapshot(frozenOrders, x, frRules)));
     return d;
   }, [frSaved, frozenOrders, month, frRules]);
+  // 이마트 냉동: 저장된 월 스냅샷 + 지금 남아 있는 이마트 냉동 발주 (이마트 일반·GS와 따로)
+  const efSaved = useSetting(emFrozenDailyKey(month), authToken);
+  const efDays = useMemo(() => {
+    const d = packEmartMonth(efSaved);
+    Array.from(new Set(emFrozenOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeEmartDailySnapshot(emFrozenOrders, x, efRules)));
+    return d;
+  }, [efSaved, emFrozenOrders, month, efRules]);
   const editsSaved = useSetting(dailyEditsKey(month), authToken);
   const [editing, setEditing] = useState(null); // { date, idx }
   const [editVal, setEditVal] = useState("");
@@ -5520,14 +5583,15 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
     const t = buildGsDailyTable(month, days, rules, ed.GS);
     t.sheets["이마트"] = buildBrandDailyTable(month, emDays, emartPartOf, ed["이마트"], emRules);
     t.sheets["GS냉동"] = buildBrandDailyTable(month, frDays, (name) => detectPartByName(name), ed["GS냉동"], frRules);
+    t.sheets["이마트냉동"] = buildBrandDailyTable(month, efDays, (name) => detectPartByName(name), ed["이마트냉동"], efRules);
     // 세븐일레븐·BGF: 아직 발주 연동 전이라 날짜 틀만
     t.sheets["세븐일레븐"] = buildBrandDailyTable(month, {}, () => 1);
     t.sheets["BGF"] = buildBrandDailyTable(month, {}, () => 1);
     return t;
-  }, [month, days, emDays, frDays, rules, emRules, frRules, editsSaved]);
+  }, [month, days, emDays, frDays, efDays, rules, emRules, frRules, efRules, editsSaved]);
   const sh = table.sheets[sheet];
-  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트" || sheet === "GS냉동";
-  const editKeyOf = sheet === "이마트" ? "이마트" : sheet === "GS냉동" ? "GS냉동" : "GS";
+  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트" || sheet === "GS냉동" || sheet === "이마트냉동";
+  const editKeyOf = sheet === "이마트" ? "이마트" : sheet === "GS냉동" ? "GS냉동" : sheet === "이마트냉동" ? "이마트냉동" : "GS";
   const editCount = useMemo(() => {
     const ed = editsSaved || {};
     return Object.values(ed).reduce((a, byDate) => a + Object.values(byDate || {}).reduce((b, m) => b + Object.keys(m || {}).length, 0), 0);
@@ -5587,11 +5651,11 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
   const chKey = dailyChannelOfSheet(sheet);
   const ch = DAILY_CHANNELS[chKey];
   const chDays = useMemo(() => {
-    const src = chKey === "이마트" ? emDays : chKey === "GS냉동" ? frDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
+    const src = chKey === "이마트" ? emDays : chKey === "GS냉동" ? frDays : chKey === "이마트냉동" ? efDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
     return Object.fromEntries(Object.entries(src).map(([d, v]) => [d, { ...v, products: ((v && v.products) || []).filter(ch.filter) }]));
-  }, [chKey, days, emDays, frDays]);
-  const chRulesSaved = chKey === "이마트" ? emRulesSaved : chKey === "GS냉동" ? frRulesSaved : chKey === "GS" || chKey === "GS슈퍼" ? rulesSaved : SETTING_CACHE[ch.rulesKey] || null;
-  const chRules = chKey === "이마트" ? emRules : chKey === "GS냉동" ? frRules : chKey === "GS" || chKey === "GS슈퍼" ? rules : normalizeDailyRules(chRulesSaved);
+  }, [chKey, days, emDays, frDays, efDays]);
+  const chRulesSaved = chKey === "이마트" ? emRulesSaved : chKey === "GS냉동" ? frRulesSaved : chKey === "이마트냉동" ? efRulesSaved : chKey === "GS" || chKey === "GS슈퍼" ? rulesSaved : SETTING_CACHE[ch.rulesKey] || null;
+  const chRules = chKey === "이마트" ? emRules : chKey === "GS냉동" ? frRules : chKey === "이마트냉동" ? efRules : chKey === "GS" || chKey === "GS슈퍼" ? rules : normalizeDailyRules(chRulesSaved);
   const newCount = useMemo(() => dailyNewProducts(chDays, chRulesSaved, ch).length, [chDays, chRulesSaved, chKey]);
   const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
@@ -5616,7 +5680,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
           </div>
         }
       />
-      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={chKey === "이마트" ? emartOrders : chKey === "GS냉동" ? frozenOrders : orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
+      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={chKey === "이마트" ? emartOrders : chKey === "GS냉동" ? frozenOrders : chKey === "이마트냉동" ? emFrozenOrders : orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => (
@@ -5625,13 +5689,13 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], authToken, p
             </option>
           ))}
         </select>
-        {["GS", "GS재고", "GS냉동", "GS슈퍼", "이마트", "세븐일레븐", "BGF"].map((s) => (
+        {["GS", "GS재고", "GS냉동", "GS슈퍼", "이마트", "이마트냉동", "세븐일레븐", "BGF"].map((s) => (
           <button
             key={s}
             onClick={() => setSheet(s)}
             style={{ ...smallBtnStyle, padding: "8px 14px", background: sheet === s ? T.steel : T.surface, color: sheet === s ? "#fff" : T.ink, borderColor: sheet === s ? T.steel : T.border }}
           >
-            {s === "GS" ? "GS (일반)" : s === "GS재고" ? "GS재고 (DC)" : s === "GS냉동" ? "GS 냉동" : s}
+            {s === "GS" ? "GS (일반)" : s === "GS재고" ? "GS재고 (DC)" : s === "GS냉동" ? "GS 냉동" : s === "이마트냉동" ? "이마트 냉동" : s}
           </button>
         ))}
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
@@ -7210,32 +7274,64 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // 새 상품: 같은 거래처 상품이 있는 피벗에 열을 하나 늘리고 시트를 복제
   const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
   for (const item of unmatched) {
-    const pivot = vendorPivot[item.vendor];
+    let pivot = vendorPivot[item.vendor];
+    if (!pivot && opts.cloneUnknownVendor && tpl.products.length) {
+      // 템플릿에 없는 공급사(이마트 냉동 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
+      const srcPv = tpl.products[0].pivot;
+      const pvName = safeEmartSheetName(`${emartVendorKey(item.vendor)} 피벗`, usedNames);
+      tpl.lastSheetOfPivot[pvName] = tpl.sheets[tpl.sheets.length - 1].name;
+      const m0 = () => {};
+      m0.pivot = pvName;
+      await cloneEmartSheet(tpl, srcPv, pvName, m0);
+      vendorPivot[item.vendor] = pvName;
+      pivot = pvName;
+    }
     if (!pivot) {
       report.unknown.push(item);
       continue;
     }
     const sameP = tpl.products.filter((p) => p.pivot === pivot);
-    const k = Math.max(...sameP.map((p) => p.k)) + 1;
-    const srcProd = sameP[0];
+    const k = sameP.length ? Math.max(...sameP.map((p) => p.k)) + 1 : 2;
+    const srcProd = sameP[0] || tpl.products[0];
+    const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
+    const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     const newName = safeEmartSheetName(item.name, usedNames);
     const mutate = (sheet) => {
       Array.from(sheet.doc.getElementsByTagName("c")).forEach((c) => {
         const f = c.getElementsByTagName("f")[0];
-        if (f && f.textContent) f.textContent = f.textContent.replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/g, `$1${k}$2`).replace(/!\$?A\$?\d*:\$?[A-Z]{1,3}\$?\d*/g, "!$A:$ZZ");
+        if (f && f.textContent) {
+          if (pvRe) f.textContent = f.textContent.replace(pvRe, `'${pivot.replace(/'/g, "''")}'!`);
+          f.textContent = f.textContent.replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/g, `$1${k}$2`).replace(/!\$?A\$?\d*:\$?[A-Z]{1,3}\$?\d*/g, "!$A:$ZZ");
+        }
       });
       // 상품명(머리글)과 입수
       const tmp = { doc: sheet.doc };
+      // 다른 공급사 시트를 복사했으면 시트 위쪽 공급사 이름 글자도 이 공급사로
+      if (pvRe && srcProd.sheetTitle) {
+        readSheetCells(tmp, tpl.sst);
+        tmp.cells.forEach((c, ref) => !c.f && c.v === srcProd.sheetTitle && setCellXml(tmp, ref, emartVendorKey(item.vendor)));
+      }
       setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
       const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || item.box;
       if (boxQ > 1) {
         const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
         if (b) setCellXml(tmp, "B4", boxQ);
+        // 센터 줄의 입수 칸(원본 상품 입수 숫자)도 이 상품 입수로
+        if (srcProd.pack && srcProd.pack !== boxQ) {
+          readSheetCells(tmp, tpl.sst);
+          tmp.cells.forEach((c, ref) => {
+            const pr = splitRef(ref);
+            if (!pr || (pr.c !== 2 && pr.c !== 3) || c.f || c.v !== srcProd.pack) return;
+            const a = tmp.cells.get("A" + pr.r);
+            if (a && typeof a.v === "string" && tpl.regionRe.test(a.v)) setCellXml(tmp, ref, boxQ);
+          });
+        }
       }
     };
     mutate.pivot = pivot;
     await cloneEmartSheet(tpl, srcProd.sheet, newName, mutate);
-    const np = { sheet: newName, pivot, k, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, isNew: true };
+    const boxQ0 = (opts.packOverride && opts.packOverride.get(item.name)) || item.box;
+    const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe ? emartVendorKey(item.vendor) : srcProd.sheetTitle, isNew: true };
     tpl.products.push(np);
     links.push({ prod: np, item });
     report.added.push({ name: item.name, sheet: newName, pivot });
@@ -7269,8 +7365,26 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     tpl.products.filter((p) => p.pivot === pn).forEach((p) => p.regions.forEach((r) => regs.add(r)));
     cols.forEach((c) => Object.keys(c.qty).forEach((r) => regs.add(r)));
     const ordered = [...stdOrder.filter((r) => regs.has(r)), ...[...regs].filter((r) => !stdOrder.includes(r))];
+    // 원본 피벗의 "발주일(A1) → 납품일(A2)" 간격을 그대로 (예: 10/13 → 10/16 납품 = 3일). 이상하면 1일
+    let a2Auto = null;
+    if (opts.pivotA2Auto && pv.cells) {
+      const a1 = pv.cells.get("A1"), a2 = pv.cells.get("A2");
+      const md = (v) => (typeof v === "string" && /^(\d{1,2})\/(\d{1,2})/.exec(v)) || null;
+      const m1 = a1 && md(a1.v), m2 = a2 && md(a2.v);
+      let off = 1;
+      if (m1 && m2) {
+        const yy = Number(date.slice(0, 4));
+        const d1 = Date.UTC(yy, Number(m1[1]) - 1, Number(m1[2])), d2 = Date.UTC(yy, Number(m2[1]) - 1, Number(m2[2]));
+        const dd = Math.round((d2 - d1) / 86400000);
+        if (dd >= 1 && dd <= 7) off = dd;
+      }
+      const [y0, mo0, da0] = date.split("-").map(Number);
+      const nd = new Date(Date.UTC(y0, mo0 - 1, da0 + off));
+      a2Auto = `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`;
+    }
     rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)));
-    if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
+    if (a2Auto) setCellXml(pv, "A2", a2Auto);
+    else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
   // 피벗 범위가 "A1:O10"처럼 줄 수가 막혀 있는 수식은 열 전체로 (지역 줄이 늘어도 빠지지 않게)
   if (opts.wideLookup) {
@@ -7499,14 +7613,14 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // GS 냉동 "지역 빼기": 그 상품 시트에서 그 지역 줄을 숨김 (수량도 0이라 합계에서 빠짐)
   if (opts.hideRegionRows && opts.hideRegionRows.size) {
     tpl.sheets.forEach((s) => {
-      const set = opts.hideRegionRows.get(s.name);
+      const set = opts.hideRegionRows.get(s.name) || opts.hideRegionRows.get("new:" + ((tpl.products.find((x) => x.sheet === s.name) || {}).title || ""));
       if (!set || !set.size) return;
       readSheetCells(s, tpl.sst);
       const rowsEls = Array.from(s.doc.getElementsByTagName("row"));
       s.cells.forEach((cell, ref) => {
         const p = splitRef(ref);
         if (!p || p.c !== 1 || typeof cell.v !== "string") return;
-        if (!set.has(cell.v.slice(0, 4))) return;
+        if (!set.has((opts.regionCodeOf || ((l) => String(l).slice(0, 4)))(cell.v))) return;
         const rowEl = rowsEls.find((x) => Number(x.getAttribute("r")) === p.r);
         if (rowEl) rowEl.setAttribute("hidden", "1");
       });
@@ -7678,7 +7792,7 @@ function gsFrozenRowsOf(orders, date, tplInfo) {
 //  - 0 처리: 시트에 그 지역 줄은 남고 수량만 0
 //  - 지역 빼기: 그 지역 줄을 숨겨서 안 보이게 (수량도 0이라 합계에서 빠짐)
 //  - 시트 빼기: 이 상품 시트를 피킹지에서 아예 뺌 (순서 설정의 삭제와 같음, 복구 가능)
-function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, onClose }) {
+function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, onClose, cfg = GS_FROZEN_PICK_CFG }) {
   const p = item.prod;
   const cur = ((pickCfg && pickCfg.products) || {})[p.sheet] || {};
   const zeroSet = new Set(cur.zero || []);
@@ -7687,7 +7801,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const sheetHidden = isBrandHidden(orderCfg, p.pivot, item.title);
-  const codeOf = (label) => String(label).slice(0, 4);
+  const codeOf = cfg.codeOf;
   const rowsView = (p.regionRows || []).map((r) => (r.subtotal ? r : { ...r, code: codeOf(r.label) }));
   const qtyOf = (code) => (item.byCode && item.byCode[code]) || 0;
   const pack = p.pack || 0;
@@ -7717,7 +7831,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
           "\n· 언제든 이 창에서 [원래대로]로 되돌릴 수 있어요";
     if (!window.confirm(text)) return;
     setBusy(true);
-    const r = await updateSetting("gsfrozen_pick_settings", authToken, (v) => {
+    const r = await updateSetting(cfg.pickKey, authToken, (v) => {
       const products = { ...((v && v.products) || {}) };
       const c = { zero: [...((products[p.sheet] || {}).zero || [])], remove: [...((products[p.sheet] || {}).remove || [])] };
       c.zero = c.zero.filter((x) => !codes.includes(x));
@@ -7735,10 +7849,10 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   async function setSheet(wantHidden) {
     if (wantHidden === sheetHidden) return;
     const op = { type: wantHidden ? "hide" : "restore", sup: p.pivot, name: item.title };
-    const text = !wantHidden ? `[${item.title}] 시트를 다시 피킹지에 넣을까요?` : `[${item.title}] 시트를 GS 냉동 피킹지에서 뺄까요?\n\n· 이 시트가 엑셀에서 아예 안 나와요\n· 순서 설정의 "피킹 안 하는 목록"이나 이 창에서 [시트 포함]으로 되돌릴 수 있어요`;
+    const text = !wantHidden ? `[${item.title}] 시트를 다시 피킹지에 넣을까요?` : `[${item.title}] 시트를 ${cfg.label} 피킹지에서 뺄까요?\n\n· 이 시트가 엑셀에서 아예 안 나와요\n· 순서 설정의 "피킹 안 하는 목록"이나 이 창에서 [시트 포함]으로 되돌릴 수 있어요`;
     if (!window.confirm(text)) return;
     setBusy(true);
-    const r = await setBrandHidden("picking_order_gsfrozen", authToken, op);
+    const r = await setBrandHidden(cfg.orderKey, authToken, op);
     setBusy(false);
     setMsg(r.ok ? (wantHidden ? "시트를 뺐어요." : "시트를 다시 넣었어요.") : `저장하지 못했어요 (${r.error})`);
   }
@@ -7754,7 +7868,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div>
               <div style={{ fontSize: 17, fontWeight: 800 }}>피킹지 설정 · {item.title}</div>
-              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · GS 냉동은 편 구분 없이, 지역을 여러 개 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · {cfg.label}은 편 구분 없이, 지역을 여러 개 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
             </div>
             <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>
               닫기
@@ -7892,7 +8006,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
               · <b>0 처리</b>: 피킹지에 그 지역 줄은 남고 수량만 0이에요.
               <br />· <b>지역 빼기</b>: 그 지역 줄을 숨겨서 안 보여요 (합계에서도 빠져요).
               <br />· <b>시트 빼기</b>: 이 상품 시트가 엑셀에서 아예 안 나와요 (순서 설정의 피킹 안 하는 목록에서도 복구 가능).
-              <br />· 일별 집계 숫자는 일별 발주 집계 → GS냉동 집계 설정에서 따로 빼요.
+              <br />· 일별 집계 숫자는 일별 발주 집계 → {cfg.dailyLabel} 집계 설정에서 따로 빼요.
             </div>
           </div>
         </div>
@@ -7902,18 +8016,19 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   );
 }
 
-function GsFrozenPickingView({ frozenOrders, authToken }) {
+function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG }) {
   const [baseInfo, setBaseInfo] = useState(null);
   const [tplErr, setTplErr] = useState("");
   const [customTpl, setCustomTpl] = useState(null); // { name, buffer, info } - 디자인이 바뀐 피킹지 원본으로 이번에만 만들기
   const tplRef = useRef(null);
   const [showOrderSet, setShowOrderSet] = useState(false);
-  const orderCfg = useSetting("picking_order_gsfrozen", authToken);
+  const orderCfg = useSetting(cfg.orderKey, authToken);
   // 상품(시트)별 지역 설정: { products: { 시트이름: { zero: [VV코드], remove: [VV코드] } } }
-  const pickCfg = useSetting("gsfrozen_pick_settings", authToken);
+  const pickCfg = useSetting(cfg.pickKey, authToken);
   const [setFor, setSetFor] = useState(null); // 설정 창을 연 상품 (list 항목)
   useEffect(() => {
-    getGsFrozenTemplateInfo()
+    cfg
+      .loadInfo()
       .then(setBaseInfo)
       .catch((e) => setTplErr(e.message));
   }, []);
@@ -7921,7 +8036,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
   const dates = useMemo(() => Array.from(new Set(frozenOrders.map((o) => o.createdAt).filter(Boolean))).sort().reverse(), [frozenOrders]);
   const [date, setDate] = useState("");
   const activeDate = date && dates.includes(date) ? date : dates[0] || todayStr();
-  const rows = useMemo(() => gsFrozenRowsOf(frozenOrders, activeDate, tplInfo), [frozenOrders, activeDate, tplInfo]);
+  const rows = useMemo(() => cfg.rowsOf(frozenOrders, activeDate, tplInfo), [frozenOrders, activeDate, tplInfo]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -7946,7 +8061,23 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       rows.forEach((r) => hits.some((h) => h.name === r.name) && (byCode[r.code] = (byCode[r.code] || 0) + r.qty));
       out.push({ sheet: p.sheet, pivot: p.pivot, title: frozenTitleOf(p), total, centers: hits.reduce((a, h) => a + h.centers.size, 0), hidden: !tplInfo.frozen.visible.has(p.sheet), pack: p.pack, names: hits.map((h) => h.name), byCode, prod: p });
     });
-    [...byName.values()].filter((x) => !used.has(x.name)).forEach((x) => out.push({ sheet: null, pivot: frozenSupKey(x.vendor), title: x.name, total: x.total, centers: x.centers.size, isNew: true, vendor: x.vendor, names: [x.name] }));
+    // 템플릿에 없는 상품: 시트는 다운로드 때 같은 공급사 시트를 복사해서 만들어짐. 화면·설정용으로 지역 줄을 미리 만들어 둠
+    const shortOf = (l) => (/^VV\d{2}/.test(l) ? dailyRegionName(l.slice(0, 4)) : String(l).replace(/\(.*$/, ""));
+    [...byName.values()]
+      .filter((x) => !used.has(x.name))
+      .forEach((x) => {
+        const byCode = {};
+        let box = 0;
+        rows.forEach((r) => {
+          if (r.name !== x.name) return;
+          byCode[r.code] = (byCode[r.code] || 0) + r.qty;
+          if (!box && r.box > 1) box = r.box;
+        });
+        const labels = (tplInfo.frozen.order && tplInfo.frozen.order.length ? tplInfo.frozen.order : Object.keys(byCode)).slice();
+        Object.keys(byCode).forEach((c) => !labels.some((l) => cfg.codeOf(l) === c) && labels.push(c));
+        const prod = { sheet: "new:" + x.name, pivot: cfg.supKey(x.vendor), title: x.name, pack: box, sheetTitle: cfg.supKey(x.vendor), regionRows: labels.map((l) => ({ label: l, short: shortOf(l) })), regions: labels };
+        out.push({ sheet: null, pivot: cfg.supKey(x.vendor), title: x.name, total: x.total, centers: x.centers.size, isNew: true, vendor: x.vendor, names: [x.name], byCode, prod });
+      });
     // 순서 설정: 공급사 = 피벗, 상품 = 시트 상품명. 삭제(피킹 안 함)한 것은 뺌
     const visibleList = out.filter((x) => !isBrandHidden(orderCfg, x.pivot, x.title));
     return applyBrandOrder(visibleList, orderCfg, (x) => x.pivot, (x) => x.title);
@@ -7968,7 +8099,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
     setErr("");
     setMsg("");
     try {
-      const buf = customTpl ? customTpl.buffer.slice(0) : await getGsFrozenTemplateBuffer();
+      const buf = customTpl ? customTpl.buffer.slice(0) : await cfg.getBuffer(tplInfo);
       // 삭제한 상품: 발주 줄도 빼고, 시트도 뺌
       const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).map((p) => p.sheet));
       // 필터/한 상품만: 나머지 시트는 빼기
@@ -7981,8 +8112,10 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
           if ((c.zero || []).includes(r.code) || (c.remove || []).includes(r.code)) return false; // 0 처리 / 지역 빼기
           return !hiddenSheets.has(p.sheet);
         }
+        const cn = regCfgOf("new:" + r.name);
+        if ((cn.zero || []).includes(r.code) || (cn.remove || []).includes(r.code)) return false;
         if (onlySheets) return onlySheets.has("new:" + r.name);
-        return !isBrandHidden(orderCfg, frozenSupKey(r.vendor), r.name);
+        return !isBrandHidden(orderCfg, cfg.supKey(r.vendor), r.name);
       });
       const hideRegionRows = new Map();
       Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
@@ -8004,20 +8137,14 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
         excludeSheets: hiddenSheets,
         sheetRank,
         hideRegionRows,
-        regionRe: GS_FROZEN_REGION_RE,
-        regionOrder: (tplInfo && tplInfo.frozen.order) || [],
-        keepVisible: true,
-        colorKind: "gsfrozen_picking",
-        pivotA2: deliv,
-        dateTextOut: deliv,
-        wideLookup: true,
-        removeTexts: [],
+        ...cfg.buildOpts(tplInfo, deliv),
+        regionCodeOf: cfg.codeOf,
       });
       const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = onlySheets && onlySheets.size <= 2 && [...onlySheets][0] ? `GS냉동_${String([...onlySheets].find((n) => !/^new:/.test(n)) || [...onlySheets][0]).replace(/^new:/, "").replace(/[\\/:*?"<>|]/g, "")}_${activeDate}.xlsx` : `GS_냉동_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
+      a.download = onlySheets && onlySheets.size <= 2 && [...onlySheets][0] ? `${cfg.filePrefix}_${String([...onlySheets].find((n) => !/^new:/.test(n)) || [...onlySheets][0]).replace(/^new:/, "").replace(/[\\/:*?"<>|]/g, "")}_${activeDate}.xlsx` : `${cfg.filePrefix}_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -8026,7 +8153,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
         `다운로드했어요 (시트 ${report.sheetCount}개, 피킹 ${rowsOut.reduce((a, r) => a + r.qty, 0).toLocaleString()}개${rowsOut.length !== rows.length ? ` · 설정으로 뺀 발주 ${(totalQty - rowsOut.reduce((a, r) => a + r.qty, 0)).toLocaleString()}개` : ""}).` +
           (report.added.length ? ` 템플릿에 없던 상품 ${report.added.length}개는 같은 공급사 시트를 복사해서 추가했어요: ${report.added.map((x) => x.name).join(", ")}.` : "") +
           (report.unknown.length ? ` ⚠ 공급사를 몰라서 시트를 못 만든 상품: ${report.unknown.map((x) => x.name).join(", ")}` : "") +
-          (report.missingRegions.length ? ` ⚠ 시트에 없는 센터 발주: ${report.missingRegions.map((x) => `${x.name} ${String(x.region).slice(0, 4)} ${x.qty}개`).join(", ")}` : "")
+          (report.missingRegions.length ? ` ⚠ 시트에 없는 센터 발주: ${report.missingRegions.map((x) => `${x.name} ${cfg.codeOf(x.region)} ${x.qty}개`).join(", ")}` : "")
       );
     } catch (e) {
       setErr(e.message);
@@ -8037,11 +8164,11 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
   return (
     <div>
       <PageHeader
-        title="피킹지시서 출력 · GS 냉동"
-        sub="실물 GS 냉동 피킹지 파일 그대로 만들어요. 그날 발주가 없는 상품도 시트는 그대로 남고 수량은 0으로 나가요."
+        title={`피킹지시서 출력 · ${cfg.label}`}
+        sub={tplInfo && tplInfo.frozen.fallback ? cfg.fallbackSub : `실물 ${cfg.label} 피킹지 파일 그대로 만들어요. 그날 발주가 없는 상품도 시트는 그대로 남고 수량은 0으로 나가요.`}
         action={
           <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <SheetColorButton kind="gsfrozen_picking" authToken={authToken} suppliers={Array.from(new Set([...frozenOrders.map((o) => frozenSupKey(o.supplier)), ...((tplInfo && tplInfo.products.map((p) => p.pivot)) || [])]))} />
+            <SheetColorButton kind={cfg.colorKind} authToken={authToken} suppliers={Array.from(new Set([...frozenOrders.map((o) => cfg.supKey(o.supplier)), ...((tplInfo && tplInfo.products.map((p) => p.pivot)) || [])]))} />
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정 (삭제·복구 포함)">
               <SettingsGear size={15} /> 순서 설정
             </button>
@@ -8055,7 +8182,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                 if (!f) return;
                 try {
                   const buffer = await f.arrayBuffer();
-                  const info = await analyzeGsFrozenBuffer(buffer.slice(0));
+                  const info = await cfg.analyze(buffer.slice(0));
                   setCustomTpl({ name: f.name, buffer, info });
                   setMsg(`이번에만 "${f.name}" 디자인으로 만들어요 (상품 ${info.products.length}개). 기본으로 돌리려면 [기본 템플릿으로].`);
                 } catch (er) {
@@ -8081,8 +8208,8 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       />
       {showOrderSet && tplInfo && (
         <BrandOrderSettingsModal
-          brand="GSFROZEN"
-          label="GS 냉동"
+          brand={cfg.brand}
+          label={cfg.label}
           authToken={authToken}
           detected={(() => {
             const m = new Map();
@@ -8103,7 +8230,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
         />
       )}
       {setFor && tplInfo && (
-        <FrozenPickSettingModal item={setFor} tplInfo={tplInfo} pickCfg={pickCfg} orderCfg={orderCfg} authToken={authToken} onClose={() => setSetFor(null)} />
+        <FrozenPickSettingModal cfg={cfg} item={setFor} tplInfo={tplInfo} pickCfg={pickCfg} orderCfg={orderCfg} authToken={authToken} onClose={() => setSetFor(null)} />
       )}
       {removedCount > 0 && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>※ 순서 설정에서 삭제(피킹 안 함)한 상품 {removedCount}개는 시트에서 빠져 있어요 (순서 설정 → 피킹 안 하는 목록에서 복구)</div>}
       {tplErr && <div style={{ ...cardStyle, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
@@ -8117,7 +8244,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
             </option>
           ))}
         </select>
-        <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 GS 냉동 발주만 집계합니다 · 발주 {totalQty.toLocaleString()}개 · 발주가 없는 상품도 시트는 0으로 남아요</span>
+        <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 {cfg.label} 발주만 집계합니다 · 발주 {totalQty.toLocaleString()}개 · 발주가 없는 상품도 시트는 0으로 남아요</span>
       </div>
       {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.includes("⚠") ? T.amberDeep : T.teal, marginBottom: 10 }}>{msg}</div>}
       {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
@@ -8168,7 +8295,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                 <EmptyRow text="조건에 맞는 상품이 없습니다." />
               ) : (
                 filtered.map((x) => {
-                  const c = (x.sheet && ((pickCfg && pickCfg.products) || {})[x.sheet]) || {};
+                  const c = ((x.sheet || (x.prod && x.prod.sheet)) && ((pickCfg && pickCfg.products) || {})[x.sheet || x.prod.sheet]) || {};
                   const key = x.sheet || "new:" + x.title;
                   return (
                     <button
@@ -8178,7 +8305,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                       style={{ display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none", background: selected && (selected.sheet || "new:" + selected.title) === key ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit" }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: x.isNew ? "#FCF1DD" : "#E6F0FA", color: x.isNew ? T.amberDeep : "#1F4E79" }}>{x.isNew ? "새 상품" : "냉동"}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: x.isNew ? "#FCF1DD" : "#E6F0FA", color: x.isNew ? T.amberDeep : "#1F4E79" }}>{x.isNew ? (tplInfo.frozen.fallback ? "냉동" : "새 상품") : "냉동"}</span>
                         <div style={{ fontSize: 13, fontWeight: 600 }}>{x.title}</div>
                         {(c.zero || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B26A00" }}>0처리 {(c.zero || []).length}</span>}
                         {(c.remove || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B03A2E" }}>빼기 {(c.remove || []).length}</span>}
@@ -8197,7 +8324,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
             {selected && (
               <div style={cardStyle}>
                 <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
-                  {selected.sheet && (
+                  {selected.prod && (
                     <button onClick={() => setSetFor(selected)} title="이 상품 시트의 지역 0 처리·지역 빼기·시트 빼기를 피킹지를 보면서 정해요" style={{ ...smallBtnStyle, borderColor: T.amber, color: T.amberDeep, fontWeight: 700 }}>
                       <SettingsGear size={14} /> 피킹지 설정 (지역·시트)
                     </button>
@@ -8209,7 +8336,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                     <Download size={14} /> {busy ? "생성 중..." : "엑셀 다운로드"}
                   </button>
                 </div>
-                <FrozenInspectionTable item={selected} pickCfg={pickCfg} />
+                <FrozenInspectionTable item={selected} pickCfg={pickCfg} codeOf={cfg.codeOf} />
               </div>
             )}
           </div>
@@ -8220,9 +8347,10 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
 }
 
 // GS 냉동 상품 하나의 지역별 표 (GS 피킹지시서 출력 화면과 같은 모양). 0 처리·지역 빼기 설정을 반영해서 보여줌
-function FrozenInspectionTable({ item, pickCfg }) {
+function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(0, 4) }) {
   const p = item.prod;
-  const c = (item.sheet && ((pickCfg && pickCfg.products) || {})[item.sheet]) || {};
+  const ckey = item.sheet || (item.prod && item.prod.sheet);
+  const c = (ckey && ((pickCfg && pickCfg.products) || {})[ckey]) || {};
   const zero = new Set(c.zero || []);
   const rm = new Set(c.remove || []);
   const pack = (p && p.pack) || 0;
@@ -8269,7 +8397,7 @@ function FrozenInspectionTable({ item, pickCfg }) {
               sub = 0;
               return row;
             }
-            const code = String(r.label).slice(0, 4);
+            const code = codeOf(r.label);
             const raw = (item.byCode && item.byCode[code]) || 0;
             const isZ = zero.has(code);
             const isR = rm.has(code);
@@ -8307,6 +8435,81 @@ function FrozenInspectionTable({ item, pickCfg }) {
   );
 }
 
+
+// ----- 템플릿 피킹지 채널 설정 (GS 냉동 / 이마트 냉동이 같은 화면·설정창을 씀) -----
+const GS_FROZEN_PICK_CFG = {
+  label: "GS 냉동",
+  dailyLabel: "GS냉동",
+  brand: "GSFROZEN",
+  orderKey: "picking_order_gsfrozen",
+  pickKey: "gsfrozen_pick_settings",
+  colorKind: "gsfrozen_picking",
+  filePrefix: "GS냉동",
+  codeOf: (label) => String(label).slice(0, 4),
+  supKey: (s) => frozenSupKey(s),
+  loadInfo: () => getGsFrozenTemplateInfo(),
+  getBuffer: () => getGsFrozenTemplateBuffer(),
+  analyze: (buf) => analyzeGsFrozenBuffer(buf),
+  rowsOf: (orders, date, tplInfo) => gsFrozenRowsOf(orders, date, tplInfo),
+  buildOpts: (tplInfo, deliv) => ({ regionRe: GS_FROZEN_REGION_RE, regionOrder: (tplInfo && tplInfo.frozen.order) || [], keepVisible: true, colorKind: "gsfrozen_picking", pivotA2: deliv, dateTextOut: deliv, wideLookup: true, removeTexts: [] }),
+};
+// 이마트 냉동: 이마트 피킹검수와 같은 모양(센터 = "원주2(저온)" 등). 전용 템플릿(emart_frozen_picking_template.xlsx)이 있으면 그 파일 그대로,
+// 아직 없으면 이마트 피킹검수 템플릿의 공급사 블록을 복사해서 냉동 공급사 피벗·상품 시트를 만들어요.
+const EM_FROZEN_TEMPLATE_URL = "emart_frozen_picking_template.xlsx";
+async function getEmFrozenTemplateBuffer() {
+  try {
+    const res = await fetch(EM_FROZEN_TEMPLATE_URL, { cache: "no-store" });
+    const ct = res.headers.get("content-type") || "";
+    if (res.ok && !/text\/html/i.test(ct)) {
+      const buf = await res.arrayBuffer();
+      const u8 = new Uint8Array(buf.slice(0, 2));
+      if (u8[0] === 0x50 && u8[1] === 0x4b) return { buf, fallback: false };
+    }
+  } catch (e) {
+    /* 없으면 이마트 템플릿으로 */
+  }
+  return { buf: await getEmartTemplateBuffer(null), fallback: true };
+}
+async function analyzeEmFrozenBuffer(buf, fallback) {
+  const t = await loadEmartTemplate(buf);
+  analyzeEmartTemplate(t);
+  const labelOf = {};
+  t.frozen = {
+    labelOf,
+    order: EMART_STD_REGIONS,
+    fallback: !!fallback,
+    visible: fallback ? new Set() : new Set(t.sheets.filter((s) => !/hidden/i.test(s.el.getAttribute("state") || "")).map((s) => s.name)),
+  };
+  return t;
+}
+let EM_FROZEN_TPL_CACHE = null;
+function getEmFrozenTemplateInfo() {
+  if (!EM_FROZEN_TPL_CACHE)
+    EM_FROZEN_TPL_CACHE = getEmFrozenTemplateBuffer()
+      .then(({ buf, fallback }) => analyzeEmFrozenBuffer(buf, fallback))
+      .catch((e) => {
+        EM_FROZEN_TPL_CACHE = null;
+        throw e;
+      });
+  return EM_FROZEN_TPL_CACHE;
+}
+const EM_FROZEN_PICK_CFG = {
+  label: "이마트 냉동",
+  dailyLabel: "이마트냉동",
+  brand: "EMARTFROZEN",
+  orderKey: "picking_order_emartfrozen",
+  pickKey: "emfrozen_pick_settings",
+  colorKind: "emfrozen_picking",
+  filePrefix: "이마트냉동",
+  codeOf: (label) => String(label).trim(),
+  supKey: (s) => emartVendorKey(s),
+  loadInfo: () => getEmFrozenTemplateInfo(),
+  getBuffer: async (tplInfo) => (await getEmFrozenTemplateBuffer()).buf,
+  analyze: (buf) => analyzeEmFrozenBuffer(buf, false),
+  rowsOf: (orders, date) => emartRowsFromOrders(orders.filter((o) => o.createdAt === date)).map((r) => ({ name: r.name, vendor: r.vendor, box: r.box, qty: r.qty, center: r.center, code: r.center })),
+  buildOpts: (tplInfo) => ({ regionOrder: EMART_STD_REGIONS, keepVisible: !(tplInfo && tplInfo.frozen.fallback), cloneUnknownVendor: true, colorKind: "emfrozen_picking", wideLookup: true, pivotA2Auto: true }),
+  fallbackSub: "이마트 냉동 전용 피킹지 원본(emart_frozen_picking_template.xlsx)이 아직 없어서, 이마트 피킹검수 양식으로 그날 발주 상품만 만들어요. 실물 원본을 받으면 그 파일 그대로 (발주 없는 시트도 0으로) 나가요.",
+};
 /* ================= 이마트24 거래명세서 (실물 엑셀 "이마트24 거래명세서" 파일을 그대로 템플릿으로) ================= */
 // 템플릿 구조: 공급사마다 [피벗 시트] + [센터별 명세서 시트들]. 명세서 B1 = 센터명(예: 원주2(저온)), Q열 = VLOOKUP(B1, 피벗, k) 수량,
 // E열 = 상품명, M열 = 입수, AA열 = 소비기한(날짜 글자 또는 =$B$13+일수), B13 = 명세서 날짜, V4/V6/AD6/V8/V10/AD10 = 공급자 사업자 정보.
@@ -9280,7 +9483,7 @@ function emartVendorKey(v) {
 }
 
 /* ---------- 주문정보 (E.MART): GS 주문정보와 같은 화면 ---------- */
-function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, authToken }) {
+function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, authToken, channelTag, title, sub }) {
   // 업체 코드 → 예전 형식 거래처 이름 (새 형식 파일을 예전과 같은 공급사로 묶는 데 씀). 서버 설정에 계속 쌓아 둔다
   const codeMapSaved = useSetting("emart_vendor_codes", authToken);
   const [err, setErr] = useState("");
@@ -9395,13 +9598,14 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         });
         await onRegisterItems(Array.from(seen.values()));
       }
+      if (channelTag) list2.forEach((o) => (o.channel = channelTag)); // 이마트 냉동: 채널 표시로 이마트 일반과 구분
       const res = await onUpload(list2);
       const dates = Array.from(new Set(list2.map((o) => o.createdAt))).sort();
       setMsg(
         `${dates.map(fmtDate).join(", ")} 발주 ${res.createdCount ?? 0}건 등록` +
           (res.skippedCount ? ` · 이미 올라와 있던 ${res.skippedCount}건은 건너뜀` : "") +
           (dupLines ? ` · 이미 올라와 있던 상품 줄 ${dupLines}개는 건너뜀` : "") +
-          ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > 이마트에서 피킹지를 받으세요.`
+          ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > ${channelTag === "EMARTFROZEN" ? "이마트 냉동" : "이마트"}에서 피킹지를 받으세요.`
       );
     } catch (e) {
       setErr(e.message);
@@ -9413,7 +9617,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
 
   return (
     <div>
-      <PageHeader title="주문정보 (E.MART)" sub="이마트24 발주파일을 업로드해서 발주를 접수합니다" />
+      <PageHeader title={title || "주문정보 (E.MART)"} sub={sub || "이마트24 발주파일을 업로드해서 발주를 접수합니다"} />
       <div
         style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
         onDragOver={(e) => {
@@ -9886,6 +10090,7 @@ const PICKING_CHANNELS = [
   { key: "gsfrozen", brand: "GSFROZEN", label: "GS 냉동" },
   { key: "gssuper", brand: "GSSUPER", label: "GS슈퍼" },
   { key: "emart", brand: "EMART", label: "이마트" },
+  { key: "emfrozen", brand: "EMARTFROZEN", label: "이마트 냉동" },
   { key: "bgf", brand: "BGF", label: "BGF" },
   { key: "seven", brand: "SEVEN", label: "세븐일레븐" },
 ];
@@ -10683,6 +10888,13 @@ const SHEET_COLOR_KINDS = {
       { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
     ],
   },
+  emfrozen_picking: {
+    label: "이마트 냉동 피킹지",
+    types: [
+      { key: "pivot", label: "피벗 시트", special: true },
+      { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
+    ],
+  },
   gsfrozen_picking: {
     label: "GS 냉동 피킹지",
     types: [
@@ -11278,13 +11490,13 @@ function SheetColorButton({ kind, suppliers, authToken }) {
   );
 }
 
-function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], authToken }) {
+function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], authToken }) {
   return (
     <BrandTabs
       channel={channel}
       onChannel={onChannel}
       title="피킹지시서 출력"
-      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView frozenOrders={frozenOrders} authToken={authToken} /> : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : null)}
       placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
     />
   );
