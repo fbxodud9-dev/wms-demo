@@ -7496,6 +7496,23 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     });
   }
 
+  // GS 냉동 "지역 빼기": 그 상품 시트에서 그 지역 줄을 숨김 (수량도 0이라 합계에서 빠짐)
+  if (opts.hideRegionRows && opts.hideRegionRows.size) {
+    tpl.sheets.forEach((s) => {
+      const set = opts.hideRegionRows.get(s.name);
+      if (!set || !set.size) return;
+      readSheetCells(s, tpl.sst);
+      const rowsEls = Array.from(s.doc.getElementsByTagName("row"));
+      s.cells.forEach((cell, ref) => {
+        const p = splitRef(ref);
+        if (!p || p.c !== 1 || typeof cell.v !== "string") return;
+        if (!set.has(cell.v.slice(0, 4))) return;
+        const rowEl = rowsEls.find((x) => Number(x.getAttribute("r")) === p.r);
+        if (rowEl) rowEl.setAttribute("hidden", "1");
+      });
+    });
+  }
+
   // 저장: 바뀐 XML 다시 쓰기 + 엑셀이 열 때 전체 재계산
   const ser = new XMLSerializer();
   const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
@@ -7657,6 +7674,149 @@ function gsFrozenRowsOf(orders, date, tplInfo) {
     });
   return rows;
 }
+// GS 냉동 피킹지 설정 (상품 시트 하나): 편 구분 없이 지역 "0 처리" / "지역 빼기(줄 숨김)" / 시트 빼기
+//  - 0 처리: 시트에 그 지역 줄은 남고 수량만 0
+//  - 지역 빼기: 그 지역 줄을 숨겨서 안 보이게 (수량도 0이라 합계에서 빠짐)
+//  - 시트 빼기: 이 상품 시트를 피킹지에서 아예 뺌 (순서 설정의 삭제와 같음, 복구 가능)
+function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, onClose }) {
+  const p = item.prod;
+  const cur = ((pickCfg && pickCfg.products) || {})[p.sheet] || {};
+  const zeroSet = new Set(cur.zero || []);
+  const removeSet = new Set(cur.remove || []);
+  const [pick, setPick] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const sheetHidden = isBrandHidden(orderCfg, p.pivot, item.title);
+  const codeOf = (label) => String(label).slice(0, 4);
+  const rowsView = (p.regionRows || []).map((r) => (r.subtotal ? r : { ...r, code: codeOf(r.label) }));
+  const qtyOf = (code) => (item.byCode && item.byCode[code]) || 0;
+  const toggle = (code) => {
+    const n = new Set(pick);
+    n.has(code) ? n.delete(code) : n.add(code);
+    setPick(n);
+  };
+  const names = (codes) => codes.map((c) => (rowsView.find((r) => r.code === c) || {}).short || c).join(", ");
+  async function apply(kind) {
+    const codes = Array.from(pick);
+    if (!codes.length) return;
+    const label = kind === "zero" ? "0 처리" : kind === "remove" ? "지역 빼기" : "원래대로";
+    const lost = codes.reduce((a, c) => a + qtyOf(c), 0);
+    const text =
+      kind === "clear"
+        ? `[${item.title}] ${names(codes)} 지역을 원래대로 돌릴까요? (발주 수량 그대로 나가요)`
+        : `[${item.title}] 아래 지역을 "${label}" 할까요?\n\n${names(codes)} (${codes.length}곳)\n지금 발주 수량 ${lost.toLocaleString()}개가 피킹지에서 빠져요.\n\n` +
+          (kind === "zero" ? "· 시트에 그 지역 줄은 남고 수량만 0으로 나가요" : "· 그 지역 줄을 숨겨서 피킹지에 안 보여요 (합계에서도 빠져요)") +
+          "\n· 언제든 이 창에서 [원래대로]로 되돌릴 수 있어요";
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    const r = await updateSetting("gsfrozen_pick_settings", authToken, (v) => {
+      const products = { ...((v && v.products) || {}) };
+      const c = { zero: [...((products[p.sheet] || {}).zero || [])], remove: [...((products[p.sheet] || {}).remove || [])] };
+      c.zero = c.zero.filter((x) => !codes.includes(x));
+      c.remove = c.remove.filter((x) => !codes.includes(x));
+      if (kind === "zero") c.zero.push(...codes);
+      if (kind === "remove") c.remove.push(...codes);
+      if (c.zero.length || c.remove.length) products[p.sheet] = c;
+      else delete products[p.sheet];
+      return { ...v, products };
+    });
+    setBusy(false);
+    setPick(new Set());
+    setMsg(r.ok ? `저장했어요: ${names(codes)} → ${label}` : `저장 실패 (${r.error})`);
+  }
+  async function toggleSheet() {
+    const op = { type: sheetHidden ? "restore" : "hide", sup: p.pivot, name: item.title };
+    const text = sheetHidden ? `[${item.title}] 시트를 다시 피킹지에 넣을까요?` : `[${item.title}] 시트를 GS 냉동 피킹지에서 뺄까요?\n\n· 이 시트가 엑셀에서 아예 안 나와요\n· 순서 설정의 "피킹 안 하는 목록"이나 이 창에서 [시트 복구]로 되돌릴 수 있어요`;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    const r = await setBrandHidden("picking_order_gsfrozen", authToken, op);
+    setBusy(false);
+    setMsg(r.ok ? (sheetHidden ? "시트를 복구했어요." : "시트를 뺐어요.") : `저장 실패 (${r.error})`);
+  }
+  const cell = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, fontSize: 12.5 };
+  return (
+    <BrandModalFrame title={`피킹지 설정 · ${item.title}`} sub={`${p.pivot} · GS 냉동은 편 구분 없이, 지역을 눌러 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요. 시트를 통째로 빼려면 [시트 빼기].`} onClose={onClose} maxWidth={760} height="88vh">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7" }}>
+        <span style={{ fontSize: 13, fontWeight: 800 }}>고른 지역 {pick.size}곳</span>
+        <button disabled={busy || !pick.size} onClick={() => apply("zero")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#B26A00", borderColor: "#E8B66B", opacity: pick.size ? 1 : 0.5 }}>
+          0 처리
+        </button>
+        <button disabled={busy || !pick.size} onClick={() => apply("remove")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#B03A2E", borderColor: "#E6A9A2", opacity: pick.size ? 1 : 0.5 }}>
+          지역 빼기 (줄 숨김)
+        </button>
+        <button disabled={busy || !pick.size} onClick={() => apply("clear")} style={{ ...smallBtnStyle, opacity: pick.size ? 1 : 0.5 }}>
+          원래대로
+        </button>
+        {pick.size > 0 && (
+          <button disabled={busy} onClick={() => setPick(new Set())} style={{ ...smallBtnStyle, color: T.inkSoft }}>
+            선택 취소
+          </button>
+        )}
+        <button disabled={busy} onClick={toggleSheet} style={{ ...smallBtnStyle, marginLeft: "auto", fontWeight: 700, color: sheetHidden ? T.tealDeep : "#fff", background: sheetHidden ? "#fff" : T.danger, borderColor: sheetHidden ? T.teal : T.danger }}>
+          {sheetHidden ? "↺ 시트 복구" : "🗑 시트 빼기"}
+        </button>
+      </div>
+      {msg && <div style={{ padding: "8px 20px", fontSize: 12.5, fontWeight: 700, color: msg.startsWith("저장 실패") ? T.danger : T.teal }}>{msg}</div>}
+      {sheetHidden && <div style={{ padding: "8px 20px", fontSize: 12.5, fontWeight: 700, color: T.danger }}>이 시트는 지금 피킹지에서 빠져 있어요.</div>}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px 18px" }}>
+        <div style={{ border: `1.5px solid ${T.ink}`, borderRadius: 6, overflow: "hidden", opacity: sheetHidden ? 0.5 : 1 }}>
+          <div style={{ textAlign: "center", fontWeight: 800, padding: "6px 0", borderBottom: `1px solid ${T.border}`, background: "#F7F6F2" }}>{p.sheetTitle || p.pivot}</div>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr>
+                {["행 레이블", "입수", item.title, "센터명", "상태"].map((h, i) => (
+                  <th key={i} style={{ ...cell, textAlign: i === 2 ? "right" : "left", fontWeight: 700, background: "#FBFAF7" }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rowsView.map((r, i) =>
+                r.subtotal ? (
+                  <tr key={i}>
+                    <td colSpan={5} style={{ ...cell, fontWeight: 800, background: "#F3F1EA" }}>
+                      {r.label}
+                    </td>
+                  </tr>
+                ) : (
+                  (() => {
+                    const on = pick.has(r.code);
+                    const z = zeroSet.has(r.code);
+                    const rm = removeSet.has(r.code);
+                    const q = qtyOf(r.code);
+                    return (
+                      <tr key={i} onClick={() => toggle(r.code)} style={{ cursor: "pointer", background: on ? "#FFF3C4" : rm ? "#FDECEA" : z ? "#FFF3E0" : "#fff", outline: on ? `2px dashed ${T.amber}` : "none" }}>
+                        <td style={{ ...cell, textDecoration: rm ? "line-through" : "none", color: rm ? T.inkSoft : T.ink }}>{r.label.replace(/\u00a0/g, " ")}</td>
+                        <td style={cell}>{p.pack || "-"}</td>
+                        <td style={{ ...cell, textAlign: "right", fontWeight: 700 }}>
+                          {z || rm ? (
+                            <span>
+                              0 <span style={{ fontSize: 11, color: T.inkSoft, fontWeight: 500 }}>(발주 {q})</span>
+                            </span>
+                          ) : (
+                            q
+                          )}
+                        </td>
+                        <td style={{ ...cell, fontWeight: 700 }}>{r.short}</td>
+                        <td style={cell}>
+                          {on && <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: T.amberDeep, borderRadius: 99, padding: "1px 7px", marginRight: 4 }}>선택</span>}
+                          {z && <span style={{ fontSize: 11, fontWeight: 800, color: "#B26A00" }}>0 처리</span>}
+                          {rm && <span style={{ fontSize: 11, fontWeight: 800, color: "#B03A2E" }}>빠짐(숨김)</span>}
+                        </td>
+                      </tr>
+                    );
+                  })()
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </BrandModalFrame>
+  );
+}
+
 function GsFrozenPickingView({ frozenOrders, authToken }) {
   const [baseInfo, setBaseInfo] = useState(null);
   const [tplErr, setTplErr] = useState("");
@@ -7664,6 +7824,9 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
   const tplRef = useRef(null);
   const [showOrderSet, setShowOrderSet] = useState(false);
   const orderCfg = useSetting("picking_order_gsfrozen", authToken);
+  // 상품(시트)별 지역 설정: { products: { 시트이름: { zero: [VV코드], remove: [VV코드] } } }
+  const pickCfg = useSetting("gsfrozen_pick_settings", authToken);
+  const [setFor, setSetFor] = useState(null); // 설정 창을 연 상품 (list 항목)
   useEffect(() => {
     getGsFrozenTemplateInfo()
       .then(setBaseInfo)
@@ -7694,7 +7857,9 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       const hits = [...byName.values()].filter((x) => matchEmartProduct(tplInfo, x.name) === p);
       hits.forEach((h) => used.add(h.name));
       const total = hits.reduce((a, h) => a + h.total, 0);
-      out.push({ sheet: p.sheet, pivot: p.pivot, title: frozenTitleOf(p), total, centers: hits.reduce((a, h) => a + h.centers.size, 0), hidden: !tplInfo.frozen.visible.has(p.sheet), pack: p.pack, names: hits.map((h) => h.name) });
+      const byCode = {};
+      rows.forEach((r) => hits.some((h) => h.name === r.name) && (byCode[r.code] = (byCode[r.code] || 0) + r.qty));
+      out.push({ sheet: p.sheet, pivot: p.pivot, title: frozenTitleOf(p), total, centers: hits.reduce((a, h) => a + h.centers.size, 0), hidden: !tplInfo.frozen.visible.has(p.sheet), pack: p.pack, names: hits.map((h) => h.name), byCode, prod: p });
     });
     [...byName.values()].filter((x) => !used.has(x.name)).forEach((x) => out.push({ sheet: null, pivot: frozenSupKey(x.vendor), title: x.name, total: x.total, centers: x.centers.size, isNew: true, vendor: x.vendor, names: [x.name] }));
     // 순서 설정: 공급사 = 피벗, 상품 = 시트 상품명. 삭제(피킹 안 함)한 것은 뺌
@@ -7714,10 +7879,18 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       const buf = customTpl ? customTpl.buffer.slice(0) : await getGsFrozenTemplateBuffer();
       // 삭제한 상품: 발주 줄도 빼고, 시트도 뺌
       const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).map((p) => p.sheet));
+      const regCfgOf = (sheet) => ((pickCfg && pickCfg.products) || {})[sheet] || {};
       const rowsOut = rows.filter((r) => {
         const p = matchEmartProduct(tplInfo, r.name);
-        return p ? !hiddenSheets.has(p.sheet) : !isBrandHidden(orderCfg, frozenSupKey(r.vendor), r.name);
+        if (p) {
+          const c = regCfgOf(p.sheet);
+          if ((c.zero || []).includes(r.code) || (c.remove || []).includes(r.code)) return false; // 0 처리 / 지역 빼기
+          return !hiddenSheets.has(p.sheet);
+        }
+        return !isBrandHidden(orderCfg, frozenSupKey(r.vendor), r.name);
       });
+      const hideRegionRows = new Map();
+      Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
       // 순서 설정이 있으면 시트 순서도 (피벗 → 그 피벗 상품 시트들)
       let sheetRank = null;
       if (orderCfg && (orderCfg.suppliers || orderCfg.products)) {
@@ -7735,6 +7908,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       const { bytes, report } = await buildEmartPickingWorkbook(buf, rowsOut, activeDate, null, {
         excludeSheets: hiddenSheets,
         sheetRank,
+        hideRegionRows,
         regionRe: GS_FROZEN_REGION_RE,
         regionOrder: (tplInfo && tplInfo.frozen.order) || [],
         keepVisible: true,
@@ -7754,7 +7928,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       setMsg(
-        `다운로드했어요 (시트 ${report.sheetCount}개, 발주 ${totalQty.toLocaleString()}개).` +
+        `다운로드했어요 (시트 ${report.sheetCount}개, 피킹 ${rowsOut.reduce((a, r) => a + r.qty, 0).toLocaleString()}개${rowsOut.length !== rows.length ? ` · 설정으로 뺀 발주 ${(totalQty - rowsOut.reduce((a, r) => a + r.qty, 0)).toLocaleString()}개` : ""}).` +
           (report.added.length ? ` 템플릿에 없던 상품 ${report.added.length}개는 같은 공급사 시트를 복사해서 추가했어요: ${report.added.map((x) => x.name).join(", ")}.` : "") +
           (report.unknown.length ? ` ⚠ 공급사를 몰라서 시트를 못 만든 상품: ${report.unknown.map((x) => x.name).join(", ")}` : "") +
           (report.missingRegions.length ? ` ⚠ 시트에 없는 센터 발주: ${report.missingRegions.map((x) => `${x.name} ${String(x.region).slice(0, 4)} ${x.qty}개`).join(", ")}` : "")
@@ -7836,6 +8010,9 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
           onClose={() => setShowOrderSet(false)}
         />
       )}
+      {setFor && tplInfo && (
+        <FrozenPickSettingModal item={setFor} tplInfo={tplInfo} pickCfg={pickCfg} orderCfg={orderCfg} authToken={authToken} onClose={() => setSetFor(null)} />
+      )}
       {removedCount > 0 && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>※ 순서 설정에서 삭제(피킹 안 함)한 상품 {removedCount}개는 시트에서 빠져 있어요 (순서 설정 → 피킹 안 하는 목록에서 복구)</div>}
       {tplErr && <div style={{ ...cardStyle, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -7866,6 +8043,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                 <th style={{ textAlign: "right" }}>총수량</th>
                 <th style={{ textAlign: "right" }}>센터</th>
                 <th>비고</th>
+                <th style={{ width: 90 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -7875,7 +8053,25 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                   <td style={{ color: T.inkSoft, fontSize: 12.5 }}>{x.pivot || x.vendor || "-"}</td>
                   <td style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: x.total ? T.ink : T.borderStrong }}>{x.total.toLocaleString()}</td>
                   <td style={{ textAlign: "right", fontSize: 12.5, color: T.inkSoft }}>{x.centers || "-"}</td>
-                  <td style={{ fontSize: 12, color: x.isNew ? T.amberDeep : T.inkSoft }}>{x.isNew ? "템플릿에 없는 상품 - 같은 공급사 시트를 복사해서 추가" : x.hidden ? "원본에선 숨김 시트 - 발주 있어서 보이게 나감" : x.total ? "" : "발주 없음 → 0으로 나감"}</td>
+                  <td style={{ fontSize: 12, color: x.isNew ? T.amberDeep : T.inkSoft }}>
+                    {x.isNew ? "템플릿에 없는 상품 - 같은 공급사 시트를 복사해서 추가" : x.hidden ? "원본에선 숨김 시트 - 발주 있어서 보이게 나감" : x.total ? "" : "발주 없음 → 0으로 나감"}
+                    {x.sheet && (() => {
+                      const c = ((pickCfg && pickCfg.products) || {})[x.sheet] || {};
+                      return (
+                        <>
+                          {(c.zero || []).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#B26A00", background: "#FFF3E0", borderRadius: 99, padding: "1px 7px" }}>0 처리 {(c.zero || []).length}곳</span>}
+                          {(c.remove || []).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#B03A2E", background: "#FDECEA", borderRadius: 99, padding: "1px 7px" }}>지역 빼기 {(c.remove || []).length}곳</span>}
+                        </>
+                      );
+                    })()}
+                  </td>
+                  <td>
+                    {x.sheet && (
+                      <button onClick={() => setSetFor(x)} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12 }} title="이 시트의 지역 0 처리·지역 빼기·시트 빼기">
+                        <SettingsGear size={13} /> 설정
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
