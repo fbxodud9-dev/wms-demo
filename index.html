@@ -1622,8 +1622,26 @@ async function apiFetch(path, token, options = {}) {
     throw new Error("서버에 연결할 수 없습니다. 인터넷 연결이나 백엔드 상태를 확인해주세요.");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `요청이 실패했습니다 (${res.status})`);
+  if (!res.ok) {
+    // 로그인 유효기간(7일)이 지나 토큰이 만료되면: 자동으로 로그인 화면으로 보내고 안내 (화면이 멈춘 듯 업로드만 실패하는 일 방지)
+    if (res.status === 401 && token) {
+      try {
+        window.dispatchEvent(new CustomEvent("wms-auth-expired"));
+      } catch (e) {}
+      throw new Error("로그인 시간이 만료됐어요. 다시 로그인해주세요.");
+    }
+    throw new Error(data.error || `요청이 실패했습니다 (${res.status})`);
+  }
   return data;
+}
+// 토큰 안의 만료 시각(초) 읽기 - 못 읽으면 null
+function tokenExpSec(token) {
+  try {
+    const p = JSON.parse(atob(String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof p.exp === "number" ? p.exp : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function mapItemFromApi(i) {
@@ -1682,7 +1700,7 @@ function mapDocFromApi(d) {
   return { docNo: d.doc_no, date: (d.doc_date || "").slice(0, 10), orderNo: d.order_no, customer: d.customer, status: d.status, reprints: d.reprints };
 }
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, notice }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -1725,6 +1743,7 @@ function LoginScreen({ onLogin }) {
         <Field label="비밀번호">
           <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
         </Field>
+        {notice && !err && <div style={{ fontSize: 12.5, color: T.amberDeep, fontWeight: 700, background: "#FFF6E5", border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 10px" }}>{notice}</div>}
         {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
         <button
           type="submit"
@@ -1770,6 +1789,17 @@ function WMSApp() {
 
   const [ready, setReady] = useState(false);
   const [apiErr, setApiErr] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  // 쓰는 도중 토큰이 만료되면(서버가 401) 자동 로그아웃 → 로그인 화면에 안내
+  useEffect(() => {
+    const onExpired = () => {
+      setAuthNotice("로그인 시간(7일)이 지나서 로그아웃됐어요. 다시 로그인한 뒤 하던 작업(파일 업로드 등)을 다시 해주세요.");
+      doLogoutRef.current && doLogoutRef.current();
+    };
+    window.addEventListener("wms-auth-expired", onExpired);
+    return () => window.removeEventListener("wms-auth-expired", onExpired);
+  }, []);
+  const doLogoutRef = useRef(null);
 
   // 로그인 정보 복원 (토큰은 로컬에 저장하지만, 실제 데이터는 전부 서버에서 가져옵니다)
   useEffect(() => {
@@ -1777,8 +1807,15 @@ function WMSApp() {
       const raw = localStorage.getItem("wms-auth");
       if (raw) {
         const parsed = JSON.parse(raw);
-        setAuthToken(parsed.token);
-        setAuthUser(parsed.user);
+        const exp = tokenExpSec(parsed.token);
+        if (exp && exp * 1000 < Date.now()) {
+          // 저장된 로그인이 이미 만료: 로그인 화면부터
+          localStorage.removeItem("wms-auth");
+          setAuthNotice("로그인 시간(7일)이 지나서 다시 로그인이 필요해요.");
+        } else {
+          setAuthToken(parsed.token);
+          setAuthUser(parsed.user);
+        }
       }
     } catch (e) {}
     setAuthReady(true);
@@ -2016,6 +2053,7 @@ function WMSApp() {
   }, [authToken, loadCoreData, applyOrderCfg, applyProductInfo, applyInvoiceSettings]);
 
   function doLogin(token, user) {
+    setAuthNotice("");
     setAuthToken(token);
     setAuthUser(user);
     try {
@@ -2036,6 +2074,7 @@ function WMSApp() {
     } catch (e) {}
   }
 
+  doLogoutRef.current = doLogout;
   const itemsView = useMemo(() => items.map((i) => ({ ...i, replenished: !!replenishedSkus[i.sku] })), [items, replenishedSkus]);
 
   const lowStock = useMemo(() => items.filter((i) => i.qty < i.safety), [items]);
@@ -2514,7 +2553,7 @@ function WMSApp() {
   }
 
   if (!authToken) {
-    return <LoginScreen onLogin={doLogin} />;
+    return <LoginScreen onLogin={doLogin} notice={authNotice} />;
   }
 
   if (!ready) {
@@ -2695,7 +2734,7 @@ function WMSApp() {
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
-        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
+        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
         {tab === "pickingedit" && <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} />}
@@ -6300,17 +6339,71 @@ const emartNorm = (s) => String(s == null ? "" : s).replace(/[\s/]/g, "").toLowe
 // ---------- 발주파일 읽기 ----------
 // 머리글 비교용: 공백·줄바꿈·특수공백·<BR> 제거
 const emartHead = (v) => String(v == null ? "" : v).replace(/<br\s*\/?>/gi, "").replace(/[\s\u00a0\u200b\ufeff]/g, "");
-function parseEmartOrderRows(rows) {
+// ----- 이마트 발주파일 새 형식 (GS 새 형식과 같은 한 줄 머리글) -----
+// 발주일 | 납품처 코드 | 납품처명 | 업체 코드 | 화주사명 | 상품명 | 상품코드 | 입수 | 낱개 수량
+// 주문번호가 없어서 "발주일+납품처+업체코드"로 주문번호를 만들고, 중복은 상품 줄 단위로 막는다 (EmartOrderPage.handleFiles)
+// 화주사명은 예전 형식 거래처 이름과 달라서(예: 오뗄(한다운) ↔ [PNB]오뗄[간편식품_월-토]) 업체 코드로 예전 이름을 찾아 쓴다
+//  → 피킹지·명세서·일별 집계의 공급사 묶음과 설정(순서·삭제 등)이 예전과 똑같이 유지됨
+const emartCodeNorm = (c) => String(c == null ? "" : c).trim().replace(/\.0+$/, "").replace(/^0+/, "");
+// 예전 이름을 아직 모르는 업체 코드용 기본값 (새 형식 화주사명 → 예전 거래처 이름)
+const EMART_NEW_VENDOR_FALLBACK = {
+  "대광푸드": "대광푸드D1",
+  "탭스푸드(바비야)": "탭스인터내셔널2편",
+  "영우": "영우에프엔에프",
+  "럭키물류(자연촌)": "자연촌",
+  "프레시오늘": "프레시오늘D1 2편",
+  "영진베이커리(아인츠)": "영진베이커리2편",
+};
+function parseEmartOrderRowsNew(rows, vendorByCode) {
+  const h = rows.findIndex((r) => r && r.some((v) => emartHead(v) === "납품처명") && r.some((v) => emartHead(v) === "상품명") && r.some((v) => emartHead(v) === "낱개수량"));
+  if (h === -1) return null;
+  const top = rows[h].map(emartHead);
+  const col = (name) => top.findIndex((v) => v === name);
+  const c = { date: col("발주일"), centerCode: col("납품처코드"), center: col("납품처명"), vendorCode: col("업체코드"), vendor: col("화주사명"), name: col("상품명"), code: col("상품코드"), box: col("입수"), qty: col("낱개수량") };
+  if (c.center === -1 || c.name === -1 || c.qty === -1) throw new Error("이마트 새 형식 발주파일에서 납품처명·상품명·낱개 수량 칸을 찾지 못했어요.");
+  const map = vendorByCode || {};
+  const out = [];
+  for (let i = h + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const center = String(r[c.center] == null ? "" : r[c.center]).trim();
+    const name = String(r[c.name] == null ? "" : r[c.name]).trim();
+    const qty = Number(String(r[c.qty] == null ? "" : r[c.qty]).replace(/,/g, "")) || 0;
+    if (!center || !name || qty <= 0) continue;
+    const d = String(r[c.date] == null ? "" : r[c.date]).replace(/\D/g, "");
+    const vcode = c.vendorCode !== -1 ? emartCodeNorm(r[c.vendorCode]) : "";
+    const vname = c.vendor !== -1 ? String(r[c.vendor] || "").trim() : "";
+    const box = c.box !== -1 ? Number(r[c.box]) || 0 : 0;
+    out.push({
+      orderNo: "",
+      synthetic: true,
+      vendorCode: vcode,
+      vendor: (vcode && map[vcode]) || EMART_NEW_VENDOR_FALLBACK[vname] || vname,
+      vendorNewName: vname,
+      center,
+      name,
+      code: c.code !== -1 ? String(r[c.code] == null ? "" : r[c.code]).trim() : "",
+      box: box > 1 ? box : 0, // 새 형식은 낱개 상품이 입수 1로 나옴 → 0(모름)으로 보고 템플릿·상품정보 입수를 씀
+      qty,
+      date: d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : "",
+      due: "",
+    });
+  }
+  return out;
+}
+function parseEmartOrderRows(rows, vendorByCode) {
   // rows: 2차원 배열(SheetJS sheet_to_json header:1). 1행 머리글 + 2행 하위 머리글(박스수량/낱개수량)
   const h = rows.findIndex((r) => r && r.some((v) => emartHead(v) === "입고센터") && r.some((v) => emartHead(v) === "상품명"));
   if (h === -1) {
+    const nw = parseEmartOrderRowsNew(rows, vendorByCode);
+    if (nw) return nw;
     const first = rows.find((r) => r && r.some((v) => emartHead(v)));
     const seen = first ? first.map(emartHead).filter(Boolean).slice(0, 6).join(", ") : "(빈 시트)";
     const isPicking = rows.some((r) => r && r.some((v) => emartHead(v) === "행레이블"));
     throw new Error(
       isPicking
         ? "피킹검수 파일이에요. 발주파일(출고관리-발주조회_납품등록)을 올려주세요."
-        : `이마트 발주파일 형식이 아니에요 (입고센터·상품명 머리글을 찾지 못했어요). 첫 줄: ${seen}`
+        : `이마트 발주파일 형식이 아니에요 (예전 형식: 입고센터·상품명 / 새 형식: 납품처명·상품명·낱개 수량 머리글을 찾지 못했어요). 첫 줄: ${seen}`
     );
   }
   const top = rows[h].map(emartHead);
@@ -6332,7 +6425,7 @@ function parseEmartOrderRows(rows) {
     const d = String(r[c.date] == null ? "" : r[c.date]).replace(/\D/g, "");
     out.push({
       orderNo: c.orderNo !== -1 ? String(r[c.orderNo] || "").trim() : "",
-      vendorCode: c.vendorCode !== -1 ? String(r[c.vendorCode] || "").trim() : "",
+      vendorCode: c.vendorCode !== -1 ? emartCodeNorm(r[c.vendorCode]) : "",
       vendor: c.vendor !== -1 ? String(r[c.vendor] || "").trim() : "",
       center,
       name,
@@ -8271,7 +8364,9 @@ function emartVendorKey(v) {
 }
 
 /* ---------- 주문정보 (E.MART): GS 주문정보와 같은 화면 ---------- */
-function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }) {
+function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, authToken }) {
+  // 업체 코드 → 예전 형식 거래처 이름 (새 형식 파일을 예전과 같은 공급사로 묶는 데 씀). 서버 설정에 계속 쌓아 둔다
+  const codeMapSaved = useSetting("emart_vendor_codes", authToken);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -8303,6 +8398,12 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
     setUploading(true);
     try {
       const all = [];
+      // 업체 코드 → 예전 이름: 저장된 표 + 지금 남아 있는 예전 형식 발주
+      const vendorByCode = { ...((codeMapSaved && codeMapSaved.map) || {}) };
+      emartOrders.forEach((o) => {
+        const k = emartCodeNorm(o.supplierCode);
+        if (k && o.supplier && !String(o.orderNo || "").startsWith("EM-") && !vendorByCode[k]) vendorByCode[k] = o.supplier;
+      });
       for (const f of Array.from(list)) {
         const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: "array" });
         // 시트가 여러 개여도 발주 머리글이 있는 시트를 찾는다
@@ -8311,7 +8412,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
         for (const sn of wb.SheetNames) {
           const r = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: "", raw: true });
           try {
-            parsed = parseEmartOrderRows(r);
+            parsed = parseEmartOrderRows(r, vendorByCode);
             break;
           } catch (e) {
             if (!firstErr) firstErr = e;
@@ -8321,7 +8422,54 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
         all.push(...parsed);
       }
       if (all.length === 0) throw new Error("발주 수량이 있는 줄이 없어요.");
+      // 예전 형식 파일에서 업체 코드 → 거래처 이름을 배워서 저장 (다음 새 형식 업로드 때 사용)
+      {
+        const learn = {};
+        all.forEach((r) => !r.synthetic && r.vendorCode && r.vendor && (learn[r.vendorCode] = r.vendor));
+        Object.entries(vendorByCode).forEach(([k, v]) => !learn[k] && (learn[k] = v));
+        const before = (codeMapSaved && codeMapSaved.map) || {};
+        if (authToken && Object.keys(learn).some((k) => before[k] !== learn[k])) updateSetting("emart_vendor_codes", authToken, (v) => ({ map: { ...((v && v.map) || {}), ...learn } })).catch(() => {});
+      }
+      // 새 형식(주문번호 없음): 이미 올라온 "발주일+납품처+업체+상품" 줄은 건너뛴다 (같은 파일 다시 올려도 두 번 안 쌓임)
+      let dupLines = 0;
+      {
+        const lineKey = (date, center, vcode, vendor, sku) => `${date}|${center}|${vcode || vendor}|${sku}`;
+        const seen = new Set(); // 이미 올라온 모든 줄
+        const seenNew = new Set(); // 이미 올라온 새 형식 줄 (예전 형식 파일을 나중에 올려도 두 번 안 쌓이게)
+        emartOrders.forEach((o) =>
+          o.lines.forEach((l) => {
+            const k = lineKey(o.createdAt, o.storeCode || o.customer, emartCodeNorm(o.supplierCode), o.supplier, l.sku);
+            seen.add(k);
+            if (String(o.orderNo || "").startsWith("EM-")) seenNew.add(k);
+          })
+        );
+        const kept = all.filter((r) => {
+          const k = lineKey(r.date, r.center, r.vendorCode, r.vendor, r.code || r.name);
+          if (r.synthetic ? seen.has(k) : seenNew.has(k)) {
+            dupLines++;
+            return false;
+          }
+          return true;
+        });
+        all.length = 0;
+        all.push(...kept);
+      }
+      if (all.length === 0) {
+        setMsg(`새로 추가할 줄이 없어요. 상품 줄 ${dupLines}개가 이미 올라와 있어서 모두 건너뛰었어요.`);
+        return;
+      }
       const list2 = emartOrdersFromRows(all);
+      // 새 형식 주문번호(EM-…)가 이미 있는 날(추가 발주)은 -2, -3…을 붙여 따로 저장
+      {
+        const used = new Set(emartOrders.map((o) => `${o.orderNo}|${o.createdAt}`));
+        list2.forEach((o) => {
+          if (!String(o.orderNo).startsWith("EM-")) return;
+          let no = o.orderNo;
+          for (let n = 2; used.has(`${no}|${o.createdAt}`); n++) no = `${o.orderNo}-${n}`;
+          used.add(`${no}|${o.createdAt}`);
+          o.orderNo = no;
+        });
+      }
       // 상품마스터에 이마트 상품으로 자동 등록 (이미 있는 품목은 이마트 브랜드만 추가)
       if (onRegisterItems) {
         const seen = new Map();
@@ -8336,6 +8484,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems }
       setMsg(
         `${dates.map(fmtDate).join(", ")} 발주 ${res.createdCount ?? 0}건 등록` +
           (res.skippedCount ? ` · 이미 올라와 있던 ${res.skippedCount}건은 건너뜀` : "") +
+          (dupLines ? ` · 이미 올라와 있던 상품 줄 ${dupLines}개는 건너뜀` : "") +
           ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > 이마트에서 피킹지를 받으세요.`
       );
     } catch (e) {
