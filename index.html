@@ -7690,12 +7690,20 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const codeOf = (label) => String(label).slice(0, 4);
   const rowsView = (p.regionRows || []).map((r) => (r.subtotal ? r : { ...r, code: codeOf(r.label) }));
   const qtyOf = (code) => (item.byCode && item.byCode[code]) || 0;
+  const pack = p.pack || 0;
+  const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+  const nameOf = (c) => (rowsView.find((r) => r.code === c) || {}).short || c;
+  const names = (codes) => codes.map(nameOf).join(", ");
+  useEffect(() => {
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const toggle = (code) => {
     const n = new Set(pick);
     n.has(code) ? n.delete(code) : n.add(code);
     setPick(n);
   };
-  const names = (codes) => codes.map((c) => (rowsView.find((r) => r.code === c) || {}).short || c).join(", ");
   async function apply(kind) {
     const codes = Array.from(pick);
     if (!codes.length) return;
@@ -7722,98 +7730,175 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
     });
     setBusy(false);
     setPick(new Set());
-    setMsg(r.ok ? `저장했어요: ${names(codes)} → ${label}` : `저장 실패 (${r.error})`);
+    setMsg(r.ok ? `저장했어요: ${names(codes)} → ${label}` : `저장하지 못했어요 (${r.error})`);
   }
-  async function toggleSheet() {
-    const op = { type: sheetHidden ? "restore" : "hide", sup: p.pivot, name: item.title };
-    const text = sheetHidden ? `[${item.title}] 시트를 다시 피킹지에 넣을까요?` : `[${item.title}] 시트를 GS 냉동 피킹지에서 뺄까요?\n\n· 이 시트가 엑셀에서 아예 안 나와요\n· 순서 설정의 "피킹 안 하는 목록"이나 이 창에서 [시트 복구]로 되돌릴 수 있어요`;
+  async function setSheet(wantHidden) {
+    if (wantHidden === sheetHidden) return;
+    const op = { type: wantHidden ? "hide" : "restore", sup: p.pivot, name: item.title };
+    const text = !wantHidden ? `[${item.title}] 시트를 다시 피킹지에 넣을까요?` : `[${item.title}] 시트를 GS 냉동 피킹지에서 뺄까요?\n\n· 이 시트가 엑셀에서 아예 안 나와요\n· 순서 설정의 "피킹 안 하는 목록"이나 이 창에서 [시트 포함]으로 되돌릴 수 있어요`;
     if (!window.confirm(text)) return;
     setBusy(true);
     const r = await setBrandHidden("picking_order_gsfrozen", authToken, op);
     setBusy(false);
-    setMsg(r.ok ? (sheetHidden ? "시트를 복구했어요." : "시트를 뺐어요.") : `저장 실패 (${r.error})`);
+    setMsg(r.ok ? (wantHidden ? "시트를 뺐어요." : "시트를 다시 넣었어요.") : `저장하지 못했어요 (${r.error})`);
   }
-  const cell = { padding: "6px 10px", borderBottom: `1px solid ${T.border}`, fontSize: 12.5 };
-  return (
-    <BrandModalFrame title={`피킹지 설정 · ${item.title}`} sub={`${p.pivot} · GS 냉동은 편 구분 없이, 지역을 눌러 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요. 시트를 통째로 빼려면 [시트 빼기].`} onClose={onClose} maxWidth={760} height="88vh">
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7" }}>
-        <span style={{ fontSize: 13, fontWeight: 800 }}>고른 지역 {pick.size}곳</span>
-        <button disabled={busy || !pick.size} onClick={() => apply("zero")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#B26A00", borderColor: "#E8B66B", opacity: pick.size ? 1 : 0.5 }}>
-          0 처리
-        </button>
-        <button disabled={busy || !pick.size} onClick={() => apply("remove")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#B03A2E", borderColor: "#E6A9A2", opacity: pick.size ? 1 : 0.5 }}>
-          지역 빼기 (줄 숨김)
-        </button>
-        <button disabled={busy || !pick.size} onClick={() => apply("clear")} style={{ ...smallBtnStyle, opacity: pick.size ? 1 : 0.5 }}>
-          원래대로
-        </button>
-        {pick.size > 0 && (
-          <button disabled={busy} onClick={() => setPick(new Set())} style={{ ...smallBtnStyle, color: T.inkSoft }}>
-            선택 취소
-          </button>
-        )}
-        <button disabled={busy} onClick={toggleSheet} style={{ ...smallBtnStyle, marginLeft: "auto", fontWeight: 700, color: sheetHidden ? T.tealDeep : "#fff", background: sheetHidden ? "#fff" : T.danger, borderColor: sheetHidden ? T.teal : T.danger }}>
-          {sheetHidden ? "↺ 시트 복구" : "🗑 시트 빼기"}
-        </button>
-      </div>
-      {msg && <div style={{ padding: "8px 20px", fontSize: 12.5, fontWeight: 700, color: msg.startsWith("저장 실패") ? T.danger : T.teal }}>{msg}</div>}
-      {sheetHidden && <div style={{ padding: "8px 20px", fontSize: 12.5, fontWeight: 700, color: T.danger }}>이 시트는 지금 피킹지에서 빠져 있어요.</div>}
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px 18px" }}>
-        <div style={{ border: `1.5px solid ${T.ink}`, borderRadius: 6, overflow: "hidden", opacity: sheetHidden ? 0.5 : 1 }}>
-          <div style={{ textAlign: "center", fontWeight: 800, padding: "6px 0", borderBottom: `1px solid ${T.border}`, background: "#F7F6F2" }}>{p.sheetTitle || p.pivot}</div>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
-            <thead>
-              <tr>
-                {["행 레이블", "입수", item.title, "센터명", "상태"].map((h, i) => (
-                  <th key={i} style={{ ...cell, textAlign: i === 2 ? "right" : "left", fontWeight: 700, background: "#FBFAF7" }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rowsView.map((r, i) =>
-                r.subtotal ? (
-                  <tr key={i}>
-                    <td colSpan={5} style={{ ...cell, fontWeight: 800, background: "#F3F1EA" }}>
-                      {r.label}
-                    </td>
+  const seg = (on) => ({ ...smallBtnStyle, padding: "6px 14px", fontWeight: on ? 800 : 600, background: on ? T.steel : "#fff", color: on ? "#fff" : T.ink, borderColor: on ? T.steel : T.border });
+  const cell = { padding: "6px 8px", borderBottom: "1px solid #E4E1D8", fontSize: 12.5 };
+  const num = { ...cell, textAlign: "right", fontFamily: "'JetBrains Mono', monospace" };
+  const zeroList = rowsView.filter((r) => !r.subtotal && zeroSet.has(r.code));
+  const rmList = rowsView.filter((r) => !r.subtotal && removeSet.has(r.code));
+  return createPortal(
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
+      <div style={{ ...cardStyle, width: "min(980px, 100%)", maxHeight: "94vh", display: "flex", flexDirection: "column", padding: 0 }} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 17, fontWeight: 800 }}>피킹지 설정 · {item.title}</div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · GS 냉동은 편 구분 없이, 지역을 여러 개 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
+            </div>
+            <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>
+              닫기
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 14, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 800, marginRight: 4 }}>시트</span>
+              <button disabled={busy} onClick={() => setSheet(false)} style={seg(!sheetHidden)}>
+                시트 포함
+              </button>
+              <button disabled={busy} onClick={() => setSheet(true)} style={{ ...seg(sheetHidden), ...(sheetHidden ? { background: T.danger, borderColor: T.danger } : { color: T.danger }) }}>
+                시트 빼기
+              </button>
+              <span style={{ fontSize: 11.5, color: T.inkSoft }}>{sheetHidden ? "(이 시트는 피킹지에서 빠져 있어요)" : "(피킹지에 나가요)"}</span>
+            </div>
+          </div>
+          {msg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 700, color: msg.includes("못했") ? T.danger : T.teal }}>{msg}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 16, padding: 16, overflow: "auto", flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ flex: "3 1 460px", minWidth: 0, opacity: sheetHidden ? 0.55 : 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
+              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>· 지역 줄을 모두 누른 뒤 [0 처리] 또는 [지역 빼기]</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap", position: "sticky", top: 0, background: T.surface, zIndex: 2, padding: "4px 0" }}>
+              <button disabled={busy || !pick.size} onClick={() => apply("zero")} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !pick.size ? 0.5 : 1 }}>
+                0 처리{pick.size ? ` (${pick.size}곳)` : ""}
+              </button>
+              <button disabled={busy || !pick.size} onClick={() => apply("remove")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#fff", background: T.danger, borderColor: T.danger, opacity: busy || !pick.size ? 0.5 : 1 }}>
+                지역 빼기{pick.size ? ` (${pick.size}곳)` : ""}
+              </button>
+              <button disabled={busy || !pick.size} onClick={() => apply("clear")} style={{ ...smallBtnStyle, opacity: busy || !pick.size ? 0.5 : 1 }}>
+                원래대로
+              </button>
+              {pick.size > 0 && (
+                <button disabled={busy} onClick={() => setPick(new Set())} style={smallBtnStyle}>
+                  선택 취소
+                </button>
+              )}
+              <span style={{ fontSize: 12, color: pick.size ? T.danger : T.inkSoft, fontWeight: pick.size ? 700 : 500 }}>
+                {pick.size ? `고른 지역: ${names(Array.from(pick))}` : zeroList.length || rmList.length ? `지금: 0 처리 ${zeroList.length}곳 · 지역 빼기 ${rmList.length}곳` : "지금 설정 없음"}
+              </span>
+            </div>
+            <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ background: "#F7F6F2", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124", textAlign: "center" }}>{p.sheetTitle || p.pivot}</div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#FAFAF7" }}>
+                    {["행 레이블", "입수", item.title, "박스", "센터명", "낱개"].map((h, i) => (
+                      <th key={i} style={{ ...cell, textAlign: i === 0 ? "left" : "center", fontWeight: 800, maxWidth: i === 2 ? 180 : undefined }}>
+                        {h}
+                      </th>
+                    ))}
                   </tr>
-                ) : (
-                  (() => {
+                </thead>
+                <tbody>
+                  {rowsView.map((r, i) => {
+                    if (r.subtotal)
+                      return (
+                        <tr key={i} style={{ background: "#F3F1EA" }}>
+                          <td colSpan={6} style={{ ...cell, fontWeight: 800 }}>
+                            {r.label}
+                          </td>
+                        </tr>
+                      );
                     const on = pick.has(r.code);
                     const z = zeroSet.has(r.code);
                     const rm = removeSet.has(r.code);
-                    const q = qtyOf(r.code);
+                    const raw = qtyOf(r.code);
+                    const q = z || rm ? 0 : raw;
+                    const b = bd(q);
                     return (
-                      <tr key={i} onClick={() => toggle(r.code)} style={{ cursor: "pointer", background: on ? "#FFF3C4" : rm ? "#FDECEA" : z ? "#FFF3E0" : "#fff", outline: on ? `2px dashed ${T.amber}` : "none" }}>
-                        <td style={{ ...cell, textDecoration: rm ? "line-through" : "none", color: rm ? T.inkSoft : T.ink }}>{r.label.replace(/\u00a0/g, " ")}</td>
-                        <td style={cell}>{p.pack || "-"}</td>
-                        <td style={{ ...cell, textAlign: "right", fontWeight: 700 }}>
-                          {z || rm ? (
-                            <span>
-                              0 <span style={{ fontSize: 11, color: T.inkSoft, fontWeight: 500 }}>(발주 {q})</span>
-                            </span>
-                          ) : (
-                            q
-                          )}
+                      <tr
+                        key={i}
+                        onClick={() => !busy && toggle(r.code)}
+                        title={on ? "눌러서 선택 해제" : "눌러서 선택 (여러 개 가능)"}
+                        style={{ cursor: "pointer", background: on ? "#FFE699" : rm ? "#FDECEA" : z ? "#FFF2CC" : undefined, outline: on ? `2px dashed ${T.amberDeep}` : undefined, outlineOffset: -2 }}
+                      >
+                        <td style={{ ...cell, fontSize: 11.5, textDecoration: rm ? "line-through" : "none", color: rm ? T.inkSoft : T.ink }}>{String(r.label).replace(/ /g, " ")}</td>
+                        <td style={{ ...num, textAlign: "center" }}>{pack || "-"}</td>
+                        <td style={{ ...num, fontWeight: 700 }}>
+                          {q ? q.toLocaleString() : "- 0"}
+                          {(z || rm) && raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11, fontWeight: 700 }}> (발주 {raw})</span>}
                         </td>
-                        <td style={{ ...cell, fontWeight: 700 }}>{r.short}</td>
-                        <td style={cell}>
-                          {on && <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: T.amberDeep, borderRadius: 99, padding: "1px 7px", marginRight: 4 }}>선택</span>}
-                          {z && <span style={{ fontSize: 11, fontWeight: 800, color: "#B26A00" }}>0 처리</span>}
-                          {rm && <span style={{ fontSize: 11, fontWeight: 800, color: "#B03A2E" }}>빠짐(숨김)</span>}
+                        <td style={num}>{b.box || "- 0"}</td>
+                        <td style={{ ...cell, textAlign: "center", fontWeight: 800 }}>
+                          {r.short || r.code}
+                          {on && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.danger, borderRadius: 8, padding: "1px 6px" }}>선택</span>}
+                          {!on && z && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>0 처리</span>}
+                          {!on && rm && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>빠짐</span>}
                         </td>
+                        <td style={num}>{b.rem || "- 0"}</td>
                       </tr>
                     );
-                  })()
-                )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ flex: "2 1 280px", minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>설정 요약</div>
+            <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ background: "#FFF2CC", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124" }}>0 처리 ({zeroList.length}곳) · 줄은 남고 수량 0</div>
+              {zeroList.length ? (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <tbody>
+                    {zeroList.map((r) => (
+                      <tr key={r.code}>
+                        <td style={{ ...cell, fontWeight: 700 }}>{r.short || r.code}</td>
+                        <td style={num}>발주 {qtyOf(r.code)} → 0</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ ...cell, color: T.inkSoft }}>없음</div>
               )}
-            </tbody>
-          </table>
+              <div style={{ background: "#FDECEA", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderTop: "1px solid #1E2124", borderBottom: "1px solid #1E2124" }}>지역 빼기 ({rmList.length}곳) · 줄 숨김</div>
+              {rmList.length ? (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <tbody>
+                    {rmList.map((r) => (
+                      <tr key={r.code}>
+                        <td style={{ ...cell, fontWeight: 700 }}>{r.short || r.code}</td>
+                        <td style={num}>발주 {qtyOf(r.code)} → 빠짐</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ ...cell, color: T.inkSoft }}>없음</div>
+              )}
+            </div>
+            <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
+              · <b>0 처리</b>: 피킹지에 그 지역 줄은 남고 수량만 0이에요.
+              <br />· <b>지역 빼기</b>: 그 지역 줄을 숨겨서 안 보여요 (합계에서도 빠져요).
+              <br />· <b>시트 빼기</b>: 이 상품 시트가 엑셀에서 아예 안 나와요 (순서 설정의 피킹 안 하는 목록에서도 복구 가능).
+              <br />· 일별 집계 숫자는 일별 발주 집계 → GS냉동 집계 설정에서 따로 빼요.
+            </div>
+          </div>
         </div>
       </div>
-    </BrandModalFrame>
+    </div>,
+    document.body
   );
 }
 
@@ -7866,12 +7951,19 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
     const visibleList = out.filter((x) => !isBrandHidden(orderCfg, x.pivot, x.title));
     return applyBrandOrder(visibleList, orderCfg, (x) => x.pivot, (x) => x.title);
   }, [tplInfo, rows, orderCfg]);
+  const [supFilter, setSupFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const [selSheet, setSelSheet] = useState(null);
+  const supOptions = useMemo(() => Array.from(new Set(list.map((x) => x.pivot).filter(Boolean))), [list]);
+  const filterOn = supFilter !== "all" || !!q.trim();
+  const filtered = list.filter((x) => (supFilter === "all" || x.pivot === supFilter) && (!q.trim() || x.title.toLowerCase().includes(q.trim().toLowerCase()) || (x.names || []).some((n) => n.toLowerCase().includes(q.trim().toLowerCase()))));
+  const selected = filtered.find((x) => (x.sheet || "new:" + x.title) === selSheet) || filtered[0] || null;
   const removedCount = useMemo(() => {
     if (!tplInfo) return 0;
     return tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).length;
   }, [tplInfo, orderCfg]);
   const totalQty = rows.reduce((a, r) => a + r.qty, 0);
-  async function download() {
+  async function download(onlySheets) {
     setBusy(true);
     setErr("");
     setMsg("");
@@ -7879,6 +7971,8 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       const buf = customTpl ? customTpl.buffer.slice(0) : await getGsFrozenTemplateBuffer();
       // 삭제한 상품: 발주 줄도 빼고, 시트도 뺌
       const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).map((p) => p.sheet));
+      // 필터/한 상품만: 나머지 시트는 빼기
+      if (onlySheets) tplInfo.sheets.forEach((s) => !onlySheets.has(s.name) && hiddenSheets.add(s.name));
       const regCfgOf = (sheet) => ((pickCfg && pickCfg.products) || {})[sheet] || {};
       const rowsOut = rows.filter((r) => {
         const p = matchEmartProduct(tplInfo, r.name);
@@ -7887,6 +7981,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
           if ((c.zero || []).includes(r.code) || (c.remove || []).includes(r.code)) return false; // 0 처리 / 지역 빼기
           return !hiddenSheets.has(p.sheet);
         }
+        if (onlySheets) return onlySheets.has("new:" + r.name);
         return !isBrandHidden(orderCfg, frozenSupKey(r.vendor), r.name);
       });
       const hideRegionRows = new Map();
@@ -7922,7 +8017,7 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `GS_냉동_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
+      a.download = onlySheets && onlySheets.size <= 2 && [...onlySheets][0] ? `GS냉동_${String([...onlySheets].find((n) => !/^new:/.test(n)) || [...onlySheets][0]).replace(/^new:/, "").replace(/[\\/:*?"<>|]/g, "")}_${activeDate}.xlsx` : `GS_냉동_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -7981,9 +8076,6 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
                 다른 템플릿으로 만들기
               </button>
             )}
-            <button onClick={download} disabled={busy || !tplInfo} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !tplInfo ? 0.55 : 1 }}>
-              <Download size={15} /> {busy ? "만드는 중..." : "엑셀 다운로드"}
-            </button>
           </span>
         }
       />
@@ -8015,69 +8107,202 @@ function GsFrozenPickingView({ frozenOrders, authToken }) {
       )}
       {removedCount > 0 && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600, marginBottom: 10 }}>※ 순서 설정에서 삭제(피킹 안 함)한 상품 {removedCount}개는 시트에서 빠져 있어요 (순서 설정 → 피킹 안 하는 목록에서 복구)</div>}
       {tplErr && <div style={{ ...cardStyle, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
-      <div style={{ ...cardStyle, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>발주일</span>
-        <select style={inputStyle} value={activeDate} onChange={(e) => setDate(e.target.value)}>
-          {dates.length === 0 && <option value={activeDate}>{activeDate} (발주 없음)</option>}
+      <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>피킹 날짜</span>
+        <select style={{ ...inputStyle, width: 200 }} value={activeDate} onChange={(e) => (setDate(e.target.value), setSelSheet(null))}>
+          {dates.length === 0 && <option value={activeDate}>{fmtDate(activeDate)} (발주 없음)</option>}
           {dates.map((d) => (
             <option key={d} value={d}>
-              {d} ({gsWeekday(d)})
+              {fmtDate(d)}
             </option>
           ))}
         </select>
-        <span style={{ fontSize: 12.5, color: T.inkSoft }}>
-          이 날짜 GS 냉동 발주 <b style={{ color: T.ink }}>{totalQty.toLocaleString()}개</b> · 발주는 주문정보 (GS 냉동)에서 올려요
-        </span>
+        <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 GS 냉동 발주만 집계합니다 · 발주 {totalQty.toLocaleString()}개 · 발주가 없는 상품도 시트는 0으로 남아요</span>
       </div>
       {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.includes("⚠") ? T.amberDeep : T.teal, marginBottom: 10 }}>{msg}</div>}
       {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
-      <div style={cardStyle}>
-        {!tplInfo ? (
+      {!tplInfo ? (
+        <div style={cardStyle}>
           <EmptyRow text={tplErr ? "템플릿을 읽지 못했어요." : "템플릿 읽는 중..."} />
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>시트(상품)</th>
-                <th>피벗(공급사)</th>
-                <th style={{ textAlign: "right" }}>총수량</th>
-                <th style={{ textAlign: "right" }}>센터</th>
-                <th>비고</th>
-                <th style={{ width: 90 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map((x, i) => (
-                <tr key={i} style={{ background: x.isNew ? "#FFF8E1" : x.total ? "#fff" : "#FAFAF7" }}>
-                  <td style={{ fontWeight: 600 }}>{x.title}</td>
-                  <td style={{ color: T.inkSoft, fontSize: 12.5 }}>{x.pivot || x.vendor || "-"}</td>
-                  <td style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: x.total ? T.ink : T.borderStrong }}>{x.total.toLocaleString()}</td>
-                  <td style={{ textAlign: "right", fontSize: 12.5, color: T.inkSoft }}>{x.centers || "-"}</td>
-                  <td style={{ fontSize: 12, color: x.isNew ? T.amberDeep : T.inkSoft }}>
-                    {x.isNew ? "템플릿에 없는 상품 - 같은 공급사 시트를 복사해서 추가" : x.hidden ? "원본에선 숨김 시트 - 발주 있어서 보이게 나감" : x.total ? "" : "발주 없음 → 0으로 나감"}
-                    {x.sheet && (() => {
-                      const c = ((pickCfg && pickCfg.products) || {})[x.sheet] || {};
-                      return (
-                        <>
-                          {(c.zero || []).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#B26A00", background: "#FFF3E0", borderRadius: 99, padding: "1px 7px" }}>0 처리 {(c.zero || []).length}곳</span>}
-                          {(c.remove || []).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: "#B03A2E", background: "#FDECEA", borderRadius: 99, padding: "1px 7px" }}>지역 빼기 {(c.remove || []).length}곳</span>}
-                        </>
-                      );
-                    })()}
-                  </td>
-                  <td>
-                    {x.sheet && (
-                      <button onClick={() => setSetFor(x)} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12 }} title="이 시트의 지역 0 처리·지역 빼기·시트 빼기">
-                        <SettingsGear size={13} /> 설정
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div className="no-print" style={{ flex: "1 1 260px" }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button
+                onClick={() => download(filterOn ? new Set(filtered.flatMap((x) => (x.sheet ? [x.sheet] : ["new:" + x.title]))) : null)}
+                disabled={busy || filtered.length === 0}
+                className="primary-btn"
+                style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: busy || filtered.length === 0 ? 0.7 : 1 }}
+              >
+                <Download size={15} /> {busy ? "생성 중..." : filterOn ? `필터 결과만 엑셀 (${filtered.length}개 시트)` : `엑셀 (${list.length}개 시트)`}
+              </button>
+              <button disabled title="인쇄/PDF 디자인을 다듬는 중이에요. 지금은 엑셀 다운로드를 이용해주세요." className="ghost-btn" style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: 0.5, cursor: "not-allowed" }}>
+                🚧 전체 출력 (공사중)
+              </button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+              <select style={{ ...inputStyle, width: "100%" }} value={supFilter} onChange={(e) => setSupFilter(e.target.value)}>
+                <option value="all">전체 공급사 ({list.length})</option>
+                {supOptions.map((sp) => (
+                  <option key={sp} value={sp}>
+                    {sp} ({list.filter((x) => x.pivot === sp).length})
+                  </option>
+                ))}
+              </select>
+              <div style={{ position: "relative" }}>
+                <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
+                <input style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} placeholder="상품명 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+              </div>
+              {filterOn && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.inkSoft }}>
+                  <span>{filtered.length}개 표시 중</span>
+                  <button onClick={() => (setSupFilter("all"), setQ(""))} className="ghost-btn" style={{ border: "none", background: "none", padding: "2px 4px", fontSize: 12, color: T.inkSoft, cursor: "pointer", textDecoration: "underline" }}>
+                    필터 초기화
+                  </button>
+                </div>
+              )}
+            </div>
+            <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxHeight: 480, overflowY: "auto" }}>
+              {filtered.length === 0 ? (
+                <EmptyRow text="조건에 맞는 상품이 없습니다." />
+              ) : (
+                filtered.map((x) => {
+                  const c = (x.sheet && ((pickCfg && pickCfg.products) || {})[x.sheet]) || {};
+                  const key = x.sheet || "new:" + x.title;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setSelSheet(key)}
+                      className="rowhover"
+                      style={{ display: "block", width: "100%", textAlign: "left", padding: "11px 14px", border: "none", background: selected && (selected.sheet || "new:" + selected.title) === key ? T.bg : "transparent", borderBottom: `1px solid #EEECE3`, cursor: "pointer", fontFamily: "inherit" }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: x.isNew ? "#FCF1DD" : "#E6F0FA", color: x.isNew ? T.amberDeep : "#1F4E79" }}>{x.isNew ? "새 상품" : "냉동"}</span>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{x.title}</div>
+                        {(c.zero || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B26A00" }}>0처리 {(c.zero || []).length}</span>}
+                        {(c.remove || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B03A2E" }}>빼기 {(c.remove || []).length}</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                        {x.pivot || x.vendor || "-"} · {x.prod ? `${(x.prod.regions || []).length}개 지역` : `${x.centers}개 센터`} · 총 {x.total}개{x.hidden ? " · 숨김 시트" : ""}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div style={{ flex: "2 1 460px" }}>
+            {selected && (
+              <div style={cardStyle}>
+                <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
+                  {selected.sheet && (
+                    <button onClick={() => setSetFor(selected)} title="이 상품 시트의 지역 0 처리·지역 빼기·시트 빼기를 피킹지를 보면서 정해요" style={{ ...smallBtnStyle, borderColor: T.amber, color: T.amberDeep, fontWeight: 700 }}>
+                      <SettingsGear size={14} /> 피킹지 설정 (지역·시트)
+                    </button>
+                  )}
+                  <button disabled title="인쇄/PDF 디자인을 다듬는 중이에요. 지금은 엑셀 다운로드를 이용해주세요." className="ghost-btn" style={{ ...smallBtnStyle, opacity: 0.5, cursor: "not-allowed" }}>
+                    🚧 출력 (공사중)
+                  </button>
+                  <button onClick={() => download(new Set([selected.sheet || "new:" + selected.title]))} disabled={busy} className="ghost-btn" style={{ ...smallBtnStyle, opacity: busy ? 0.7 : 1 }}>
+                    <Download size={14} /> {busy ? "생성 중..." : "엑셀 다운로드"}
+                  </button>
+                </div>
+                <FrozenInspectionTable item={selected} pickCfg={pickCfg} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// GS 냉동 상품 하나의 지역별 표 (GS 피킹지시서 출력 화면과 같은 모양). 0 처리·지역 빼기 설정을 반영해서 보여줌
+function FrozenInspectionTable({ item, pickCfg }) {
+  const p = item.prod;
+  const c = (item.sheet && ((pickCfg && pickCfg.products) || {})[item.sheet]) || {};
+  const zero = new Set(c.zero || []);
+  const rm = new Set(c.remove || []);
+  const pack = (p && p.pack) || 0;
+  const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
+  const rowsView = p ? p.regionRows : Object.keys(item.byCode || {}).map((code) => ({ label: code, short: code }));
+  const th = { textAlign: "left", fontSize: 12, color: T.inkSoft, fontWeight: 600, padding: "8px 12px", borderBottom: `1px solid ${T.border}` };
+  const td = { padding: "10px 12px", borderBottom: `1px solid #EEECE3`, fontSize: 13 };
+  const num = { ...td, fontFamily: "'JetBrains Mono', monospace" };
+  let sub = 0;
+  let total = 0;
+  return (
+    <div>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{item.title}</div>
+        <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+          {item.pivot || item.vendor || "-"} · 입수 {pack || "-"}
+          {item.isNew ? " · 템플릿에 없는 상품 (같은 공급사 시트를 복사해서 추가돼요)" : ""}
+          {item.hidden ? " · 원본에선 숨김 시트 (발주가 있어 보이게 나가요)" : ""}
+        </div>
       </div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={th}>행 레이블 (납품처)</th>
+            <th style={th}>센터명</th>
+            <th style={{ ...th, textAlign: "left" }}>총수량</th>
+            <th style={th}>박스</th>
+            <th style={th}>낱개</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rowsView.map((r, i) => {
+            if (r.subtotal) {
+              const b = bd(sub);
+              const row = (
+                <tr key={i} style={{ background: "#F7F6F2" }}>
+                  <td style={{ ...td, fontWeight: 700 }}>{r.label}</td>
+                  <td style={td}></td>
+                  <td style={{ ...num, fontWeight: 700 }}>{sub}</td>
+                  <td style={{ ...num, fontWeight: 700 }}>{b.box}</td>
+                  <td style={{ ...num, fontWeight: 700 }}>{b.rem}</td>
+                </tr>
+              );
+              sub = 0;
+              return row;
+            }
+            const code = String(r.label).slice(0, 4);
+            const raw = (item.byCode && item.byCode[code]) || 0;
+            const isZ = zero.has(code);
+            const isR = rm.has(code);
+            const q = isZ || isR ? 0 : raw;
+            sub += q;
+            total += q;
+            const b = bd(q);
+            return (
+              <tr key={i} style={{ background: isR ? "#FDECEA" : isZ ? "#FFF3E0" : undefined, opacity: isR ? 0.7 : 1 }}>
+                <td style={{ ...td, fontWeight: 600, textDecoration: isR ? "line-through" : "none" }}>{String(r.label).replace(/ /g, " ")}</td>
+                <td style={{ ...td, color: T.inkSoft }}>
+                  {r.short}
+                  {isZ && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, color: "#B26A00" }}>0 처리</span>}
+                  {isR && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, color: "#B03A2E" }}>빠짐</span>}
+                </td>
+                <td style={{ ...num, fontWeight: 700 }}>
+                  {q}
+                  {(isZ || isR) && raw > 0 && <span style={{ fontSize: 11, color: T.inkSoft, fontWeight: 500 }}> (발주 {raw})</span>}
+                </td>
+                <td style={num}>{b.box}</td>
+                <td style={num}>{b.rem}</td>
+              </tr>
+            );
+          })}
+          <tr style={{ background: T.steel, color: "#fff" }}>
+            <td style={{ ...td, fontWeight: 700, color: "#fff" }}>총합계</td>
+            <td style={td}></td>
+            <td style={{ ...num, fontWeight: 700, color: "#fff" }}>{total}</td>
+            <td style={{ ...num, color: "#fff" }}>{bd(total).box}</td>
+            <td style={{ ...num, color: "#fff" }}>{bd(total).rem}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
