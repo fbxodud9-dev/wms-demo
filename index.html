@@ -1852,6 +1852,7 @@ function WMSApp() {
   }, [stores, vehicles, courses, cells, replenishedSkus]);
 
   const [emartOrders, setEmartOrders] = useState([]);
+  const [frozenOrders, setFrozenOrders] = useState([]); // GS 냉동 발주 (channel "GSFROZEN")
   const [pickChannel, setPickChannel] = useState("gs"); // 피킹지시서 출력 화면의 브랜드 탭
   const [invChannel, setInvChannel] = useState("gs"); // 거래명세서 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
@@ -1867,8 +1868,9 @@ function WMSApp() {
       setItems(itemsRes.items.map(mapItemFromApi));
       // 이마트 발주(channel "EMART")는 GS 화면·집계와 섞이지 않게 따로 보관
       const allOrders = ordersRes.orders.map(mapOrderFromApi);
-      setOrders(allOrders.filter((o) => o.channel !== "EMART"));
+      setOrders(allOrders.filter((o) => o.channel !== "EMART" && o.channel !== "GSFROZEN"));
       setEmartOrders(allOrders.filter((o) => o.channel === "EMART"));
+      setFrozenOrders(allOrders.filter((o) => o.channel === "GSFROZEN"));
       setTx(txRes.transactions.map(mapTxFromApi));
       setPickingDocs(docsRes.docs.map(mapDocFromApi));
     } catch (e) {
@@ -2067,6 +2069,7 @@ function WMSApp() {
     setTx([]);
     setOrders([]);
     setEmartOrders([]);
+    setFrozenOrders([]);
     setPickingDocs([]);
     setReady(false);
     try {
@@ -2399,6 +2402,12 @@ function WMSApp() {
   const deleteOrdersByDate = useCallback(
     async (date, channel) => {
       try {
+        if (channel === "GSFROZEN") {
+          // GS 냉동만 지우는 전용 주소 (백엔드 업데이트 필요 - 예전 백엔드는 404라서 GS 발주가 잘못 지워질 일 없음)
+          await apiFetch(`/orders/by-date/${date}/channel/GSFROZEN`, authToken, { method: "DELETE" });
+          await loadCoreData();
+          return;
+        }
         if (channel === "EMART") {
           await apiFetch(`/orders/by-date/${date}?channel=EMART`, authToken, { method: "DELETE" });
           // 이마트 일별 집계 스냅샷에서도 그 날짜 삭제
@@ -2511,6 +2520,7 @@ function WMSApp() {
         { key: "orderinfo", label: "I. 주문정보 (GS)", icon: ClipboardList },
         { key: "orderinfo-bgf", label: "주문정보 (BGF)", icon: ClipboardList },
         { key: "orderinfo-emart", label: "주문정보 (E.MART)", icon: ClipboardList },
+        { key: "orderinfo-gsfrozen", label: "주문정보 (GS 냉동)", icon: ClipboardList },
       ],
     },
     {
@@ -2734,6 +2744,24 @@ function WMSApp() {
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
+        {tab === "orderinfo-gsfrozen" && (
+          <OrderInfo
+            channelTag="GSFROZEN"
+            title="주문정보 (GS 냉동)"
+            sub="GS 냉동 발주파일(네이처·아미 등)을 올려요. GS 일반 발주와 섞이지 않고 피킹지시서 출력 > GS 냉동에서 피킹지를 받아요. 예전 형식·새 형식 둘 다 돼요."
+            items={itemsView}
+            orders={frozenOrders}
+            onAdd={addOrder}
+            onAddBulk={addOrdersBulk}
+            onRegisterItemsBulk={registerItemsBulk}
+            onRekeyItems={rekeyItems}
+            onUpdateChangedQty={updateChangedQty}
+            onConvert={convertSupplierToPicking}
+            onRegisterItem={registerPlaceholderItem}
+            onReset={null}
+            onDeleteDate={(d) => deleteOrdersByDate(d, "GSFROZEN")}
+          />
+        )}
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
@@ -2743,6 +2771,7 @@ function WMSApp() {
             channel={pickChannel}
             onChannel={setPickChannel}
             emartOrders={emartOrders}
+            frozenOrders={frozenOrders}
             authToken={authToken}
             gsView={<PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
           />
@@ -3916,7 +3945,7 @@ const primaryBtnStyle = {
 };
 
 /* ================= I. 주문정보 ================= */
-function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRekeyItems, onUpdateChangedQty, onConvert, onRegisterItem, onReset, onDeleteDate }) {
+function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRekeyItems, onUpdateChangedQty, onConvert, onRegisterItem, onReset, onDeleteDate, channelTag, title, sub }) {
   const [showForm, setShowForm] = useState(false);
   const [customer, setCustomer] = useState(STORE_NAMES[0]);
   const [orderType, setOrderType] = useState(ORDER_TYPES[0]);
@@ -4345,6 +4374,7 @@ function resolveNamePackOverride(name) {
       }
 
       let skippedCount = 0;
+      if (channelTag) allNewOrders.forEach((o) => (o.channel = channelTag)); // GS 냉동 등: 채널 표시로 GS 일반과 구분
       if (allNewOrders.length > 0) {
         if (onAddBulk) {
           const res = await onAddBulk(allNewOrders);
@@ -4512,7 +4542,7 @@ function resolveNamePackOverride(name) {
 
   return (
     <div>
-      <PageHeader title="I. 주문정보" sub="화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다" />
+      <PageHeader title={title || "I. 주문정보"} sub={sub || "화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다"} />
       <div
         style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
         onDragOver={(e) => {
@@ -4544,21 +4574,27 @@ function resolveNamePackOverride(name) {
             <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={uploading} className="primary-btn" style={primaryBtnStyle}>
               <Upload size={14} /> {uploading ? "읽는 중..." : "발주파일 업로드"}
             </button>
-            <button onClick={randomOrder} className="ghost-btn" style={smallBtnStyle}>
-              <ClipboardList size={14} /> 샘플 발주 가져오기
-            </button>
-            <button onClick={() => setShowForm((s) => !s)} className="ghost-btn" style={smallBtnStyle}>
-              <Plus size={14} /> 직접 입력
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm("모든 발주 데이터를 삭제합니다. 재고/상품마스터는 그대로 유지됩니다. 계속할까요?")) onReset();
-              }}
-              className="ghost-btn"
-              style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}
-            >
-              <Trash2 size={14} /> 테스트 데이터 초기화
-            </button>
+            {!channelTag && (
+              <>
+                <button onClick={randomOrder} className="ghost-btn" style={smallBtnStyle}>
+                  <ClipboardList size={14} /> 샘플 발주 가져오기
+                </button>
+                <button onClick={() => setShowForm((s) => !s)} className="ghost-btn" style={smallBtnStyle}>
+                  <Plus size={14} /> 직접 입력
+                </button>
+              </>
+            )}
+            {onReset && (
+              <button
+                onClick={() => {
+                  if (window.confirm("모든 발주 데이터를 삭제합니다. 재고/상품마스터는 그대로 유지됩니다. 계속할까요?")) onReset();
+                }}
+                className="ghost-btn"
+                style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}
+              >
+                <Trash2 size={14} /> 테스트 데이터 초기화
+              </button>
+            )}
           </div>
         </div>
         {uploadMsg && (
@@ -6788,7 +6824,8 @@ function readSheetCells(sheet, sst) {
 }
 
 // 상품 시트 정보: 어느 피벗의 몇 번째 열을 보는지, 상품명, 지역 목록
-function analyzeEmartTemplate(tpl) {
+function analyzeEmartTemplate(tpl, regionRe = /\(저온\)|\(상온\)|\(냉동\)/) {
+  tpl.regionRe = regionRe;
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
   const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
   const products = [];
@@ -6818,7 +6855,7 @@ function analyzeEmartTemplate(tpl) {
     for (let r = 1; r <= s.maxRow; r++) {
       const c = s.cells.get("A" + r);
       if (!c || typeof c.v !== "string") continue;
-      if (/\(저온\)|\(상온\)|\(냉동\)/.test(c.v)) {
+      if (regionRe.test(c.v)) {
         regions.push(c.v);
         let short = "";
         for (const col of ["B", "C", "D", "E", "F"]) {
@@ -7036,7 +7073,11 @@ function safeEmartSheetName(name, used) {
 
 // ---------- 메인: 발주 줄들 -> 피킹검수 엑셀 ----------
 async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, activeName, opts = {}) {
-  const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer));
+  // opts.regionRe: 지역(센터) 줄 알아보는 규칙 (기본: 이마트 "(저온)" 등), opts.regionOrder: 피벗 지역 순서,
+  // opts.keepVisible: 원본에서 보이는 시트는 발주가 없어도 0으로 남김 (GS 냉동), opts.colorKind: 시트 색 설정 종류,
+  // opts.pivotA2 / opts.dateTextOut: 피벗 A2·"10/15 납품" 같은 날짜 글자, opts.wideLookup: VLOOKUP 범위를 열 전체로
+  const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer), opts.regionRe || undefined);
+  const stdOrder = opts.regionOrder || EMART_STD_REGIONS;
   tpl.newParts = [];
   // 이름 정의(인쇄 영역 등)는 시트 "순서 번호"로 붙어 있어서, 시트를 넣고 빼면 번호를 다시 맞춰야 한다 -> 시트 이름으로 기억
   tpl.definedNames = Array.from(tpl.wbXml.getElementsByTagName("definedName")).map((el) => {
@@ -7109,6 +7150,16 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     });
     report.matched.push({ name: item.name, sheet: prod.sheet, pivot: prod.pivot, total: Object.values(item.qty).reduce((a, b) => a + b, 0), isNew: !!prod.isNew });
   });
+  // 발주 없는 템플릿 상품도 피벗 머리글은 남김 (GS 냉동: 시트를 0으로 유지)
+  if (opts.keepVisible) {
+    tpl.products.forEach((p) => {
+      const arr = (byPivot[p.pivot] = byPivot[p.pivot] || []);
+      if (arr.some((c) => c.k === p.k)) return;
+      const pvS = tpl.sheets.find((s) => s.name === p.pivot);
+      const h = pvS && pvS.cells && pvS.cells.get(numToCol(p.k) + "2");
+      arr.push({ k: p.k, header: (h && typeof h.v === "string" && h.v.trim()) || String(p.title || p.sheet).replace(/\s*\n\s*/g, ""), qty: {} });
+    });
+  }
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
   pivots.forEach((pn) => {
     const pv = tpl.sheets.find((s) => s.name === pn);
@@ -7116,12 +7167,35 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const regs = new Set();
     tpl.products.filter((p) => p.pivot === pn).forEach((p) => p.regions.forEach((r) => regs.add(r)));
     cols.forEach((c) => Object.keys(c.qty).forEach((r) => regs.add(r)));
-    const ordered = [...EMART_STD_REGIONS.filter((r) => regs.has(r)), ...[...regs].filter((r) => !EMART_STD_REGIONS.includes(r))];
+    const ordered = [...stdOrder.filter((r) => regs.has(r)), ...[...regs].filter((r) => !stdOrder.includes(r))];
     rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)));
+    if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
+  // 피벗 범위가 "A1:O10"처럼 줄 수가 막혀 있는 수식은 열 전체로 (지역 줄이 늘어도 빠지지 않게)
+  if (opts.wideLookup) {
+    const pivotNames = new Set(tpl.products.map((p) => p.pivot));
+    tpl.sheets.forEach((s) =>
+      Array.from(s.doc.getElementsByTagName("f")).forEach((f) => {
+        if (!f.textContent || !/VLOOKUP/.test(f.textContent)) return;
+        f.textContent = f.textContent.replace(/('(?:[^']|'')*'|[^'!,()]+)!\$?A\$?\d+:\$?([A-Z]{1,3})\$?\d+/g, (all, sn, colL) => {
+          const nm = sn.replace(/^'|'$/g, "").replace(/''/g, "'");
+          return pivotNames.has(nm) ? `${sn}!$A:$${colL}` : all;
+        });
+      })
+    );
+  }
+  // "10/15 납품" 같은 날짜 글자 칸 (수식 아닌 칸만)
+  if (opts.dateTextOut) {
+    tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
+    tpl.sheets.forEach((s) =>
+      s.cells.forEach((cell, ref) => {
+        if (!cell.f && typeof cell.v === "string" && /^\s*\d{1,2}\/\d{1,2}\s*(납품|발주)\s*$/.test(cell.v)) setCellXml(s, ref, opts.dateTextOut);
+      })
+    );
+  }
 
   // 하단 담당자 이름(예: "정유라")은 빼고 빈칸으로 (2026-10-06 요청) - 수식이 아닌 글자 칸만
-  const EMART_REMOVE_TEXTS = ["정유라"];
+  const EMART_REMOVE_TEXTS = opts.removeTexts || ["정유라"];
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
   tpl.sheets.forEach((s) => {
     s.cells.forEach((cell, ref) => {
@@ -7138,7 +7212,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (!s) return;
       for (let r = 1; r <= s.maxRow; r++) {
         const a = s.cells.get("A" + r);
-        if (!a || typeof a.v !== "string" || !/\(저온\)|\(상온\)|\(냉동\)/.test(a.v)) continue;
+        if (!a || typeof a.v !== "string" || !tpl.regionRe.test(a.v)) continue;
         ["B", "C"].forEach((col) => {
           const x = s.cells.get(col + r);
           if (x && !x.f && x.v === prod.pack) setCellXml(s, col + r, np);
@@ -7189,6 +7263,27 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       keep.add(prod.sheet);
       keep.add(prod.pivot);
     });
+    if (opts.keepVisible) {
+      // 원본에서 보이는 시트는 발주가 없어도 그대로(수량 0) - 상품 시트면 그 피벗도 같이
+      tpl.sheets.forEach((s) => {
+        if (s.el.getAttribute("state") === "hidden" || s.el.getAttribute("state") === "veryHidden") return;
+        keep.add(s.name);
+        tpl.products.filter((p) => p.sheet === s.name).forEach((p) => keep.add(p.pivot));
+      });
+      // 숨겨져 있던 상품 시트라도 발주가 있으면 보이게
+      links.forEach(({ prod }) => {
+        const sh = tpl.sheets.find((x) => x.name === prod.sheet);
+        if (sh) sh.el.removeAttribute("state");
+      });
+      // 이 시트들이 참조하는 피벗 (여러 상품이 한 시트에 있는 제주권 시트 등)
+      tpl.sheets.forEach((s) => {
+        if (!keep.has(s.name)) return;
+        Array.from(s.doc.getElementsByTagName("f")).forEach((f) => {
+          const m = /VLOOKUP\([^,]+,\s*('(?:[^']|'')*'|[^!,]+)!/.exec(f.textContent || "");
+          if (m) keep.add(m[1].replace(/^'|'$/g, "").replace(/''/g, "'"));
+        });
+      });
+    }
     if (keep.size === 0) throw new Error("이 날짜 발주 중에 피킹지 시트에 들어갈 상품이 없어요.");
     let ct = await tpl.zip.file("[Content_Types].xml").async("string");
     for (const sh of tpl.sheets.filter((x) => !keep.has(x.name))) {
@@ -7278,7 +7373,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     });
     const pivotSet = new Set(tpl.products.map((x) => x.pivot));
     tpl.sheets.forEach((sh) => {
-      const hex = resolveSheetTabColor("emart_picking", { supplier: vendorOfSheet.get(sh.name) || "", type: pivotSet.has(sh.name) ? "pivot" : "product" });
+      const hex = resolveSheetTabColor(opts.colorKind || "emart_picking", { supplier: vendorOfSheet.get(sh.name) || "", type: pivotSet.has(sh.name) ? "pivot" : "product" });
       if (!hex) return;
       const doc = sh.doc;
       const root = doc.documentElement;
@@ -7389,6 +7484,202 @@ async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts 
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   return report;
+}
+
+/* ================= GS 냉동 피킹지 (실물 "GS 냉동 피킹지" 파일을 그대로 템플릿으로, 이마트 피킹검수와 같은 엔진) ================= */
+// 템플릿: 공급사 피벗(행 = "VV16 (주)지에스리테일원주일배" 같은 센터, 열 = 상품) + 상품 시트(VLOOKUP으로 피벗 수량). 숨김 시트는 예전 상품.
+// 원본에서 보이는 시트는 그날 발주가 없어도 0으로 그대로 나간다 (시트를 지우지 않음). 숨김 상품도 발주가 있으면 보이게 나간다.
+const GS_FROZEN_TEMPLATE_URL = "gs_frozen_picking_template.xlsx";
+const GS_FROZEN_REGION_RE = /^VV\d{2}/;
+async function getGsFrozenTemplateBuffer() {
+  const res = await fetch(GS_FROZEN_TEMPLATE_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error("GS 냉동 피킹지 템플릿 파일을 불러오지 못했어요 (gs_frozen_picking_template.xlsx). 데모 폴더에 이 파일도 같이 올렸는지 확인해주세요.");
+  return res.arrayBuffer();
+}
+let GS_FROZEN_TPL_CACHE = null;
+function getGsFrozenTemplateInfo() {
+  if (!GS_FROZEN_TPL_CACHE)
+    GS_FROZEN_TPL_CACHE = getGsFrozenTemplateBuffer()
+      .then((b) => loadEmartTemplate(b))
+      .then((t) => {
+        analyzeEmartTemplate(t, GS_FROZEN_REGION_RE);
+        // 센터 코드 -> 템플릿에 적힌 센터 이름(예: VV16 → "VV16 (주)지에스리테일원주일배"), 지역 순서(가장 긴 피벗 기준)
+        const labelOf = {};
+        let order = [];
+        const pivots = new Set(t.products.map((p) => p.pivot));
+        t.sheets.forEach((s) => {
+          const labs = [];
+          s.cells.forEach((c, ref) => {
+            const p = splitRef(ref);
+            if (p && p.c === 1 && typeof c.v === "string" && GS_FROZEN_REGION_RE.test(c.v)) labs.push([p.r, c.v]);
+          });
+          labs.sort((a, b) => a[0] - b[0]);
+          labs.forEach(([, v]) => {
+            const code = v.slice(0, 4);
+            if (!labelOf[code]) labelOf[code] = v;
+          });
+          if (pivots.has(s.name) && labs.length > order.length) order = labs.map((x) => x[1]);
+        });
+        t.frozen = { labelOf, order, visible: new Set(t.sheets.filter((s) => !/hidden/i.test(s.el.getAttribute("state") || "")).map((s) => s.name)) };
+        return t;
+      })
+      .catch((e) => {
+        GS_FROZEN_TPL_CACHE = null;
+        throw e;
+      });
+  return GS_FROZEN_TPL_CACHE;
+}
+function gsFrozenRowsOf(orders, date, tplInfo) {
+  const labelOf = (tplInfo && tplInfo.frozen && tplInfo.frozen.labelOf) || {};
+  const rows = [];
+  orders
+    .filter((o) => o.createdAt === date)
+    .forEach((o) => {
+      const code = String(o.storeCode || "").trim();
+      const center = labelOf[code] || (code ? `${code}\u00a0${o.customer || ""}`.trim() : o.customer || "미지정");
+      o.lines.forEach((l) => {
+        const qty = Number(l.changedQty ?? l.qty) || 0;
+        if (qty > 0) rows.push({ name: l.name, vendor: o.supplier || "", box: Number(l.packQty) || 0, qty, center, code });
+      });
+    });
+  return rows;
+}
+function GsFrozenPickingView({ frozenOrders, authToken }) {
+  const [tplInfo, setTplInfo] = useState(null);
+  const [tplErr, setTplErr] = useState("");
+  useEffect(() => {
+    getGsFrozenTemplateInfo()
+      .then(setTplInfo)
+      .catch((e) => setTplErr(e.message));
+  }, []);
+  const dates = useMemo(() => Array.from(new Set(frozenOrders.map((o) => o.createdAt).filter(Boolean))).sort().reverse(), [frozenOrders]);
+  const [date, setDate] = useState("");
+  const activeDate = date && dates.includes(date) ? date : dates[0] || todayStr();
+  const rows = useMemo(() => gsFrozenRowsOf(frozenOrders, activeDate, tplInfo), [frozenOrders, activeDate, tplInfo]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  // 화면 목록: 템플릿에서 보이는 상품 시트(발주 없으면 0) + 그날 발주에 있는 상품
+  const list = useMemo(() => {
+    if (!tplInfo) return [];
+    const byName = new Map();
+    rows.forEach((r) => {
+      const x = byName.get(r.name) || { name: r.name, vendor: r.vendor, total: 0, centers: new Set() };
+      x.total += r.qty;
+      x.centers.add(r.code);
+      byName.set(r.name, x);
+    });
+    const out = [];
+    const used = new Set();
+    tplInfo.products.forEach((p) => {
+      if (!tplInfo.frozen.visible.has(p.sheet) && ![...byName.keys()].some((n) => matchEmartProduct(tplInfo, n) === p)) return;
+      const hits = [...byName.values()].filter((x) => matchEmartProduct(tplInfo, x.name) === p);
+      hits.forEach((h) => used.add(h.name));
+      const total = hits.reduce((a, h) => a + h.total, 0);
+      out.push({ sheet: p.sheet, pivot: p.pivot, title: String(p.title || p.sheet).replace(/\s*\n\s*/g, ""), total, centers: hits.reduce((a, h) => a + h.centers.size, 0), hidden: !tplInfo.frozen.visible.has(p.sheet), pack: p.pack });
+    });
+    [...byName.values()].filter((x) => !used.has(x.name)).forEach((x) => out.push({ sheet: null, pivot: null, title: x.name, total: x.total, centers: x.centers.size, isNew: true, vendor: x.vendor }));
+    return out;
+  }, [tplInfo, rows]);
+  const totalQty = rows.reduce((a, r) => a + r.qty, 0);
+  async function download() {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const buf = await getGsFrozenTemplateBuffer();
+      const [y, m, d] = activeDate.split("-").map(Number);
+      const nd = new Date(Date.UTC(y, m - 1, d + 1));
+      const deliv = `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`;
+      const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, activeDate, null, {
+        regionRe: GS_FROZEN_REGION_RE,
+        regionOrder: (tplInfo && tplInfo.frozen.order) || [],
+        keepVisible: true,
+        colorKind: "gsfrozen_picking",
+        pivotA2: deliv,
+        dateTextOut: deliv,
+        wideLookup: true,
+        removeTexts: [],
+      });
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `GS_냉동_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMsg(
+        `다운로드했어요 (시트 ${report.sheetCount}개, 발주 ${totalQty.toLocaleString()}개).` +
+          (report.added.length ? ` 템플릿에 없던 상품 ${report.added.length}개는 같은 공급사 시트를 복사해서 추가했어요: ${report.added.map((x) => x.name).join(", ")}.` : "") +
+          (report.unknown.length ? ` ⚠ 공급사를 몰라서 시트를 못 만든 상품: ${report.unknown.map((x) => x.name).join(", ")}` : "") +
+          (report.missingRegions.length ? ` ⚠ 시트에 없는 센터 발주: ${report.missingRegions.map((x) => `${x.name} ${String(x.region).slice(0, 4)} ${x.qty}개`).join(", ")}` : "")
+      );
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div>
+      <PageHeader
+        title="피킹지시서 출력 · GS 냉동"
+        sub="실물 GS 냉동 피킹지 파일 그대로 만들어요. 그날 발주가 없는 상품도 시트는 그대로 남고 수량은 0으로 나가요."
+        action={
+          <button onClick={download} disabled={busy || !tplInfo} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !tplInfo ? 0.55 : 1 }}>
+            <Download size={15} /> {busy ? "만드는 중..." : "엑셀 다운로드"}
+          </button>
+        }
+      />
+      {tplErr && <div style={{ ...cardStyle, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{tplErr}</div>}
+      <div style={{ ...cardStyle, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>발주일</span>
+        <select style={inputStyle} value={activeDate} onChange={(e) => setDate(e.target.value)}>
+          {dates.length === 0 && <option value={activeDate}>{activeDate} (발주 없음)</option>}
+          {dates.map((d) => (
+            <option key={d} value={d}>
+              {d} ({gsWeekday(d)})
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 12.5, color: T.inkSoft }}>
+          이 날짜 GS 냉동 발주 <b style={{ color: T.ink }}>{totalQty.toLocaleString()}개</b> · 발주는 주문정보 (GS 냉동)에서 올려요
+        </span>
+      </div>
+      {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.includes("⚠") ? T.amberDeep : T.teal, marginBottom: 10 }}>{msg}</div>}
+      {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
+      <div style={cardStyle}>
+        {!tplInfo ? (
+          <EmptyRow text={tplErr ? "템플릿을 읽지 못했어요." : "템플릿 읽는 중..."} />
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>시트(상품)</th>
+                <th>피벗(공급사)</th>
+                <th style={{ textAlign: "right" }}>총수량</th>
+                <th style={{ textAlign: "right" }}>센터</th>
+                <th>비고</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((x, i) => (
+                <tr key={i} style={{ background: x.isNew ? "#FFF8E1" : x.total ? "#fff" : "#FAFAF7" }}>
+                  <td style={{ fontWeight: 600 }}>{x.title}</td>
+                  <td style={{ color: T.inkSoft, fontSize: 12.5 }}>{x.pivot || x.vendor || "-"}</td>
+                  <td style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: x.total ? T.ink : T.borderStrong }}>{x.total.toLocaleString()}</td>
+                  <td style={{ textAlign: "right", fontSize: 12.5, color: T.inkSoft }}>{x.centers || "-"}</td>
+                  <td style={{ fontSize: 12, color: x.isNew ? T.amberDeep : T.inkSoft }}>{x.isNew ? "템플릿에 없는 상품 - 같은 공급사 시트를 복사해서 추가" : x.hidden ? "원본에선 숨김 시트 - 발주 있어서 보이게 나감" : x.total ? "" : "발주 없음 → 0으로 나감"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ================= 이마트24 거래명세서 (실물 엑셀 "이마트24 거래명세서" 파일을 그대로 템플릿으로) ================= */
@@ -8969,6 +9260,7 @@ const PICKING_CHANNELS = [
   { key: "gs", brand: "GS", label: "GS" },
   { key: "gssuper", brand: "GSSUPER", label: "GS슈퍼" },
   { key: "emart", brand: "EMART", label: "이마트" },
+  { key: "gsfrozen", brand: "GSFROZEN", label: "GS 냉동" },
   { key: "bgf", brand: "BGF", label: "BGF" },
   { key: "seven", brand: "SEVEN", label: "세븐일레븐" },
 ];
@@ -10354,13 +10646,13 @@ function SheetColorButton({ kind, suppliers, authToken }) {
   );
 }
 
-function PickingCenter({ channel, onChannel, gsView, emartOrders, authToken }) {
+function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], authToken }) {
   return (
     <BrandTabs
       channel={channel}
       onChannel={onChannel}
       title="피킹지시서 출력"
-      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView frozenOrders={frozenOrders} authToken={authToken} /> : null)}
       placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
     />
   );
