@@ -4162,7 +4162,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
     }
     const header = rows[headerIdx].map((h) => (h == null ? "" : String(h)));
     const headerN = header.map(hNorm);
-    const dataRows = rows.slice(headerIdx + 1).filter((r) => r.some((c) => c !== "" && c != null));
+    let dataRows = rows.slice(headerIdx + 1).filter((r) => r.some((c) => c !== "" && c != null));
 
     const findCol = (candidates) => {
       for (const cand of candidates) {
@@ -4205,6 +4205,14 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
       if (m) return { code: m[1], name: m[2].trim() };
       return { code: "", name: s };
     };
+    // GS와 이마트가 한 파일에 섞여 온 경우(조양 스크래핑 파일 등): 이마트 줄(납품처 코드 T0…, "○○2(저온)")은 GS에 넣지 않는다 (2026-10-16)
+    const isEmartRow = (r) => {
+      const code = splitStoreCols ? String(r[col.storeCode] || "").trim() : splitCodeName(col.store !== -1 ? r[col.store] : "").code;
+      const name = splitStoreCols ? String(r[col.storeName] || "").trim() : String((col.store !== -1 && r[col.store]) || "");
+      return /^T\d{3,}$/i.test(code) || (!/^VV/i.test(code) && /\(저온\)\s*$/.test(name));
+    };
+    const otherChannelRows = dataRows.filter(isEmartRow).length;
+    if (otherChannelRows) dataRows = dataRows.filter((r) => !isEmartRow(r));
 
     // 작업일(피킹 날짜) 보정: 신제주(VV92) 1편처럼 GS가 하루 일찍 발주하는 줄은 발주일자가 하루 빠르지만(예: 발주 10/04)
     // 납품일자는 다른 지역과 같다(10/06). 발주일자 그대로 쓰면 그 줄만 전날 날짜로 들어가 그날 피킹지·명세서에서 빠지므로,
@@ -4394,8 +4402,8 @@ function resolveNamePackOverride(name) {
     });
 
     const newOrders = Object.values(groups).filter((o) => o.lines.length > 0);
-    if (newOrders.length === 0) throw new Error(`${file.name}: 유효한 발주 라인을 찾지 못했습니다.`);
-    return { newOrders, unmatchedMap, rekeyMap };
+    if (newOrders.length === 0) throw new Error(otherChannelRows ? `${file.name}: 이마트 발주만 있는 파일이에요. 주문정보 (E.MART)에 올려주세요.` : `${file.name}: 유효한 발주 라인을 찾지 못했습니다.`);
+    return { newOrders, unmatchedMap, rekeyMap, otherChannelRows };
   }
 
   async function handleFiles(fileList) {
@@ -4408,10 +4416,12 @@ function resolveNamePackOverride(name) {
     const allRekey = new Map();
     const rekeyAmbiguous = new Set();
     const fileErrors = [];
+    let otherChannelTotal = 0; // GS 파일에 섞여 와서 뺀 이마트 줄 수
     try {
       for (const file of files) {
         try {
-          const { newOrders, unmatchedMap, rekeyMap } = await parseOneFile(file);
+          const { newOrders, unmatchedMap, rekeyMap, otherChannelRows } = await parseOneFile(file);
+          otherChannelTotal += otherChannelRows || 0;
           allNewOrders.push(...newOrders);
           rekeyMap.forEach((to, from) => {
             if (allRekey.has(from) && allRekey.get(from) !== to) rekeyAmbiguous.add(from); // 파일마다 다른 코드를 말하면 바꾸지 않음
@@ -4529,6 +4539,7 @@ function resolveNamePackOverride(name) {
           `파일 ${files.length}개 중 ${files.length - fileErrors.length}개 처리 완료 · 공급사 ${supplierCount}곳 · 발주 ${allNewOrders.length - skippedCount}건 · 총 ${totalLines}개 라인을 불러왔습니다.` +
             (skippedCount > 0 ? ` (이미 등록된 발주번호 ${skippedCount}건은 건너뛰었습니다.)` : "") +
             (dupLineCount > 0 ? ` (이미 올라왔거나 파일 안에서 겹치는 상품 줄 ${dupLineCount}개는 건너뛰었습니다.)` : "") +
+            (otherChannelTotal > 0 ? ` (파일에 섞여 있던 이마트 줄 ${otherChannelTotal.toLocaleString()}개는 빼고 GS 발주만 넣었어요. 이마트는 주문정보 (E.MART)에 따로 올려주세요.)` : "") +
             (allUnmatched.size > 0 ? ` (상품마스터에 없던 품목 ${allUnmatched.size}건은 '미배정' 위치로 자동 등록되었습니다.)` : "") +
             (rekeyResult.renamed > 0 ? ` (상품마스터의 상품코드 ${rekeyResult.renamed}건을 발주파일의 상품코드로 바꿨습니다.)` : "") +
             (rekeyResult.conflicts > 0 ? ` (상품코드 ${rekeyResult.conflicts}건은 같은 코드의 다른 품목이 이미 있어 바꾸지 못했습니다. 상품마스터에서 확인해주세요.)` : "")
@@ -6638,6 +6649,7 @@ function parseEmartOrderRowsNew(rows, vendorByCode) {
   if (c.center === -1 || c.name === -1 || c.qty === -1) throw new Error("이마트 새 형식 발주파일에서 납품처명·상품명·낱개 수량 칸을 찾지 못했어요.");
   const map = vendorByCode || {};
   const out = [];
+  out.otherChannel = 0; // 이마트 파일에 섞여 와서 뺀 GS 줄 수 (조양 스크래핑 파일처럼 GS·이마트가 한 파일에 있을 때)
   for (let i = h + 1; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
@@ -6645,6 +6657,11 @@ function parseEmartOrderRowsNew(rows, vendorByCode) {
     const name = String(r[c.name] == null ? "" : r[c.name]).trim();
     const qty = Number(String(r[c.qty] == null ? "" : r[c.qty]).replace(/,/g, "")) || 0;
     if (!center || !name || qty <= 0) continue;
+    const ccode = c.centerCode !== -1 ? String(r[c.centerCode] == null ? "" : r[c.centerCode]).trim() : "";
+    if (/^VV/i.test(ccode) || /지에스리테일|GS리테일/.test(center)) {
+      out.otherChannel++; // GS 줄은 이마트에 넣지 않음
+      continue;
+    }
     const d = String(r[c.date] == null ? "" : r[c.date]).replace(/\D/g, "");
     const vcode = c.vendorCode !== -1 ? emartCodeNorm(r[c.vendorCode]) : "";
     const vname = c.vendor !== -1 ? String(r[c.vendor] || "").trim() : "";
@@ -9715,6 +9732,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
     setUploading(true);
     try {
       const all = [];
+      let otherChannel = 0; // 파일에 섞여 와서 뺀 GS 줄 수
       // 업체 코드 → 예전 이름: 저장된 표 + 지금 남아 있는 예전 형식 발주
       const vendorByCode = { ...((codeMapSaved && codeMapSaved.map) || {}) };
       emartOrders.forEach((o) => {
@@ -9736,9 +9754,10 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
           }
         }
         if (!parsed) throw new Error(`${f.name}: ${firstErr ? firstErr.message : "읽을 수 있는 시트가 없어요."}`);
+        otherChannel += parsed.otherChannel || 0;
         all.push(...parsed);
       }
-      if (all.length === 0) throw new Error("발주 수량이 있는 줄이 없어요.");
+      if (all.length === 0) throw new Error(otherChannel ? `GS 발주만 있는 파일이에요 (GS 줄 ${otherChannel.toLocaleString()}개). 주문정보 (GS)에 올려주세요.` : "발주 수량이 있는 줄이 없어요.");
       // 예전 형식 파일에서 업체 코드 → 거래처 이름을 배워서 저장 (다음 새 형식 업로드 때 사용)
       {
         const learn = {};
@@ -9828,6 +9847,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         `${dates.map(fmtDate).join(", ")} 발주 ${res.createdCount ?? 0}건 등록` +
           (res.skippedCount ? ` · 이미 올라와 있던 ${res.skippedCount}건은 건너뜀` : "") +
           (dupLines ? ` · 이미 올라와 있던 상품 줄 ${dupLines}개는 건너뜀` : "") +
+          (otherChannel ? ` · 파일에 섞여 있던 GS 줄 ${otherChannel.toLocaleString()}개는 빼고 이마트 발주만 넣었어요 (GS는 주문정보 (GS)에 따로 올려주세요)` : "") +
           ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > ${channelTag === "EMARTFROZEN" ? "이마트 냉동" : "이마트"}에서 피킹지를 받으세요.`
       );
       {
