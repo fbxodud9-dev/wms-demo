@@ -4032,6 +4032,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
   const [uploadErr, setUploadErr] = useState("");
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [upReport, setUpReport] = useState(null); // 업로드 결과 팝업
   const fileInputRef = useRef(null);
 
   const selected = orders.find((o) => o.id === selectedId) || null;
@@ -4448,6 +4449,37 @@ function resolveNamePackOverride(name) {
         allNewOrders.push(...kept);
       }
 
+      // 같은 날짜에 이미 GS 발주가 있으면 확인 (냉동은 그대로)
+      if (!channelTag && allNewOrders.length > 0) {
+        const lk = (o, sku) => `${o.createdAt}|${o.storeCode || o.customer}|${o.supplierCode || o.supplier}|${sku}`;
+        const prevKeys = new Set();
+        orders.forEach((o) => o.lines.forEach((l) => prevKeys.add(lk(o, l.sku))));
+        const prevNos = new Set(orders.map((o) => `${o.orderNo}|${o.createdAt}`));
+        // 서버가 발주번호로 건너뛸 발주는 빼고 센다
+        const cand = allNewOrders.filter((o) => !prevNos.has(`${o.orderNo}|${o.createdAt}`));
+        const overlap = cand.reduce((a, o) => a + o.lines.filter((l) => prevKeys.has(lk(o, l.sku))).length, 0);
+        const newDates = new Set(cand.map((o) => o.createdAt));
+        const existDates = [...newDates].filter((d) => orders.some((o) => o.createdAt === d)).sort();
+        if (existDates.length) {
+          const ans = confirmSameDayUpload("GS", existDates, orders.filter((o) => existDates.includes(o.createdAt)).length, overlap);
+          if (ans === "cancel") {
+            setUploadMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+            return;
+          }
+          if (ans === "skip") {
+            const kept = [];
+            allNewOrders.forEach((o) => {
+              if (prevNos.has(`${o.orderNo}|${o.createdAt}`)) return kept.push(o);
+              const lines = o.lines.filter((l) => !prevKeys.has(lk(o, l.sku)));
+              dupLineCount += o.lines.length - lines.length;
+              if (lines.length) kept.push({ ...o, lines });
+            });
+            allNewOrders.length = 0;
+            allNewOrders.push(...kept);
+          }
+        }
+      }
+
       let skippedCount = 0;
       if (channelTag) allNewOrders.forEach((o) => (o.channel = channelTag)); // GS 냉동 등: 채널 표시로 GS 일반과 구분
       if (allNewOrders.length > 0) {
@@ -4475,6 +4507,18 @@ function resolveNamePackOverride(name) {
       }
       if (allNewOrders.length === 0 && dupLineCount > 0) {
         setUploadMsg(`새로 추가할 줄이 없어요. 상품 줄 ${dupLineCount}개가 이미 올라와 있어서 모두 건너뛰었습니다.`);
+      }
+      // 업로드 결과 팝업: 어떤 공급사·상품이 피킹지에 정상으로 나오는지
+      if (!channelTag && (allNewOrders.length > 0 || dupLineCount > 0)) {
+        try {
+          // 서버가 발주번호 중복으로 건너뛴 발주는 빼고 보여준다
+          const prevNos = new Set(orders.map((o) => `${o.orderNo}|${o.createdAt}`));
+          const realNew = allNewOrders.filter((o) => !prevNos.has(`${o.orderNo}|${o.createdAt}`));
+          const unmatchedSkus = new Set(allUnmatched.keys());
+          setUpReport(await buildUploadReport({ channel: "GS", newOrders: realNew, prevOrders: orders, dupLines: dupLineCount, skipped: skippedCount, unmatchedSkus }));
+        } catch (e) {
+          /* 팝업은 보조 기능 - 실패해도 업로드는 그대로 */
+        }
       }
       if (fileErrors.length > 0) {
         setUploadErr(fileErrors.join(" / "));
@@ -4617,6 +4661,7 @@ function resolveNamePackOverride(name) {
 
   return (
     <div>
+      {upReport && <UploadReportModal report={upReport} onClose={() => setUpReport(null)} />}
       <PageHeader title={title || "I. 주문정보"} sub={sub || "화주사 발주파일을 업로드하거나 관할센터 발주를 직접 접수합니다"} />
       <div
         style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
@@ -9492,7 +9537,16 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
   const [downloading, setDownloading] = useState(false);
   const [deletingDate, setDeletingDate] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  const [upReport, setUpReport] = useState(null); // 업로드 결과 팝업
   const fileRef = useRef(null);
+  const showReport = async (newOrders, dupLines, skipped) => {
+    if (channelTag) return; // 냉동은 팝업 없음
+    try {
+      setUpReport(await buildUploadReport({ channel: "EMART", newOrders, prevOrders: emartOrders, dupLines, skipped }));
+    } catch (e) {
+      /* 팝업 실패해도 업로드는 그대로 */
+    }
+  };
 
   const dateGroups = useMemo(() => {
     const m = new Map();
@@ -9573,8 +9627,33 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         all.length = 0;
         all.push(...kept);
       }
+      // 같은 날짜에 이미 이마트 발주가 있으면 확인 (냉동은 그대로). 발주번호와 상관없이 같은 줄이면 겹침으로 셈
+      if (!channelTag && all.length > 0) {
+        const lk = (date, center, vcode, vendor, sku) => `${date}|${center}|${vcode || vendor}|${sku}`;
+        const prevKeys = new Set();
+        emartOrders.forEach((o) => o.lines.forEach((l) => prevKeys.add(lk(o.createdAt, o.storeCode || o.customer, emartCodeNorm(o.supplierCode), o.supplier, l.sku))));
+        const prevNos = new Set(emartOrders.map((o) => `${o.orderNo}|${o.createdAt}`));
+        const keyOf = (r) => lk(r.date, r.center, r.vendorCode, r.vendor, r.code || r.name);
+        const cand = all.filter((r) => !(r.orderNo && prevNos.has(`${r.orderNo}|${r.date}`)));
+        const overlap = cand.filter((r) => prevKeys.has(keyOf(r))).length;
+        const existDates = [...new Set(cand.map((r) => r.date))].filter((d) => emartOrders.some((o) => o.createdAt === d)).sort();
+        if (existDates.length) {
+          const ans = confirmSameDayUpload("이마트", existDates, emartOrders.filter((o) => existDates.includes(o.createdAt)).length, overlap);
+          if (ans === "cancel") {
+            setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+            return;
+          }
+          if (ans === "skip") {
+            const kept = all.filter((r) => (r.orderNo && prevNos.has(`${r.orderNo}|${r.date}`)) || !prevKeys.has(keyOf(r)));
+            dupLines += all.length - kept.length;
+            all.length = 0;
+            all.push(...kept);
+          }
+        }
+      }
       if (all.length === 0) {
         setMsg(`새로 추가할 줄이 없어요. 상품 줄 ${dupLines}개가 이미 올라와 있어서 모두 건너뛰었어요.`);
+        await showReport([], dupLines, 0);
         return;
       }
       const list2 = emartOrdersFromRows(all);
@@ -9607,6 +9686,10 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
           (dupLines ? ` · 이미 올라와 있던 상품 줄 ${dupLines}개는 건너뜀` : "") +
           ` (${all.reduce((a, r) => a + r.qty, 0).toLocaleString()}개). 피킹지시서 출력 > ${channelTag === "EMARTFROZEN" ? "이마트 냉동" : "이마트"}에서 피킹지를 받으세요.`
       );
+      {
+        const prevNos = new Set(emartOrders.map((o) => `${o.orderNo}|${o.createdAt}`));
+        await showReport(list2.filter((o) => !prevNos.has(`${o.orderNo}|${o.createdAt}`)), dupLines, res.skippedCount || 0);
+      }
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -9617,6 +9700,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
 
   return (
     <div>
+      {upReport && <UploadReportModal report={upReport} onClose={() => setUpReport(null)} />}
       <PageHeader title={title || "주문정보 (E.MART)"} sub={sub || "이마트24 발주파일을 업로드해서 발주를 접수합니다"} />
       <div
         style={{ ...cardStyle, marginBottom: 18, ...(dragOver ? { outline: `2px dashed ${T.amber}`, background: "#FFFBF2" } : null) }}
@@ -10294,6 +10378,243 @@ function BrandModalFrame({ title, sub, onClose, children, maxWidth = 1100, heigh
   );
 }
 const settingBtnStyle = { ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 };
+
+// 같은 날짜에 이미 발주가 있을 때 업로드 확인 (2026-10-15 버터빵 중복 피킹 재발 방지) - GS·이마트 일반만
+// overlap = 발주번호와 상관없이 "날짜+납품처+공급사+상품"이 이미 올라온 줄과 똑같은 줄 수 (다른 형식 파일로 같은 발주를 또 올린 경우)
+// 돌려주는 값: "skip"(겹치는 줄 빼고 올리기) / "all"(전부 올리기) / "cancel"
+function confirmSameDayUpload(label, existDates, existCount, overlap) {
+  const ds = existDates.map(fmtDate).join(", ");
+  if (overlap > 0) {
+    const a = window.confirm(
+      `⚠ ${ds}에 이미 올라와 있는 ${label} 발주와 똑같은 상품 줄이 ${overlap.toLocaleString()}개 있어요.\n(같은 날짜·납품처·공급사·상품)\n\n같은 발주를 다른 파일(스크래핑 파일·원본 발주파일 등)로 또 올리면 수량이 두 배가 돼요.\n\n[확인] 겹치는 줄은 빼고 올리기 (권장)\n[취소] 다음 선택으로`
+    );
+    if (a) return "skip";
+    const b = window.confirm(`겹치는 ${overlap.toLocaleString()}줄까지 전부 올릴까요?\n진짜 추가발주(같은 상품을 한 번 더 발주)일 때만 [확인]을 누르세요.\n\n[확인] 전부 올리기\n[취소] 업로드 취소`);
+    return b ? "all" : "cancel";
+  }
+  return window.confirm(`${ds}에 이미 ${label} 발주 ${existCount.toLocaleString()}건이 올라와 있어요.\n이번 파일은 추가발주가 맞나요?\n\n[확인] 올리기\n[취소] 업로드 취소`) ? "all" : "cancel";
+}
+
+/* ================= 발주 업로드 결과 팝업 ================= */
+// 발주파일을 올리면 "이번에 올린 상품이 피킹지에 어떻게 나오는지"를 공급사·상품별로 바로 보여준다 (2026-10-15 버터빵 중복 피킹 이후)
+// 상태: ok 정상 / new 새 상품(자동 추가) / none 발주없음(전 발주일엔 있었는데 오늘 없음) / warn 확인 필요(이상 있음)
+// GS·이마트 일반(1편/2편)만. 냉동은 팝업 없음
+function authTokenNow() {
+  try {
+    return (JSON.parse(localStorage.getItem("wms-auth") || "null") || {}).token || null;
+  } catch (e) {
+    return null;
+  }
+}
+async function settingNow(key) {
+  if (key in SETTING_CACHE) return SETTING_CACHE[key];
+  const tk = authTokenNow();
+  if (!tk) return null;
+  try {
+    const r = await apiFetch(`/settings/${key}`, tk);
+    return r ? r.value ?? null : null;
+  } catch (e) {
+    return null;
+  }
+}
+const UPLOAD_ST = {
+  warn: { label: "확인 필요", icon: "⚠", bg: "#FDECEA", fg: "#A0281B", bd: "#E6A9A2" },
+  new: { label: "새 상품", icon: "🆕", bg: "#FFF2CC", fg: "#8A5A00", bd: "#F2D27A" },
+  none: { label: "발주없음", icon: "—", bg: "#EEF1F4", fg: "#3B4652", bd: "#C9D1DA" },
+  ok: { label: "정상", icon: "✓", bg: "#E4F2EE", fg: "#0E4F3F", bd: "#9FD3C2" },
+};
+const UPLOAD_ST_ORDER = ["warn", "new", "none", "ok"];
+// channel: "GS" | "GSFROZEN" | "EMART" | "EMARTFROZEN"
+// newOrders: 이번에 실제로 들어간 발주, prevOrders: 올리기 전에 있던 같은 채널 발주
+async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0, skipped = 0, unmatchedSkus }) {
+  const label = { GS: "GS", GSFROZEN: "GS 냉동", EMART: "이마트", EMARTFROZEN: "이마트 냉동" }[channel] || channel;
+  const dates = Array.from(new Set(newOrders.map((o) => o.createdAt).filter(Boolean))).sort();
+  const allOrders = [...prevOrders, ...newOrders];
+  const prevDates = dates.filter((d) => prevOrders.some((o) => o.createdAt === d));
+  const items = []; // { date, sup, name, qty, st, note }
+  const push = (date, sup, name, qty, st, note) => items.push({ date, sup: sup || "미지정", name, qty, st, note });
+  for (const date of dates) {
+    const dayAll = allOrders.filter((o) => o.createdAt === date);
+    const dayNew = newOrders.filter((o) => o.createdAt === date);
+    if (channel === "GS") {
+      const products = buildProductsForDate(dayAll, date);
+      const bySku = new Map(products.map((p) => [p.sku, p]));
+      const agg = new Map();
+      dayNew.forEach((o) =>
+        o.lines.forEach((l) => {
+          const q = Number(l.changedQty ?? l.qty) || 0;
+          if (q <= 0) return;
+          const k = l.sku;
+          const x = agg.get(k) || { sku: l.sku, name: l.name, sup: pickingSupplierKey(o.supplier || ""), qty: 0 };
+          x.qty += q;
+          agg.set(k, x);
+        })
+      );
+      agg.forEach((x) => {
+        const brand = productBrandOf(x.name);
+        const p = bySku.get(x.sku);
+        if (brand && brand !== "GS") return push(date, x.sup, x.name, x.qty, "ok", `${BRAND_LABEL[brand] || brand} 상품이라 ${BRAND_LABEL[brand] || brand} 피킹지로 가요 (GS 피킹지엔 안 나옴)`);
+        if (isProductInactive(x.name)) return push(date, x.sup, x.name, x.qty, "ok", "일시중지·삭제(단종)로 정해둔 상품이라 피킹지에서 빠져요");
+        if (!p) return push(date, x.sup, x.name, x.qty, "warn", "피킹지 목록에 안 잡혀요. 상품마스터·브랜드 설정을 확인해주세요");
+        if (isGsPickHidden(p)) return push(date, x.sup, x.name, x.qty, "ok", "순서 설정에서 '피킹 안 함'으로 뺀 상품이라 피킹지에서 빠져요");
+        const dk = getDangchakInfo(x.name);
+        if (unmatchedSkus && unmatchedSkus.has(x.sku)) return push(date, x.sup, x.name, x.qty, "new", `상품마스터에 없던 신제품이라 자동 등록했어요 (위치 '미배정'). 피킹지에는 나와요${dk ? " (당착)" : ""} · 입수·위치를 확인해주세요`);
+        if (p.totalQty === 0 && !dk) return push(date, x.sup, x.name, x.qty, "ok", "0고정 지역에만 발주가 있어서 피킹지에 0으로 나가요");
+        push(date, x.sup, x.name, x.qty, "ok", dk ? "당착 피킹지로 나가요" : `피킹지 ${p.totalQty.toLocaleString()}개`);
+      });
+      // 발주없음: 바로 전 발주일에 있던 상품인데 오늘(업로드 후 전체) 발주가 없는 것
+      const prev = prevOrderDate(allOrders, date);
+      if (prev) {
+        const todayNames = new Set(products.map((p) => p.name));
+        const kept = new Set(withZeroDangchakProducts(withZeroFixedProducts(allOrders, date, products)).map((p) => p.name));
+        buildProductsForDate(allOrders, prev).forEach((p) => {
+          if (todayNames.has(p.name) || isGsPickHidden(p) || productBrandOf(p.name) !== "GS") return;
+          const sup = pickingSupplierKey(p.supplier || "");
+          if (kept.has(p.name)) push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · ${getDangchakInfo(p.name) ? "당착" : "0고정 지역"} 상품이라 시트는 0으로 남아요`);
+          else push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · 시트에서 빠져요`);
+        });
+      }
+      continue;
+    }
+    // 템플릿(실물 피킹지 원본) 방식: 이마트 / GS 냉동 / 이마트 냉동
+    const frozen = channel === "GSFROZEN" || channel === "EMARTFROZEN";
+    const cfg = channel === "GSFROZEN" ? GS_FROZEN_PICK_CFG : channel === "EMARTFROZEN" ? EM_FROZEN_PICK_CFG : null;
+    let tpl = null;
+    try {
+      tpl = frozen ? await cfg.loadInfo() : await getEmartTemplateInfo();
+    } catch (e) {
+      tpl = null;
+    }
+    const orderCfg = await settingNow(frozen ? cfg.orderKey : "picking_order_emart");
+    const emInfo = frozen ? {} : (await settingNow("product_info_emart")) || {};
+    const pickCfgNow = frozen ? await settingNow(cfg.pickKey) : null;
+    const supOf = (v) => (frozen ? cfg.supKey(v) : emartVendorKey(v));
+    const rowsOf = (list, d = date) => (frozen ? cfg.rowsOf(list, d, tpl) : emartRowsFromOrders(list.filter((o) => o.createdAt === d)));
+    const dayRows = rowsOf(dayAll);
+    // 피킹지 만들 때 새 상품은 "그날 같은 공급사의 다른 상품이 원본에 있으면" 그 공급사 시트를 복사해서 추가된다
+    const vendorHasPivot = new Set();
+    if (tpl) dayRows.forEach((r) => matchEmartProduct(tpl, r.name) && vendorHasPivot.add(r.vendor));
+    const canCloneVendor = !!(frozen && cfg.buildOpts(tpl).cloneUnknownVendor);
+    const agg = new Map();
+    rowsOf(dayNew).forEach((r) => {
+      const x = agg.get(r.name) || { name: r.name, vendor: r.vendor, qty: 0 };
+      x.qty += r.qty;
+      agg.set(r.name, x);
+    });
+    agg.forEach((x) => {
+      const sup = supOf(x.vendor);
+      if (!tpl) return push(date, sup, x.name, x.qty, "warn", "피킹지 원본(템플릿) 파일을 못 읽어서 확인하지 못했어요");
+      const tp = matchEmartProduct(tpl, x.name);
+      const hidden = tp && frozen ? isBrandHidden(orderCfg, tp.pivot, frozenTitleOf(tp)) : isBrandHidden(orderCfg, sup, x.name);
+      if (hidden) return push(date, sup, x.name, x.qty, "ok", "순서 설정에서 '피킹 안 함'으로 뺀 상품이라 피킹지에서 빠져요");
+      const ov = emInfo[x.name] || (tp ? emInfo[frozenTitleOf(tp)] : null);
+      if (ov && (ov.paused || ov.discontinued)) return push(date, sup, x.name, x.qty, "ok", "일시중지·삭제로 정해둔 상품이라 피킹지에서 빠져요");
+      if (tp) {
+        const c = frozen ? ((pickCfgNow && pickCfgNow.products) || {})[tp.sheet] || {} : {};
+        const extra = (c.zero || []).length || (c.remove || []).length ? ` · 0 처리 ${(c.zero || []).length}곳, 지역 빼기 ${(c.remove || []).length}곳` : "";
+        return push(date, sup, x.name, x.qty, "ok", `시트 "${tp.sheet}"${extra}`);
+      }
+      if (vendorHasPivot.has(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
+      if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
+      push(date, sup, x.name, x.qty, "warn", "피킹지 원본에 이 공급사 상품이 하나도 없어서 피킹지에 안 나와요! 원본(템플릿)에 공급사 시트를 넣거나 [다른 템플릿으로 만들기]를 써주세요");
+    });
+    // 발주없음: 바로 전 발주일엔 있었는데 오늘 없는 상품 (이마트 피킹지는 발주 있는 상품 시트만 나감)
+    const prev = prevOrderDate(allOrders, date);
+    if (prev) {
+      const todayNames = new Set(dayRows.map((r) => r.name));
+      const seenPrev = new Set();
+      rowsOf(allOrders, prev).forEach((r) => {
+        if (todayNames.has(r.name) || seenPrev.has(r.name)) return;
+        seenPrev.add(r.name);
+        const sup = supOf(r.vendor);
+        if (isBrandHidden(orderCfg, sup, r.name)) return;
+        push(date, sup, r.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · 시트에서 빠져요`);
+      });
+    }
+  }
+  const counts = {};
+  UPLOAD_ST_ORDER.forEach((k) => (counts[k] = items.filter((i) => i.st === k).length));
+  return { channel, label, dates, prevDates, dupLines, skipped, items, counts };
+}
+
+function UploadReportModal({ report, onClose }) {
+  const problem = report.counts.warn + report.counts.new + report.counts.none;
+  const [onlyIssue, setOnlyIssue] = useState(problem > 0);
+  const [q, setQ] = useState("");
+  const list = report.items.filter((i) => (!onlyIssue || i.st !== "ok") && (!q.trim() || i.name.includes(q.trim()) || i.sup.includes(q.trim())));
+  const groups = [];
+  const gm = new Map();
+  list.forEach((i) => {
+    const k = (report.dates.length > 1 ? i.date + " · " : "") + i.sup;
+    if (!gm.has(k)) {
+      gm.set(k, { key: k, items: [] });
+      groups.push(gm.get(k));
+    }
+    gm.get(k).items.push(i);
+  });
+  const rank = (i) => UPLOAD_ST_ORDER.indexOf(i.st);
+  groups.forEach((g) => g.items.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "ko")));
+  groups.sort((a, b) => Math.min(...a.items.map(rank)) - Math.min(...b.items.map(rank)));
+  const supCount = new Set(report.items.map((i) => i.sup)).size;
+  const badge = (st) => {
+    const c = UPLOAD_ST[st];
+    return <span style={{ display: "inline-block", minWidth: 74, textAlign: "center", background: c.bg, color: c.fg, border: `1px solid ${c.bd}`, borderRadius: 6, padding: "2px 8px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>{c.icon} {c.label}</span>;
+  };
+  return (
+    <BrandModalFrame title={`업로드 결과 · ${report.label} 피킹지 변환 확인`} sub={`${report.dates.map(fmtDate).join(", ") || "-"} · 공급사 ${supCount}곳 · 상품 ${report.items.length}개`} onClose={onClose} maxWidth={980} height="86vh">
+      <div style={{ padding: "14px 22px", borderBottom: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+        {report.prevDates.length > 0 && (
+          <div style={{ background: "#FDECEA", border: "1px solid #E6A9A2", color: "#A0281B", borderRadius: 8, padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>
+            ⚠ {report.prevDates.map(fmtDate).join(", ")}에 이미 올라와 있던 {report.label} 발주가 있었어요. 추가발주가 맞는지 확인해주세요. 같은 발주를 다른 파일(스크래핑 파일 등)로 또 올리면 수량이 두 배가 될 수 있어요.
+          </div>
+        )}
+        {report.dupLines + report.skipped > 0 && (
+          <div style={{ background: "#EEF1F4", border: "1px solid #C9D1DA", color: "#3B4652", borderRadius: 8, padding: "9px 12px", fontSize: 13 }}>
+            중복 방지 · 이미 올라와 있어서 건너뜀: {[report.dupLines > 0 && `상품 줄 ${report.dupLines.toLocaleString()}개`, report.skipped > 0 && `발주 ${report.skipped}건`].filter(Boolean).join(" · ")}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {UPLOAD_ST_ORDER.map((k) => (
+            <span key={k} style={{ background: UPLOAD_ST[k].bg, color: UPLOAD_ST[k].fg, border: `1px solid ${UPLOAD_ST[k].bd}`, borderRadius: 999, padding: "4px 12px", fontSize: 12.5, fontWeight: 700, opacity: report.counts[k] ? 1 : 0.45 }}>
+              {UPLOAD_ST[k].icon} {UPLOAD_ST[k].label} {report.counts[k]}
+            </span>
+          ))}
+          <label style={{ marginLeft: "auto", fontSize: 12.5, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+            <input type="checkbox" checked={onlyIssue} onChange={(e) => setOnlyIssue(e.target.checked)} /> 정상은 숨기기
+          </label>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="공급사·상품 검색" style={{ ...inputStyle, width: 170, padding: "6px 10px", fontSize: 12.5 }} />
+        </div>
+        {report.counts.warn === 0 && report.items.length > 0 && <div style={{ fontSize: 13, color: "#0E4F3F", fontWeight: 700 }}>✓ 확인 필요한 상품은 없어요.{report.counts.new ? ` 새 상품 ${report.counts.new}개는 입수·위치만 확인해주세요.` : ""}</div>}
+        {report.counts.warn > 0 && <div style={{ fontSize: 13, color: "#A0281B", fontWeight: 800 }}>⚠ 확인 필요한 상품이 {report.counts.warn}개 있어요. 피킹지에 안 나오니 꼭 확인해주세요.</div>}
+      </div>
+      <div style={{ overflow: "auto", flex: 1, padding: "8px 22px 18px" }}>
+        {groups.length === 0 && <div style={{ padding: 30, textAlign: "center", color: T.inkSoft, fontSize: 13 }}>{report.items.length === 0 ? "새로 들어간 상품이 없어요." : "조건에 맞는 상품이 없어요."}</div>}
+        {groups.map((g) => (
+          <div key={g.key} style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800, fontSize: 13.5, padding: "6px 0", borderBottom: `2px solid ${T.ink}`, display: "flex", gap: 8 }}>
+              {g.key}
+              <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>상품 {g.items.length}개</span>
+            </div>
+            {g.items.map((i) => (
+              <div key={i.date + i.name} style={{ display: "grid", gridTemplateColumns: "88px minmax(180px, 1.1fr) 70px 2fr", gap: 10, alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${T.border}`, fontSize: 12.5 }}>
+                {badge(i.st)}
+                <span style={{ fontWeight: 600 }}>{i.name}</span>
+                <span style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace", color: i.st === "none" ? T.inkSoft : undefined }}>{i.st === "none" ? "-" : i.qty.toLocaleString()}</span>
+                <span style={{ color: i.st === "warn" ? "#A0281B" : T.inkSoft, fontWeight: i.st === "warn" ? 700 : 400 }}>{i.note}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.border}`, display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={onClose} className="primary-btn" style={primaryBtnStyle}>
+          확인
+        </button>
+      </div>
+    </BrandModalFrame>
+  );
+}
+
 
 /* ----- 브랜드별 피킹지 순서 설정 (공급사 순서 + 공급사 안 상품 순서) ----- */
 // detected: [{ key: 공급사, names: [상품명...] }] (그 브랜드 발주에서 찾은 기본 순서)
@@ -12753,6 +13074,44 @@ function withZeroDangchakProducts(products) {
   return out;
 }
 
+// GS 일반(1편/2편) 피킹지: 그날 발주 없는 상품은 원래대로 시트에서 빠진다. 단, 아래는 발주가 없어도 0 시트로 남긴다 (2026-10-15 현장 요청)
+//  - 당착 상품: withZeroDangchakProducts (기존)
+//  - 0고정 지역이 하나라도 있는 상품 (공급사 0고정 · 상품 0고정): 바로 전 발주일에 있던 상품을 0으로 채워 넣음
+function hasZeroFixedRegion(p) {
+  const sk = dcVendorKey(p.name) || supplierGroupKey(p.supplier || "");
+  if (PICKING_QTY_ZERO_OVERRIDES.some((o) => o.supplierKey === sk)) return true;
+  return PICKING_QTY_ZERO_BY_NAME.some((o) => o.name === p.name);
+}
+function prevOrderDate(orders, date) {
+  let best = null;
+  orders.forEach((o) => o.createdAt && o.createdAt < date && (!best || o.createdAt > best) && (best = o.createdAt));
+  return best;
+}
+function withZeroFixedProducts(orders, date, products) {
+  if (!date || !products) return products;
+  const prev = prevOrderDate(orders, date);
+  if (!prev) return products;
+  const names = new Set(products.map((p) => p.name));
+  const out = [...products];
+  buildProductsForDate(orders, prev).forEach((p) => {
+    if (names.has(p.name) || !hasZeroFixedRegion(p) || getDangchakInfo(p.name)) return; // 당착은 withZeroDangchakProducts가 따로 처리
+    if (isGsPickHidden(p)) return;
+    names.add(p.name);
+    const z = { ...p, sku: `zero-${p.sku}`, regionRows: p.regionRows.map((r) => ({ ...r, qty: 0, rawQty: 0 })), totalQty: 0, noOrder: true };
+    // 같은 공급사 상품 바로 뒤에 (그날 공급사 발주가 아예 없으면 순서표 자리에)
+    const sk = pickingSupplierKey(p.supplier || "");
+    let at = -1;
+    out.forEach((x, i) => pickingSupplierKey(x.supplier || "") === sk && !isDangchakProduct(x.name) && (at = i));
+    if (at === -1) {
+      const pr = pickingSupplierPriority(sk);
+      at = out.findIndex((x) => pickingSupplierPriority(pickingSupplierKey(x.supplier || "")) > pr) - 1;
+      if (at < -1) at = out.length - 1;
+    }
+    out.splice(at + 1, 0, z);
+  });
+  return out;
+}
+
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
   products = withZeroDangchakProducts(products);
@@ -14865,7 +15224,7 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
 
-  const allDayProducts = useMemo(() => buildProductsForDate(orders, activeDate), [orders, activeDate, orderCfg, productInfo]);
+  const allDayProducts = useMemo(() => withZeroFixedProducts(orders, activeDate, buildProductsForDate(orders, activeDate)), [orders, activeDate, orderCfg, productInfo]);
   // 순서 설정에서 "삭제"(피킹 안 함)한 공급사·상품은 피킹지에서 뺌
   const products = useMemo(() => allDayProducts.filter((p) => !isGsPickHidden(p)), [allDayProducts, orderCfg]);
   const pickHiddenCount = allDayProducts.length - products.length;
