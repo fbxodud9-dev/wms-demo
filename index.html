@@ -1178,6 +1178,11 @@ const nextMonthFirst = (ymd) => {
 const DISCONTINUED_KEEP_MONTH = [
   { match: "햄치즈에그피타브레드", from: "2026-11-01" }, // 오든든 햄치즈에그피타브레드 1편·2편 - 2026-10 단산, 10월분은 정산 대상
   { match: "크랩유부&계란김밥세트", from: "2026-11-01" }, // 탭스 크랩유부&계란김밥세트 1편·2편 - 2026-10 단산
+  // 엠즈베이커스 민음사 4종 - 2026-10 초 단종 (유선 확인). 10월 마지막 발주일(10/5~6)까지 일별 집계에 나와야 함 (2026-10-15)
+  { match: "민음사)깨찰빵(솔티밀크)", from: "2026-11-01" },
+  { match: "민음사)깨찰빵(커스타드)", from: "2026-11-01" },
+  { match: "민음사)모카번(우유크림)", from: "2026-11-01" },
+  { match: "민음사)모카번(커스타드)", from: "2026-11-01" },
 ];
 function openInactiveRange(e, discontinue) {
   const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
