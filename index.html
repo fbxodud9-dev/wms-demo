@@ -8975,7 +8975,11 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial) {
     else if (typeof ex === "number" && Number.isFinite(ex)) {
       if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(\$?B\$?13\+)\d+/, `$1${ex}`), C.AA.s);
       else setCellXml(ws, "AA" + r, emInvDot(dateSerial + ex));
-    } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, shiftFormula(C.AA.f, dr, 0), C.AA.s);
+    } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) {
+      // 소비기한 = 명세서 날짜(B13) + 일수. 줄을 내려도 B13은 그대로 (예전엔 =B20+3처럼 밀려서 날짜가 안 나왔음 - 2026-10-15 스윗밸런스 신제품)
+      // 일수는 같은 공급사 다른 상품과 같은 값 (설정에서 정하면 위쪽 값이 우선)
+      emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(^|[^A-Z$])(\$?B\$?)\d+(\+\d+)/, (m, a, b, c) => `${a}${b}13${c}`), C.AA.s);
+    }
     else emInvSetFormula(ws, "AA" + r, '""', C.AA.s); // 소비기한 미설정: 빈칸 (아래쪽 보관용에 0이 안 나오게)
   });
   readSheetCells(ws, tpl.sst);
