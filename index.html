@@ -1178,11 +1178,12 @@ const nextMonthFirst = (ymd) => {
 const DISCONTINUED_KEEP_MONTH = [
   { match: "햄치즈에그피타브레드", from: "2026-11-01" }, // 오든든 햄치즈에그피타브레드 1편·2편 - 2026-10 단산, 10월분은 정산 대상
   { match: "크랩유부&계란김밥세트", from: "2026-11-01" }, // 탭스 크랩유부&계란김밥세트 1편·2편 - 2026-10 단산
-  // 엠즈베이커스 민음사 4종 - 2026-10 초 단종 (유선 확인). 10월 마지막 발주일(10/5~6)까지 일별 집계에 나와야 함 (2026-10-15)
-  { match: "민음사)깨찰빵(솔티밀크)", from: "2026-11-01" },
-  { match: "민음사)깨찰빵(커스타드)", from: "2026-11-01" },
-  { match: "민음사)모카번(우유크림)", from: "2026-11-01" },
-  { match: "민음사)모카번(커스타드)", from: "2026-11-01" },
+  // 엠즈베이커스 민음사 4종 - 2026-10 초 단종 (유선 확인). 실제 마지막 출고일 10/6까지만 일별 집계에 나오고 10/7부터 뺀다
+  // (GS 발주파일엔 그 뒤에도 소량 계속 찍혀 오지만 피킹·출고는 안 함 - 2026-10-15 확인)
+  { match: "민음사)깨찰빵(솔티밀크)", from: "2026-10-07" },
+  { match: "민음사)깨찰빵(커스타드)", from: "2026-10-07" },
+  { match: "민음사)모카번(우유크림)", from: "2026-10-07" },
+  { match: "민음사)모카번(커스타드)", from: "2026-10-07" },
 ];
 function openInactiveRange(e, discontinue) {
   const list = Array.isArray(e.inactiveRanges) ? e.inactiveRanges.map((r) => ({ ...r })) : [];
@@ -1610,7 +1611,23 @@ const inputStyle = {
 /* ---------- main app ---------- */
 /* ---------- backend API 연동 ---------- */
 // 백엔드 서버 주소가 바뀌면 이 값만 수정하면 됩니다.
-const API_BASE_URL = "https://wms-backend-rk07.onrender.com";
+// 보조 사이트: 같은 index.html을 Vercel 프로젝트 하나 더(주소에 backup / sub / staging이 들어가게, 예: wms-demo-backup.vercel.app)로 올리면
+// 자동으로 보조 서버를 쓰고, 화면에 "보조 사이트" 표시가 나온다. 파일은 하나라서 본 사이트와 항상 똑같은 화면.
+const WMS_MAIN_API = "https://wms-backend-rk07.onrender.com";
+const WMS_BACKUP_API = "https://wms-backend-backup.onrender.com"; // ← 보조 Render 서버를 만든 뒤 그 주소로 바꾸기
+const IS_BACKUP_SITE = typeof location !== "undefined" && /(^|[-.])(backup|sub|staging)([-.]|$)/i.test(location.hostname);
+const API_BASE_URL = IS_BACKUP_SITE ? WMS_BACKUP_API : WMS_MAIN_API;
+if (IS_BACKUP_SITE && typeof document !== "undefined") document.title = "[보조] " + document.title;
+// 보조 사이트 표시 (로그인 화면·사이드바 맨 위)
+function BackupSiteBadge({ dark }) {
+  if (!IS_BACKUP_SITE) return null;
+  return (
+    <div title="본 사이트와 서버·데이터가 따로예요. 테스트(스크래핑 등)나 본 서버가 멈췄을 때 비상용으로 써요." style={{ margin: dark ? "0 6px 12px" : "0 0 4px", padding: "7px 10px", borderRadius: 7, background: "#C0392B", color: "#fff", fontSize: 12, fontWeight: 800, lineHeight: 1.4, textAlign: "center" }}>
+      보조 사이트 (테스트·비상용)
+      <div style={{ fontWeight: 500, fontSize: 11, opacity: 0.9 }}>본 사이트와 데이터 따로</div>
+    </div>
+  );
+}
 
 async function apiFetch(path, token, options = {}) {
   let res;
@@ -1683,6 +1700,7 @@ function mapOrderFromApi(o) {
     pmsStatus: o.pms_status,
     invoiceIssued: o.invoice_issued,
     createdAt: o.order_date ? String(o.order_date).slice(0, 10) : (o.created_at || "").slice(0, 10),
+    deliveryDate: o.delivery_date ? String(o.delivery_date).slice(0, 10) : null,
     completedAt: o.completed_at ? String(o.completed_at).slice(0, 10) : null,
     lines: (o.lines || []).map((l) => ({
       sku: l.sku,
@@ -1742,6 +1760,7 @@ function LoginScreen({ onLogin, notice }) {
             <div style={{ fontSize: 10.5, color: T.inkSoft }}>WMS · HUB CENTER</div>
           </div>
         </div>
+        <BackupSiteBadge />
         <Field label="아이디">
           <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="staff1" autoFocus />
         </Field>
@@ -2195,6 +2214,7 @@ function WMSApp() {
           orders: orderList.map((order) => ({
             orderNo: order.orderNo,
             orderDate: order.createdAt,
+            deliveryDate: order.deliveryDate || null,
             customer: order.customer,
             storeCode: order.storeCode,
             supplier: order.supplier,
@@ -2683,6 +2703,7 @@ function WMSApp() {
             <div style={{ fontSize: 10.5, color: "#A9AFB6" }}>WMS · HUB CENTER</div>
           </div>
         </div>
+        <BackupSiteBadge dark />
 
         {navGroups.map((g) => (
           <div className="navgroup" key={g.label}>
@@ -4303,6 +4324,7 @@ function OrderInfo({ items, orders, onAdd, onAddBulk, onRegisterItemsBulk, onRek
           supplierCode: supplierSplit.code,
           channel: (col.type !== -1 && r[col.type]) || "화주사발주",
           createdAt: workDateOf(r),
+          deliveryDate: (col.delivDate !== -1 && dayOf(r[col.delivDate])) || null, // 발주파일 납품일자 (냉동 피킹지 "○/○ 납품"에 씀)
           syntheticNo: synthetic,
           status: "NEW",
           pickDocNo: null,
@@ -7434,6 +7456,16 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const nd = new Date(Date.UTC(y0, mo0 - 1, da0 + off));
       a2Auto = `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`;
     }
+    // 발주파일 납품일자가 있으면 그게 우선 (냉동 피킹지 - 그 피벗 상품들 중 가장 많은 납품일)
+    if (opts.delivOfName) {
+      const cnt = {};
+      cols.forEach((c) => {
+        const v = opts.delivOfName.get(c.header);
+        if (v) cnt[v] = (cnt[v] || 0) + 1;
+      });
+      const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+      if (best) a2Auto = best[0];
+    }
     rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)));
     if (a2Auto) setCellXml(pv, "A2", a2Auto);
     else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
@@ -8182,10 +8214,21 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
           if (!sheetRank.has(x.sheet)) sheetRank.set(x.sheet, n++);
         });
       }
+      // 납품일: 발주파일의 납품일자(이마트 냉동은 납품예정일)를 그대로. 예전에 올린 발주처럼 납품일자가 없으면 작업일 + 1일
+      const delivOfName = new Map(); // 상품명 -> 납품일 (공급사마다 다를 수 있음, 이마트 냉동 피벗별)
+      const delivCnt = {};
+      frozenOrders.forEach((o) => {
+        if (o.createdAt !== activeDate || !o.deliveryDate) return;
+        delivCnt[o.deliveryDate] = (delivCnt[o.deliveryDate] || 0) + 1;
+        o.lines.forEach((l) => !delivOfName.has(l.name) && delivOfName.set(l.name, o.deliveryDate));
+      });
+      const mdOf = (ymd) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))} 납품`;
+      const fileDeliv = Object.entries(delivCnt).sort((a, b) => b[1] - a[1])[0];
       const [y, m, d] = activeDate.split("-").map(Number);
       const nd = new Date(Date.UTC(y, m - 1, d + 1));
-      const deliv = `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`;
+      const deliv = fileDeliv ? mdOf(fileDeliv[0]) : `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`;
       const { bytes, report } = await buildEmartPickingWorkbook(buf, rowsOut, activeDate, null, {
+        delivOfName: delivOfName.size ? new Map([...delivOfName].map(([n, v]) => [n, mdOf(v)])) : null,
         excludeSheets: hiddenSheets,
         sheetRank,
         hideRegionRows,
@@ -9615,7 +9658,7 @@ function emartOrdersFromRows(rows) {
     const orderNo = r.orderNo || `EM-${r.date}-${r.vendorCode || r.vendor}-${r.center}`;
     const key = `${orderNo}|${r.date}`;
     if (!map.has(key))
-      map.set(key, { orderNo, createdAt: r.date || todayStr(), customer: r.center, storeCode: r.center, supplier: r.vendor, supplierCode: r.vendorCode || "", channel: "EMART", lines: [] });
+      map.set(key, { orderNo, createdAt: r.date || todayStr(), deliveryDate: r.due || null, customer: r.center, storeCode: r.center, supplier: r.vendor, supplierCode: r.vendorCode || "", channel: "EMART", lines: [] });
     map.get(key).lines.push({ sku: r.code || r.name, name: r.name, qty: r.qty, packQty: r.box || 0, location: "-", unit: "EA" });
   });
   return Array.from(map.values());
