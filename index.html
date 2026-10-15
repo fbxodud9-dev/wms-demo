@@ -10474,7 +10474,9 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
         buildProductsForDate(allOrders, prev).forEach((p) => {
           if (todayNames.has(p.name) || isGsPickHidden(p) || productBrandOf(p.name) !== "GS") return;
           const sup = pickingSupplierKey(p.supplier || "");
-          if (kept.has(p.name)) push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · ${getDangchakInfo(p.name) ? "당착" : "0고정 지역"} 상품이라 시트는 0으로 남아요`);
+          const dkS = getDangchakStyle(p.name);
+          if (kept.has(p.name) && dkS === "combined") push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · 상품 시트는 빠지고 당착(오전현장) 시트에만 0으로 남아요`);
+          else if (kept.has(p.name)) push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · ${dkS ? "당착" : "0고정 지역"} 상품이라 시트는 0으로 남아요`);
           else push(date, sup, p.name, 0, "none", `${fmtDate(prev)}엔 있었는데 오늘 발주없음 · 시트에서 빠져요`);
         });
       }
@@ -13148,8 +13150,13 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
       blk.items.forEach(({ p, i }) => {
         const style = getDangchakStyle(p.name);
         // full(조인앤조인): 0인 지역만 건너뜀 / combined·일반: 평소 피킹지시서 그대로 (당착 지역은 이미 0 처리)
-        addStyledInspectionSheet(workbook, p, usedNames, date, style === "full");
-        sheetIdxOfSku.set(p.sku, workbook.worksheets.length - 1);
+        // 지역 하나만 당착인 상품(맛요일·참맛나라·H2글로벌·데어리젠 등)이 그날 발주가 없으면: 일반 상품 시트는 안 만들고
+        // 당착(오전현장) 시트에만 0으로 남긴다 (2026-10-15 현장 문의: 발주 없는 맛요일 소고기미역국밥·대파육개장 시트가 생김)
+        const noOrderCombined = style === "combined" && String(p.sku).startsWith("zero-");
+        if (!noOrderCombined) {
+          addStyledInspectionSheet(workbook, p, usedNames, date, style === "full");
+          sheetIdxOfSku.set(p.sku, workbook.worksheets.length - 1);
+        }
         if (style === "combined") {
           const g = getDangchakInfo(p.name).group;
           if (lastIdxOfGroup.get(g) === i) pendingCombined.push(g);
