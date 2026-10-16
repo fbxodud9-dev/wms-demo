@@ -9802,6 +9802,11 @@ function emartPivotByVendorName(tpl, vendor) {
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
   return pivots.find((pv) => keys.some((k) => pv.replace(/\s/g, "").includes(k))) || null;
 }
+// GS 센터(VV코드·지에스리테일)로 가는 발주인지 - 예전에 GS·이마트가 섞인 파일을 이마트에 올렸을 때 들어온 줄
+function isGsCenterOrder(o) {
+  const c = `${o.storeCode || ""} ${o.customer || ""}`;
+  return /(^|\s)VV\d/i.test(c) || /지에스리테일|GS리테일/.test(c);
+}
 // 이마트 거래처명 정리: "[PNB]오뗄[간편식품_월-토]" / "오뗄[간편식품_월-토](TC)" -> "오뗄"
 function emartVendorKey(v) {
   return String(v || "")
@@ -10267,13 +10272,13 @@ function EmartPickingView({ emartOrders, authToken }) {
 
   // XIII. 상품 정보 관리(이마트)에서 바꾼 값: 입수 / 일시중지·삭제 상품은 피킹지에서 뺌
   const infoOf = (name, tp) => emInfo[name] || (tp ? emInfo[String(tp.title || "").replace(/\s*\n\s*/g, "").trim()] : null) || null;
-  const allRows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate)), [emartOrders, activeDate]);
+  const allRows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate && !isGsCenterOrder(o))), [emartOrders, activeDate]);
   const rows = useMemo(
     () =>
       allRows.filter((r) => {
         if (isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)) return false; // 피킹지 순서 설정에서 뺀(삭제한) 공급사·상품
         const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
-        return !(ov && (ov.paused || ov.discontinued));
+        return !(ov && (ov.paused || ov.discontinued || (ov.brand && ov.brand !== "EMART"))); // 브랜드 설정에서 다른 브랜드로 정한 상품도 뺌
       }),
     [allRows, emInfo, tplInfo, orderCfg] // eslint-disable-line
   );
@@ -10363,7 +10368,12 @@ function EmartPickingView({ emartOrders, authToken }) {
           allRows,
           fullExport: !filterOn,
           isHiddenRow: (r) =>
-            isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name) ? "순서 설정에서 '피킹 안 함'(삭제)" : "상품 정보 관리에서 일시중지·삭제(단종)",
+            isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)
+              ? "순서 설정에서 '피킹 안 함'(삭제)"
+              : (() => {
+                  const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
+                  return ov && ov.brand && ov.brand !== "EMART" ? "브랜드 설정에서 다른 브랜드로 정함" : "상품 정보 관리에서 일시중지·삭제(단종)";
+                })(),
         });
         const bad = result.errors.length > 0;
         setVerify({ result, held: null });
@@ -10468,7 +10478,7 @@ function EmartPickingView({ emartOrders, authToken }) {
         <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 10 }}>
           ※ 빠진 상품 {hiddenCount}개: {removedByOrderCfg > 0 ? `피킹지 순서 설정에서 삭제 ${removedByOrderCfg}개` : ""}
           {removedByOrderCfg > 0 && hiddenCount - removedByOrderCfg > 0 ? " · " : ""}
-          {hiddenCount - removedByOrderCfg > 0 ? `상품 정보 관리에서 일시중지·삭제 ${hiddenCount - removedByOrderCfg}개` : ""} (복구는 각 설정창에서)
+          {hiddenCount - removedByOrderCfg > 0 ? `상품 정보 관리에서 일시중지·삭제·다른 브랜드 ${hiddenCount - removedByOrderCfg}개` : ""} (복구는 각 설정창에서)
         </div>
       )}
       {dateOptions.length === 0 ? (
@@ -12917,6 +12927,7 @@ function ProductInfoCenter({ orders, items, emartOrders, authToken, productInfo,
       const pivotVendor = {};
       const usedSheets = new Set();
       [...emartOrders]
+        .filter((o) => !isGsCenterOrder(o)) // 예전에 GS·이마트 섞인 파일로 들어온 GS 센터(VV) 줄은 이마트 상품이 아님
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
         .forEach((o) =>
           o.lines.forEach((l) => {
@@ -12948,12 +12959,23 @@ function ProductInfoCenter({ orders, items, emartOrders, authToken, productInfo,
         if (productBrandOf(r.name) === brand && !map.has(r.name)) map.set(r.name, { ...r, basePack: packQtyOverrideOf(r.name) || r.basePack, fromGs: true });
       });
     }
-    // 상품마스터에 그 브랜드로 등록된 품목도 같이
+    // 상품마스터에 그 브랜드로 등록된 품목도 같이 (단, GS 발주에만 나오는 GS 상품은 빼고 - 섞인 파일 때문에 이마트 브랜드가 붙은 GS 상품)
+    const gsNames = new Set();
+    const gsSkus = new Set();
+    if (brand !== "GS")
+      orders.forEach((o) =>
+        o.lines.forEach((l) => {
+          gsNames.add(String(l.name || "").trim());
+          gsSkus.add(String(l.sku || ""));
+        })
+      );
     items
       .filter((i) => itemBrandsOf(i).includes(brand))
       .forEach((i) => {
         const name = String(i.name || "").trim();
-        if (name && !map.has(name)) map.set(name, { name, sku: i.sku, supplier: "-", basePack: Number(i.boxQty) > 1 ? Number(i.boxQty) : 0, lastDate: "" });
+        if (!name || map.has(name)) return;
+        if (brand !== "GS" && (gsNames.has(name) || gsSkus.has(String(i.sku || ""))) && productBrandOf(name) !== brand) return;
+        map.set(name, { name, sku: i.sku, supplier: "-", basePack: Number(i.boxQty) > 1 ? Number(i.boxQty) : 0, lastDate: "" });
       });
     return Array.from(map.values());
   };
@@ -12965,16 +12987,217 @@ function ProductInfoCenter({ orders, items, emartOrders, authToken, productInfo,
       renderReady={(c) => {
         if (c === "gs") return <ProductInfoPage orders={orders} authToken={authToken} productInfo={productInfo} onSaved={onSaved} />;
         const ch = PICKING_CHANNELS.find((x) => x.key === c);
-        return <BrandProductInfoView key={ch.brand} brand={ch.brand} label={ch.label} rows={rowsFor(ch.brand)} authToken={authToken} loading={ch.brand === "EMART" && !tplInfo} />;
+        return (
+          <BrandProductInfoView
+            key={ch.brand}
+            brand={ch.brand}
+            label={ch.label}
+            rows={rowsFor(ch.brand)}
+            authToken={authToken}
+            loading={ch.brand === "EMART" && !tplInfo}
+            productInfo={productInfo}
+            onSaved={onSaved}
+          />
+        );
       }}
     />
   );
 }
 
+// GS 외 브랜드 화면의 브랜드 설정: 이 브랜드 화면에 나오는 상품 중 실제로 다른 브랜드인 것(섞인 파일로 들어온 GS 상품 등)을 정해서 뺀다
+function OwnBrandModal({ brand, label, rows, info, infoKey, brandOfRow, authToken, productInfo, onSaved, onClose }) {
+  const [draft, setDraft] = useState({});
+  const [checked, setChecked] = useState(new Set());
+  const [q, setQ] = useState("");
+  const [supplier, setSupplier] = useState("all");
+  const [brandF, setBrandF] = useState("all");
+  const [bulk, setBulk] = useState("GS");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const base = useMemo(() => [...rows].sort((a, b) => String(a.supplier).localeCompare(String(b.supplier), "ko") || a.name.localeCompare(b.name, "ko")), [rows]);
+  const cur = (r) => draft[r.name] || brandOfRow(r);
+  const suppliers = Array.from(new Set(base.map((r) => r.supplier)));
+  const shown = base.filter((r) => {
+    if (supplier !== "all" && r.supplier !== supplier) return false;
+    if (brandF !== "all" && cur(r) !== brandF) return false;
+    const k = q.trim().toLowerCase();
+    return !k || r.name.toLowerCase().includes(k) || String(r.sku || "").toLowerCase().includes(k);
+  });
+  const dirty = base.filter((r) => draft[r.name] && draft[r.name] !== brandOfRow(r));
+  const counts = {};
+  base.forEach((r) => (counts[cur(r)] = (counts[cur(r)] || 0) + 1));
+  const setB = (names, b) => {
+    setDraft((d) => {
+      const n = { ...d };
+      names.forEach((x) => (n[x] = b));
+      return n;
+    });
+    setMsg("");
+  };
+  function close() {
+    if (dirty.length && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
+    onClose();
+  }
+  async function save() {
+    setBusy(true);
+    let ok = true;
+    const own = dirty.filter((r) => !r.fromGs);
+    const gs = dirty.filter((r) => r.fromGs);
+    if (own.length) {
+      const r = await updateSetting(infoKey, authToken, (v) => {
+        own.forEach((row) => {
+          const e = { ...(v[row.name] || {}) };
+          const b = draft[row.name];
+          if (b === brand) delete e.brand;
+          else e.brand = b;
+          if (Object.keys(e).length) v[row.name] = e;
+          else delete v[row.name];
+        });
+        return v;
+      });
+      ok = ok && r.ok;
+    }
+    if (gs.length) {
+      const r = await saveProductInfoEntries(
+        authToken,
+        productInfo,
+        gs.map((x) => x.name),
+        (e, name) => {
+          const b = draft[name];
+          if (b === (DEFAULT_PRODUCT_BRAND[name] || "GS")) delete e.brand;
+          else e.brand = b;
+          return e;
+        }
+      );
+      if (onSaved) onSaved(r.value);
+      ok = ok && r.ok;
+    }
+    setBusy(false);
+    setDraft({});
+    setChecked(new Set());
+    setMsg(ok ? `${dirty.length}개 상품 브랜드를 저장했어요. ${label}가 아닌 상품은 ${label} 상품 정보·피킹지에서 빠져요.` : "서버에 저장하지 못한 항목이 있어요. 잠시 뒤 다시 저장해 주세요.");
+  }
+  const allShownChecked = shown.length > 0 && shown.every((r) => checked.has(r.name));
+  const selStyle = { ...inputStyle, padding: "5px 8px", fontSize: 12.5 };
+  return (
+    <BrandModalFrame title={`브랜드 설정 · ${label} 상품`} sub={`${label} 화면에 나오는 상품의 브랜드를 정해요. ${label}가 아닌 브랜드(예: GS)로 바꾸면 ${label} 상품 정보 관리·피킹지에서 빠지고, 다시 ${label}로 바꾸면 돌아와요.`} onClose={close}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderBottom: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap" }}>
+        <button onClick={save} disabled={busy || dirty.length === 0} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !dirty.length ? 0.55 : 1 }}>
+          <Check size={14} /> {busy ? "저장 중..." : dirty.length ? `변경 ${dirty.length}개 저장` : "저장할 변경 없음"}
+        </button>
+        <span style={{ fontSize: 12.5, color: T.inkSoft, marginLeft: 6 }}>선택한 {checked.size}개를</span>
+        <select style={selStyle} value={bulk} onChange={(e) => setBulk(e.target.value)}>
+          {PICKING_CHANNELS.map((c) => (
+            <option key={c.brand} value={c.brand}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <button disabled={checked.size === 0} onClick={() => setB(Array.from(checked), bulk)} style={{ ...smallBtnStyle, opacity: checked.size ? 1 : 0.5 }}>
+          로 바꾸기
+        </button>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("서버에") ? T.danger : T.teal }}>{msg}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 8, padding: "10px 20px", flexWrap: "wrap", alignItems: "center" }}>
+        <input style={{ ...inputStyle, flex: "1 1 220px" }} placeholder="상품명 또는 상품코드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select style={{ ...inputStyle, flex: "0 1 200px" }} value={supplier} onChange={(e) => setSupplier(e.target.value)}>
+          <option value="all">전체 공급사</option>
+          {suppliers.map((x) => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
+        </select>
+        {[{ brand: "all", label: "전체" }, ...PICKING_CHANNELS].map((c) => (
+          <button
+            key={c.brand}
+            onClick={() => setBrandF(c.brand)}
+            style={{ ...smallBtnStyle, padding: "6px 10px", background: brandF === c.brand ? T.steel : T.surface, color: brandF === c.brand ? "#fff" : T.ink, borderColor: brandF === c.brand ? T.steel : T.border }}
+          >
+            {c.label} {c.brand === "all" ? base.length : counts[c.brand] || 0}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 34 }}>
+                <input
+                  type="checkbox"
+                  checked={allShownChecked}
+                  onChange={() =>
+                    setChecked((c) => {
+                      const n = new Set(c);
+                      shown.forEach((r) => (allShownChecked ? n.delete(r.name) : n.add(r.name)));
+                      return n;
+                    })
+                  }
+                />
+              </th>
+              <th>공급사</th>
+              <th>상품명</th>
+              <th>상품코드</th>
+              <th style={{ width: 150 }}>브랜드</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.slice(0, 600).map((r) => {
+              const b = cur(r);
+              const changed = draft[r.name] && draft[r.name] !== brandOfRow(r);
+              return (
+                <tr key={r.name} style={changed ? { background: "#FFF8E1" } : undefined}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={checked.has(r.name)}
+                      onChange={() =>
+                        setChecked((c) => {
+                          const n = new Set(c);
+                          n.has(r.name) ? n.delete(r.name) : n.add(r.name);
+                          return n;
+                        })
+                      }
+                    />
+                  </td>
+                  <td style={{ color: T.inkSoft, fontSize: 12.5, whiteSpace: "nowrap" }}>{r.supplier}</td>
+                  <td>
+                    <span style={{ fontWeight: 600 }}>{r.name}</span>
+                    {r.fromGs && <span style={{ marginLeft: 6, fontSize: 11, color: T.inkSoft }}>(GS 발주파일)</span>}
+                    {changed && <span style={{ marginLeft: 6, fontSize: 11, color: T.amberDeep, fontWeight: 700 }}>변경</span>}
+                  </td>
+                  <td style={{ color: T.inkSoft, fontSize: 12 }}>{r.sku || "-"}</td>
+                  <td>
+                    <select style={{ ...selStyle, width: "100%", fontWeight: b !== brand ? 700 : 500 }} value={b} onChange={(e) => setB([r.name], e.target.value)}>
+                      {PICKING_CHANNELS.map((c) => (
+                        <option key={c.brand} value={c.brand}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {shown.length === 0 && <EmptyRow text="조건에 맞는 상품이 없어요." />}
+      </div>
+    </BrandModalFrame>
+  );
+}
+
 // GS 외 브랜드 상품 정보 (입수·소비기한·표시 상품명·일시중지·삭제) - 서버 /settings/product_info_<brand>
-function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
+function BrandProductInfoView({ brand, label, rows: allRowsIn, authToken, loading, productInfo, onSaved }) {
   const key = brandSettingKey("product_info", brand);
   const info = useSetting(key, authToken) || {};
+  const [showBrand, setShowBrand] = useState(false);
+  // 브랜드 설정에서 다른 브랜드로 정한 상품은 이 브랜드 화면·피킹지에서 뺌
+  //  - 이 브랜드 발주파일 상품: 이 브랜드 상품 정보(info[name].brand)
+  //  - GS 발주파일에서 넘어온 상품(fromGs): GS 브랜드 설정(productBrandOf)
+  const brandOfRow = (r) => (r.fromGs ? productBrandOf(r.name) : (info[r.name] && info[r.name].brand) || brand);
+  const rows = allRowsIn.filter((r) => brandOfRow(r) === brand);
+  const otherCount = allRowsIn.length - rows.length;
   const [q, setQ] = useState("");
   const [supplier, setSupplier] = useState("all");
   const [showDeleted, setShowDeleted] = useState(false);
@@ -13012,7 +13235,29 @@ function BrandProductInfoView({ brand, label, rows, authToken, loading }) {
   const btn = { ...smallBtnStyle, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4 };
   return (
     <div>
-      <PageHeader title="XIII. 상품 정보 관리" sub={`${label} 상품의 입수·소비기한·표시 상품명을 관리해요. ${brand === "EMART" ? "입수는 이마트 피킹지 엑셀에 바로 반영되고, " : ""}일시중지·삭제한 상품은 피킹지에서 빠져요.`} />
+      <PageHeader
+        title="XIII. 상품 정보 관리"
+        sub={`${label} 상품의 입수·소비기한·표시 상품명을 관리해요. ${brand === "EMART" ? "입수는 이마트 피킹지 엑셀에 바로 반영되고, " : ""}일시중지·삭제한 상품은 피킹지에서 빠져요.`}
+        action={
+          <button onClick={() => setShowBrand(true)} style={settingBtnStyle} title={`${label} 상품의 브랜드 정하기 (다른 브랜드 상품이 섞여 있으면 빼기)`}>
+            <SettingsGear size={15} /> 브랜드 설정{otherCount > 0 ? ` (다른 브랜드 ${otherCount})` : ""}
+          </button>
+        }
+      />
+      {showBrand && (
+        <OwnBrandModal
+          brand={brand}
+          label={label}
+          rows={allRowsIn}
+          info={info}
+          infoKey={key}
+          brandOfRow={brandOfRow}
+          authToken={authToken}
+          productInfo={productInfo}
+          onSaved={onSaved}
+          onClose={() => setShowBrand(false)}
+        />
+      )}
       <div style={{ ...cardStyle, padding: 16, marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ position: "relative", flex: "1 1 260px" }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: T.inkSoft }} />
