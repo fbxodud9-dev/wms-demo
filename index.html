@@ -115,6 +115,57 @@ function KeyRound(props) {
   );
 }
 
+function EyeIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </IconBase>
+  );
+}
+
+function EyeOffIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.4 3.4" />
+      <path d="M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      <path d="m2 2 20 20" />
+    </IconBase>
+  );
+}
+
+// 비밀번호 칸 + 눈 버튼 (눌러서 친 글자 보기/숨기기)
+function PwInput({ value, onChange, style, autoComplete, placeholder, autoFocus }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative", width: "100%" }}>
+      <input
+        type={show ? "text" : "password"}
+        autoComplete={autoComplete}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        style={{ ...style, width: "100%", paddingRight: 40 }}
+        value={value}
+        onChange={onChange}
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={() => setShow((v) => !v)}
+        title={show ? "비밀번호 숨기기" : "비밀번호 보기"}
+        aria-label={show ? "비밀번호 숨기기" : "비밀번호 보기"}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: "pointer", color: show ? "#2B3138" : "#8A8F96", padding: 0 }}
+      >
+        {show ? <EyeOffIcon size={17} /> : <EyeIcon size={17} />}
+      </button>
+    </div>
+  );
+}
+
 function History(props) {
   return (
     <IconBase {...props}>
@@ -1895,6 +1946,7 @@ const randomTempPw = () => {
 
 // 방금 로그인할 때 친 비밀번호 (화면 메모리에만 잠깐 보관 → 첫 로그인 비번 변경 때 '지금 비밀번호' 칸을 크롬 자동완성이 엉뚱하게 채우는 문제 방지)
 let LAST_LOGIN_PW = "";
+const PW_CHANGED_NOTICE = "비밀번호를 바꿨어요. 새 비밀번호로 다시 로그인해 주세요.";
 
 // 비밀번호 바꾸기 폼 (첫 로그인 강제 / 내 계정 화면 공용)
 function PasswordChangeForm({ authToken, onDone, compact, presetCurrent }) {
@@ -1931,16 +1983,16 @@ function PasswordChangeForm({ authToken, onDone, compact, presetCurrent }) {
       {!presetCurrent && (
         <label>
           <span style={lab}>지금 비밀번호 (임시 비밀번호)</span>
-          <input type="password" autoComplete="off" style={{ ...inputStyle, width: "100%" }} value={cur} onChange={(e) => setCur(e.target.value)} />
+          <PwInput autoComplete="off" style={inputStyle} value={cur} onChange={(e) => setCur(e.target.value)} />
         </label>
       )}
       <label>
         <span style={lab}>새 비밀번호 (6자 이상)</span>
-        <input type="password" autoComplete="new-password" style={{ ...inputStyle, width: "100%" }} value={n1} onChange={(e) => setN1(e.target.value)} />
+        <PwInput autoComplete="new-password" style={inputStyle} value={n1} onChange={(e) => setN1(e.target.value)} />
       </label>
       <label>
         <span style={lab}>새 비밀번호 한 번 더</span>
-        <input type="password" autoComplete="new-password" style={{ ...inputStyle, width: "100%" }} value={n2} onChange={(e) => setN2(e.target.value)} />
+        <PwInput autoComplete="new-password" style={inputStyle} value={n2} onChange={(e) => setN2(e.target.value)} />
       </label>
       {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
       {msg && <div style={{ fontSize: 12.5, color: T.teal, fontWeight: 600 }}>{msg}</div>}
@@ -1969,7 +2021,7 @@ function ChangePasswordGate({ authToken, user, onDone, onLogout }) {
   );
 }
 
-function MyAccountPage({ authToken, user }) {
+function MyAccountPage({ authToken, user, onPwChanged }) {
   const perms = user && user.role === "admin" ? PERM_LIST.map((p) => p.label) : PERM_LIST.filter((p) => (user && user.perms ? user.perms : []).includes(p.key)).map((p) => p.label);
   return (
     <div>
@@ -1977,7 +2029,7 @@ function MyAccountPage({ authToken, user }) {
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ ...cardStyle, flex: "1 1 300px", maxWidth: 420 }}>
           <div style={{ fontWeight: 700, marginBottom: 12 }}>비밀번호 바꾸기</div>
-          <PasswordChangeForm authToken={authToken} />
+          <PasswordChangeForm authToken={authToken} onDone={onPwChanged} />
         </div>
         <div style={{ ...cardStyle, flex: "1 1 260px", maxWidth: 420 }}>
           <div style={{ fontWeight: 700, marginBottom: 10 }}>내 정보</div>
@@ -2385,8 +2437,8 @@ function AuditLogPage({ authToken }) {
   );
 }
 
-function LoginScreen({ onLogin, notice }) {
-  const [username, setUsername] = useState("");
+function LoginScreen({ onLogin, notice, initialUsername }) {
+  const [username, setUsername] = useState(initialUsername || "");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -2425,10 +2477,10 @@ function LoginScreen({ onLogin, notice }) {
         </div>
         <BackupSiteBadge />
         <Field label="아이디">
-          <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="staff1" autoFocus />
+          <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="staff1" autoFocus={!initialUsername} />
         </Field>
         <Field label="비밀번호">
-          <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+          <PwInput style={inputStyle} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoFocus={!!initialUsername} />
         </Field>
         {notice && !err && <div style={{ fontSize: 12.5, color: T.amberDeep, fontWeight: 700, background: "#FFF6E5", border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 10px" }}>{notice}</div>}
         {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
@@ -2481,6 +2533,7 @@ function WMSApp() {
   const [dataLoadedAt, setDataLoadedAt] = useState(null);
   const [apiErr, setApiErr] = useState("");
   const [authNotice, setAuthNotice] = useState("");
+  const [lastUsername, setLastUsername] = useState("");
   // 쓰는 도중 토큰이 만료되면(서버가 401) 자동 로그아웃 → 로그인 화면에 안내
   useEffect(() => {
     const onExpired = () => {
@@ -2776,7 +2829,12 @@ function WMSApp() {
       localStorage.setItem("wms-auth", JSON.stringify({ token, user }));
     } catch (e) {}
   }
-  function doLogout() {
+  function doLogout(notice) {
+    // 비밀번호를 바꾼 뒤 등: 로그인 화면에 안내 문구 + 아이디를 미리 채워 둠
+    if (typeof notice === "string" && notice) {
+      setAuthNotice(notice);
+      setLastUsername((authUser && authUser.username) || "");
+    }
     setAuthToken(null);
     setAuthUser(null);
     setItems([]);
@@ -2793,6 +2851,11 @@ function WMSApp() {
   }
 
   doLogoutRef.current = doLogout;
+  // 권한 없는 화면(예: 관리자가 보던 #accounts 주소로 직원이 로그인)이면 빈 화면 대신 대시보드로
+  useEffect(() => {
+    if (!authUser) return;
+    if ((tab === "accounts" && !canDo("accounts")) || (tab === "auditlog" && !canDo("logs"))) setTab("dashboard");
+  }, [tab, authUser, setTab]);
   // 로그인 뒤·새로고침 뒤 서버에서 최신 권한을 받아옴 (관리자가 권한을 바꿨을 수 있음). 1분마다 다시 확인
   useEffect(() => {
     if (!authToken) return;
@@ -3324,7 +3387,7 @@ function WMSApp() {
   }
 
   if (!authToken) {
-    return <LoginScreen onLogin={doLogin} notice={authNotice} />;
+    return <LoginScreen onLogin={doLogin} notice={authNotice} initialUsername={lastUsername} />;
   }
   // 관리자가 만들어 준 임시 비밀번호로 처음 로그인했으면: 비밀번호부터 바꾸게 함
   if (authUser && authUser.mustChange) {
@@ -3332,13 +3395,7 @@ function WMSApp() {
       <ChangePasswordGate
         authToken={authToken}
         user={authUser}
-        onDone={() => {
-          const next = { ...authUser, mustChange: false };
-          setAuthUser(next);
-          try {
-            localStorage.setItem("wms-auth", JSON.stringify({ token: authToken, user: next }));
-          } catch (e) {}
-        }}
+        onDone={() => doLogout(PW_CHANGED_NOTICE)}
         onLogout={doLogout}
       />
     );
@@ -3600,7 +3657,7 @@ function WMSApp() {
         {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
-        {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} />}
+        {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
         {tab === "productinfo" && <ProductInfoCenter orders={orders} items={itemsView} emartOrders={emartOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
