@@ -4435,6 +4435,7 @@ function resolveNamePackOverride(name) {
         try {
           const { newOrders, unmatchedMap, rekeyMap, otherChannelRows } = await parseOneFile(file);
           otherChannelTotal += otherChannelRows || 0;
+          newOrders.forEach((o) => (o.__file = file.name));
           allNewOrders.push(...newOrders);
           rekeyMap.forEach((to, from) => {
             if (allRekey.has(from) && allRekey.get(from) !== to) rekeyAmbiguous.add(from); // 파일마다 다른 코드를 말하면 바꾸지 않음
@@ -4447,6 +4448,50 @@ function resolveNamePackOverride(name) {
           fileErrors.push(e.message);
         }
       }
+
+      // 한 번에 여러 파일을 골랐을 때 파일끼리 겹치는 발주 줄 (같은 날·납품처·공급사·상품코드)
+      //  - 주문번호도 같으면(같은 파일 2번, "(1)" 복사본) 그냥 한 번만
+      //  - 주문번호가 다르면(원본 + 다른 형식 파일) 물어보고 결정 (2026-10-16 이마트 브이아이푸드 2배 사고 이후)
+      if (files.length > 1) {
+        const lk = (o, sku) => `${o.createdAt}|${o.storeCode || o.customer}|${o.supplierCode || o.supplier}|${sku}`;
+        const seenB = new Map();
+        const ask = [];
+        const askFiles = new Set();
+        const dupFiles = new Set();
+        let autoDup = 0;
+        allNewOrders.forEach((o) => {
+          const mine = [];
+          o.lines = o.lines.filter((l) => {
+            const k = lk(o, l.sku);
+            const prev = seenB.get(k);
+            if (prev && prev.file !== o.__file) {
+              if (prev.orderNo === o.orderNo) {
+                autoDup++;
+                dupFiles.add(o.__file);
+              } else {
+                ask.push({ o, l });
+                askFiles.add(`${prev.file} ↔ ${o.__file}`);
+              }
+              return false;
+            }
+            if (!prev) mine.push(k);
+            return true;
+          });
+          mine.forEach((k) => seenB.set(k, { file: o.__file, orderNo: o.orderNo }));
+        });
+        if (autoDup > 0)
+          window.alert(`⚠ 같은 발주가 들어 있는 파일을 두 번 고르셨어요.\n(${[...dupFiles].join(", ")})\n\n겹치는 상품 줄 ${autoDup.toLocaleString()}개는 한 번만 넣었어요. 수량이 두 배가 되지 않아요.`);
+        if (ask.length > 0) {
+          const once = window.confirm(
+            `⚠ 같이 고른 파일들에 똑같은 발주 줄이 ${ask.length.toLocaleString()}개 있어요.\n(같은 날짜·납품처·공급사·상품코드, 주문번호나 파일 형식만 다름)\n${[...askFiles].slice(0, 5).join("\n")}\n\n원본 발주파일과 다른 형식 파일(스크래핑·다른 메뉴 내려받기 등)을 같이 고른 것 같아요.\n\n[확인] 한 번만 넣기 (권장)\n[취소] 둘 다 넣기 (진짜 추가발주일 때만)`
+          );
+          if (!once) ask.forEach(({ o, l }) => o.lines.push(l));
+        }
+        const keep = allNewOrders.filter((o) => o.lines.length > 0);
+        allNewOrders.length = 0;
+        allNewOrders.push(...keep);
+      }
+      allNewOrders.forEach((o) => delete o.__file);
 
       // 발주파일의 상품코드와 다르게 등록돼 있던 상품마스터 코드부터 발주파일 기준으로 교체
       rekeyAmbiguous.forEach((from) => allRekey.delete(from));
@@ -9811,9 +9856,11 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
       const all = [];
       let otherChannel = 0; // 파일에 섞여 와서 뺀 GS 줄 수
       // 이번에 고른 파일들끼리 겹치는 줄 (발주일·주문번호·납품처·공급사·상품이 같으면 같은 줄)
-      const batchKey = (r) => `${r.date}|${r.orderNo || ""}|${r.center}|${r.vendorCode || r.vendor}|${r.code || r.name}`;
-      const batchSeen = new Set();
+      const batchKey = (r) => `${r.date}|${r.center}|${r.vendorCode || r.vendor}|${r.code || r.name}`;
+      const batchSeen = new Map(); // 줄 -> { file, orderNo }
       const batchDupFiles = new Set();
+      const batchAsk = []; // 주문번호가 다른데 같은 줄 (물어보고 결정)
+      const batchAskFiles = new Set();
       let batchDup = 0;
       // 업체 코드 → 예전 이름: 저장된 표 + 지금 남아 있는 예전 형식 발주
       const vendorByCode = { ...((codeMapSaved && codeMapSaved.map) || {}) };
@@ -9839,23 +9886,37 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         otherChannel += parsed.otherChannel || 0;
         // 한 번에 여러 파일을 고를 때 같은 발주가 든 파일이 또 있으면(같은 파일 2번, "(1)" 복사본, 시간만 다른 같은 내려받기 등)
         // 앞 파일에 이미 있는 줄은 빼고 넣는다. 2026-10-16 브이아이푸드 수량 2배 사고 원인 (같은 주문번호 안에 줄이 두 번 들어감)
-        const fileKeys = new Set();
+        // 같은 날·센터·공급사·상품이 앞 파일에도 있으면: 주문번호까지 같으면 그냥 한 번만, 주문번호가 다르면(다른 형식 파일 등) 아래에서 물어봄
+        const fileKeys = new Map();
         parsed.forEach((r) => {
           const k = batchKey(r);
-          if (batchSeen.has(k)) {
-            batchDup++;
-            batchDupFiles.add(f.name);
+          const prev = batchSeen.get(k);
+          if (prev) {
+            if ((prev.orderNo || "") === (r.orderNo || "")) {
+              batchDup++;
+              batchDupFiles.add(f.name);
+            } else {
+              batchAsk.push(r);
+              batchAskFiles.add(`${prev.file} ↔ ${f.name}`);
+            }
           } else {
-            fileKeys.add(k);
+            fileKeys.set(k, { file: f.name, orderNo: r.orderNo || "" });
             all.push(r);
           }
         });
-        fileKeys.forEach((k) => batchSeen.add(k));
+        fileKeys.forEach((v, k) => batchSeen.set(k, v));
       }
       if (batchDup > 0)
         window.alert(
           `⚠ 같은 발주가 들어 있는 파일을 두 번 고르셨어요.\n(${[...batchDupFiles].join(", ")})\n\n겹치는 상품 줄 ${batchDup.toLocaleString()}개는 한 번만 넣었어요. 수량이 두 배가 되지 않아요.`
         );
+      if (batchAsk.length > 0) {
+        const once = window.confirm(
+          `⚠ 같이 고른 파일들에 똑같은 발주 줄이 ${batchAsk.length.toLocaleString()}개 있어요.\n(같은 날짜·센터·공급사·상품, 주문번호나 파일 형식만 다름)\n${[...batchAskFiles].slice(0, 5).join("\n")}\n\n원본 발주파일과 다른 형식 파일(스크래핑·다른 메뉴 내려받기 등)을 같이 고른 것 같아요.\n\n[확인] 한 번만 넣기 (권장)\n[취소] 둘 다 넣기 (진짜 추가발주일 때만)`
+        );
+        if (once) batchDup += batchAsk.length;
+        else all.push(...batchAsk);
+      }
       if (all.length === 0) throw new Error(otherChannel ? `GS 발주만 있는 파일이에요 (GS 줄 ${otherChannel.toLocaleString()}개). 주문정보 (GS)에 올려주세요.` : "발주 수량이 있는 줄이 없어요.");
       // 예전 형식 파일에서 업체 코드 → 거래처 이름을 배워서 저장 (다음 새 형식 업로드 때 사용)
       {
