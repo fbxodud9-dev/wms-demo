@@ -7591,9 +7591,13 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // 이마트 당착: 그 공급사 맨 끝에 "공급사(오전현장)" 시트 (공급사 피벗을 복사해서 당착 센터 × 상품 수량만 씀, 발주 없는 센터도 0으로 남김)
   const dangchakKeep = [];
   for (const dk of opts.dangchakSheets || []) {
+    if (!dk.items.length) continue;
+    // 그 공급사 피벗: 같은 상품 시트 → 그날 같은 공급사 상품 → 템플릿 피벗 이름 순서로 찾음 (전 지역 당착 상품은 평소 시트가 없음)
     const link = links.find(({ item }) => dk.names.some((n) => (item.names || new Set([item.name])).has(n)));
-    if (!link || !dk.items.length) continue;
-    const pivot = link.prod.pivot;
+    const own = dk.names.map((n) => matchEmartProduct(tpl, n)).find(Boolean);
+    const sameVendor = links.find(({ item }) => emartVendorKey(item.vendor) === dk.vendor);
+    const pivot = (link && link.prod.pivot) || (own && own.pivot) || (sameVendor && sameVendor.prod.pivot) || emartPivotByVendorName(tpl, dk.vendor);
+    if (!pivot || !tpl.sheets.some((x) => x.name === pivot)) continue;
     const nm = safeEmartSheetName(`${dk.vendor}(오전현장)`, usedNames);
     const m0 = () => {};
     m0.pivot = pivot;
@@ -8024,6 +8028,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const removeSet = new Set(cur.remove || []);
   const dkSet = new Set(cur.dangchak || []); // 이마트만: 당착 (그 센터는 평소 시트 0, 공급사 끝 (오전현장) 시트로)
   const DK = !!cfg.allowDangchak;
+  const allDk = DK && !!cur.allDangchak; // 상품 자체가 당착 (전 지역): 평소 시트 없이 (오전현장) 시트로만
   const [pick, setPick] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -8081,6 +8086,23 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
     setPick(new Set());
     setMsg(r.ok ? `저장했어요: ${names(codes)} → ${label}` : `저장하지 못했어요 (${r.error})`);
   }
+  async function setAllDangchak(want) {
+    if (want === allDk) return;
+    const text = want
+      ? `[${item.title}]을(를) "전 지역 당착" 상품으로 바꿀까요?\n\n· 평소 상품 시트는 엑셀에서 빠지고, 모든 센터 수량이 공급사 맨 끝 "(오전현장)" 시트로만 나가요\n· 거래명세서도 당착 거래명세서로만 나가요\n· 지금 설정한 0 고정·지역 빼기·당착 센터는 지워져요`
+      : `[${item.title}]을(를) 일반 상품으로 되돌릴까요? (평소 시트로 다시 나가요)`;
+    if (!window.confirm(text)) return;
+    setBusy(true);
+    const r = await updateSetting(cfg.pickKey, authToken, (v) => {
+      const products = { ...((v && v.products) || {}) };
+      if (want) products[p.sheet] = { allDangchak: true };
+      else delete products[p.sheet];
+      return { ...v, products };
+    });
+    setBusy(false);
+    setPick(new Set());
+    setMsg(r.ok ? (want ? "전 지역 당착으로 저장했어요." : "일반 상품으로 되돌렸어요.") : `저장하지 못했어요 (${r.error})`);
+  }
   async function setSheet(wantHidden) {
     if (wantHidden === sheetHidden) return;
     const op = { type: wantHidden ? "hide" : "restore", sup: p.pivot, name: item.title };
@@ -8096,7 +8118,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const num = { ...cell, textAlign: "right", fontFamily: "'JetBrains Mono', monospace" };
   const zeroList = rowsView.filter((r) => !r.subtotal && zeroSet.has(r.code));
   const rmList = rowsView.filter((r) => !r.subtotal && removeSet.has(r.code));
-  const dkList = rowsView.filter((r) => !r.subtotal && dkSet.has(r.code));
+  const dkList = rowsView.filter((r) => !r.subtotal && (allDk || dkSet.has(r.code)));
   return createPortal(
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
       <div style={{ ...cardStyle, width: "min(980px, 100%)", maxHeight: "94vh", display: "flex", flexDirection: "column", padding: 0 }} onMouseDown={(e) => e.stopPropagation()}>
@@ -8121,6 +8143,18 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
               </button>
               <span style={{ fontSize: 11.5, color: T.inkSoft }}>{sheetHidden ? "(이 시트는 피킹지에서 빠져 있어요)" : "(피킹지에 나가요)"}</span>
             </div>
+            {DK && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 800, marginRight: 4 }}>당착</span>
+                <button disabled={busy} onClick={() => setAllDangchak(false)} style={seg(!allDk)}>
+                  당착 아님
+                </button>
+                <button disabled={busy} onClick={() => setAllDangchak(true)} style={{ ...seg(allDk), ...(allDk ? { background: "#C1562F", borderColor: "#C1562F" } : { color: "#7A331A" }) }}>
+                  전 지역 당착
+                </button>
+                <span style={{ fontSize: 11.5, color: T.inkSoft }}>{allDk ? `(평소 시트 없이 ${p.pivot}(오전현장) 시트로만 나가요)` : "(센터를 골라 당착으로 할 수도 있어요)"}</span>
+              </div>
+            )}
           </div>
           {msg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 700, color: msg.includes("못했") ? T.danger : T.teal }}>{msg}</div>}
         </div>
@@ -8178,14 +8212,14 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
                     const on = pick.has(r.code);
                     const z = zeroSet.has(r.code);
                     const rm = removeSet.has(r.code);
-                    const dk = dkSet.has(r.code);
+                    const dk = allDk || dkSet.has(r.code);
                     const raw = qtyOf(r.code);
                     const q = z || rm || dk ? 0 : raw;
                     const b = bd(q);
                     return (
                       <tr
                         key={i}
-                        onClick={() => !busy && toggle(r.code)}
+                        onClick={() => !busy && !allDk && toggle(r.code)}
                         title={on ? "눌러서 선택 해제" : "눌러서 선택 (여러 개 가능)"}
                         style={{ cursor: "pointer", background: on ? "#FFE699" : rm ? "#FDECEA" : dk ? "#FBE9DF" : z ? "#FFF2CC" : undefined, outline: on ? `2px dashed ${T.amberDeep}` : undefined, outlineOffset: -2 }}
                       >
@@ -9721,13 +9755,13 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
   }, [isEmart]);
   const { rows, dkRows } = useMemo(() => {
     const prods = (emPick && emPick.products) || {};
-    if (!isEmart || !Object.values(prods).some((c) => (c.dangchak || []).length)) return { rows: allRows, dkRows: [] };
+    if (!isEmart || !Object.values(prods).some((c) => c.allDangchak || (c.dangchak || []).length)) return { rows: allRows, dkRows: [] };
     const normal = [];
     const dk = [];
     allRows.forEach((r) => {
       const tp = pickTpl ? matchEmartProduct(pickTpl, r.name, r.code) : null;
       const c = prods[tp ? tp.sheet : "new:" + r.name];
-      ((c && (c.dangchak || []).includes(r.center)) ? dk : normal).push(r);
+      ((c && (c.allDangchak || (c.dangchak || []).includes(r.center))) ? dk : normal).push(r);
     });
     return { rows: normal, dkRows: dk };
   }, [allRows, emPick, pickTpl, isEmart]);
@@ -10375,6 +10409,7 @@ function EmartPickingView({ emartOrders, authToken }) {
   const regAdjOf = (name, tp, center) => {
     const c = regCfgOfName(name, tp);
     if (!c) return null;
+    if (c.allDangchak) return "dangchak"; // 상품 자체가 당착 (전 지역)
     if ((c.remove || []).includes(center)) return "remove";
     if ((c.dangchak || []).includes(center)) return "dangchak";
     if ((c.zero || []).includes(center)) return "zero";
@@ -10499,7 +10534,14 @@ function EmartPickingView({ emartOrders, authToken }) {
             name: r.name,
             center: r.center,
             qty: r.qty,
-            reason: a === "zero" ? "피킹지 설정: 0으로 고정" : a === "dangchak" ? "피킹지 설정: 당착 → 공급사 (오전현장) 시트로" : "피킹지 설정: 지역 빼기 (줄 숨김)",
+            reason:
+              a === "zero"
+                ? "피킹지 설정: 0으로 고정"
+                : a === "dangchak"
+                ? (regCfgOfName(r.name, tp) || {}).allDangchak
+                  ? "피킹지 설정: 전 지역 당착 상품 → 평소 시트 없이 (오전현장) 시트로만"
+                  : "피킹지 설정: 당착 → 공급사 (오전현장) 시트로"
+                : "피킹지 설정: 지역 빼기 (줄 숨김)",
           });
         return !a;
       });
@@ -10507,11 +10549,12 @@ function EmartPickingView({ emartOrders, authToken }) {
       products.forEach((p) => {
         if (!names.has(p.name)) return;
         const c = regCfgOfName(p.name, p.tpl);
-        if (!c || !(c.dangchak || []).length) return;
+        if (!c || !(c.allDangchak || (c.dangchak || []).length)) return;
         const d = dkByVendor.get(p.vendor) || { vendor: p.vendor, items: new Map(), centers: new Set() };
         const key = p.tpl ? p.tpl.sheet : p.name;
         if (!d.items.has(key)) d.items.set(key, { header: p.name, names: new Set([p.name]), qty: {} });
-        c.dangchak.forEach((x) => d.centers.add(x));
+        const cs = c.allDangchak ? (p.tpl ? (p.tpl.regionRows || []).filter((r) => !r.subtotal).map((r) => r.label) : EMART_STD_REGIONS) : c.dangchak;
+        cs.forEach((x) => d.centers.add(x));
         dkByVendor.set(p.vendor, d);
       });
       const dangchakSheets = Array.from(dkByVendor.values()).map((d) => {
@@ -10524,6 +10567,8 @@ function EmartPickingView({ emartOrders, authToken }) {
       dangchakSheets.forEach((d) =>
         d.names.forEach((n) => {
           if (outRows.some((r) => r.name === n)) return;
+          const src0 = rows.find((r) => r.name === n);
+          if (src0 && (regCfgOfName(n, tpOf(src0)) || {}).allDangchak) return; // 전 지역 당착 상품은 평소 시트를 안 만듦
           const src = rows.find((r) => r.name === n);
           if (src) outRows.push({ ...src, qty: 0 });
         })
@@ -10820,6 +10865,11 @@ function EmartPickingView({ emartOrders, authToken }) {
                   <div style={{ fontSize: 11.5, color: T.inkSoft, ...mono, marginBottom: 10 }}>
                     {selected.tpl ? `${selected.tpl.sheetTitle || selected.vendor} · 시트 "${selected.tpl.sheet}"` : `${selected.vendor} · 템플릿에 없는 상품`} · 입수 {selected.pack || "-"}
                   </div>
+                  {(regCfgOfName(selected.name, selected.tpl) || {}).allDangchak && (
+                    <div style={{ ...warnBox, background: "#FBE9DF", borderColor: "#E8B79A", color: "#7A331A", fontWeight: 600 }}>
+                      전 지역 당착 상품이에요. 평소 상품 시트 없이 "{selected.vendor}(오전현장)" 시트로만 나가요. 되돌리려면 [피킹지 설정] → 당착 아님.
+                    </div>
+                  )}
                   {!selected.tpl && tplInfo && (
                     <div style={warnBox}>피킹지 템플릿에 없는 상품이에요. 엑셀을 만들 때 같은 공급사 첫 시트를 복사해서 새 시트로 넣어요 (공급사 상품이 템플릿에 하나도 없으면 빠져요).</div>
                   )}
