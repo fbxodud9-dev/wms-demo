@@ -6717,10 +6717,17 @@ function parseEmartOrderRows(rows, vendorByCode) {
   const orderCol = col("발주");
   let qtyCol = -1;
   for (let j = Math.max(orderCol, 0); j < sub.length; j++) if (sub[j] === "낱개수량") { qtyCol = j; break; }
+  // 머리글이 한 줄로 펴진 파일 (엑셀에서 열고 병합을 풀어 다시 저장한 경우: 발주/출고가능/출고확정 아래 칸 이름만 남음)
+  // → 첫 번째 "낱개수량"이 [발주] 낱개수량, 데이터는 바로 다음 줄부터
+  let dataStart = h + 2;
+  if (qtyCol === -1 && orderCol === -1) {
+    qtyCol = top.findIndex((v) => v === "낱개수량");
+    dataStart = h + 1;
+  }
   const c = { orderNo: col("주문번호"), vendorCode: col("거래처코드"), vendor: col("거래처"), center: col("입고센터"), date: col("발주일자"), due: col("납품예정일"), name: col("상품명"), code: col("상품코드"), box: col("BOX입수량") };
   if (qtyCol === -1 || c.center === -1 || c.name === -1) throw new Error("발주 낱개수량 칸을 찾지 못했어요.");
   const out = [];
-  for (let i = h + 2; i < rows.length; i++) {
+  for (let i = dataStart; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
     const center = String(r[c.center] == null ? "" : r[c.center]).trim();
@@ -9825,7 +9832,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
             parsed = parseEmartOrderRows(r, vendorByCode);
             break;
           } catch (e) {
-            if (!firstErr) firstErr = e;
+            if (!firstErr || /피킹검수 파일/.test(firstErr.message)) firstErr = e; // 확인용 피벗 시트보다 발주 시트 오류를 보여줌
           }
         }
         if (!parsed) throw new Error(`${f.name}: ${firstErr ? firstErr.message : "읽을 수 있는 시트가 없어요."}`);
