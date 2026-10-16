@@ -93,6 +93,28 @@ function ArrowUpFromLine(props) {
   );
 }
 
+function Users(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </IconBase>
+  );
+}
+
+function KeyRound(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="7.5" cy="15.5" r="4.5" />
+      <path d="M10.7 12.3 21 2" />
+      <path d="m16 7 3 3" />
+      <path d="m19 4 2 2" />
+    </IconBase>
+  );
+}
+
 function History(props) {
   return (
     <IconBase {...props}>
@@ -1629,7 +1651,51 @@ function BackupSiteBadge({ dark }) {
   );
 }
 
+// ----- 직원 계정·권한 (2026-10-17) -----
+// 권한: 관리자(admin)는 전부, 직원(staff)은 계정 관리에서 체크한 것만. 최종 판단은 서버가 함 (화면은 버튼을 숨기거나 막기만)
+const PERM_LIST = [
+  { key: "upload", label: "발주파일 업로드", desc: "주문정보에 발주파일 올리기" },
+  { key: "edit", label: "수량·상품 수정", desc: "피킹지 수정(수량), 상품마스터 수정·입출고" },
+  { key: "delete", label: "삭제", desc: "발주 날짜 삭제, 상품 삭제, 전체 초기화" },
+  { key: "settings", label: "설정 변경", desc: "순서·피킹지·명세서·상품 정보·시트 색상 등 설정 저장" },
+  { key: "accounts", label: "계정 관리", desc: "직원 계정 만들기·권한 주기·비밀번호 초기화" },
+  { key: "logs", label: "작업 기록 보기", desc: "누가 언제 무엇을 했는지 보기" },
+];
+let CURRENT_USER = null;
+function setCurrentUser(u) {
+  CURRENT_USER = u || null;
+}
+function canDo(perm) {
+  const u = CURRENT_USER;
+  if (!u || !u.role) return true; // 권한 정보가 없는 예전 로그인: 화면은 막지 않고 서버가 판단
+  return u.role === "admin" || (Array.isArray(u.perms) && u.perms.includes(perm));
+}
+// 화면이 알아서 저장하는 설정(배운 업체코드·상품 연결·확인한 신제품)은 설정 권한 없이도 저장
+//  - 일별 집계 월별 자동 기록(daily_emart_202610 등)도 화면이 알아서 저장
+//  - 일별 집계 손 수정(daily_edits_)은 '수량·상품 수정' 권한
+const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart)_\d{6}$)/;
+const settingPermOf = (key) => (QUIET_SETTING_RE.test(key) ? null : /^daily_edits_/.test(key) ? "edit" : "settings");
+const NO_SETTINGS_PERM_MSG = "설정을 바꿀 권한이 없어요. 관리자에게 '설정 변경' 권한을 요청해주세요.";
+const noPermMsgOf = (perm) => (perm === "edit" ? "수정 권한이 없어요. 관리자에게 '수량·상품 수정' 권한을 요청해주세요." : NO_SETTINGS_PERM_MSG);
+// 업로드할 때 파일 이름·페이지를 서버 작업 기록에 같이 남김 (addOrdersBulk가 가져감)
+let UPLOAD_META = null;
+function setUploadMeta(m) {
+  UPLOAD_META = m;
+}
+// 화면에서 일어난 일(다운로드·2차 검증·업로드 선택 등) 작업 기록 남기기 - 실패해도 무시
+function logUi(action, target, detail) {
+  try {
+    const t = (JSON.parse(localStorage.getItem("wms-auth") || "null") || {}).token;
+    if (!t) return;
+    apiFetch("/audit", t, { method: "POST", body: { action, target: target == null ? null : String(target), detail: detail || {} } }).catch(() => {});
+  } catch (e) {}
+}
 async function apiFetch(path, token, options = {}) {
+  {
+    const m = (options.method || "GET") === "PUT" && /^\/settings\/([a-z0-9_]+)/.exec(path);
+    const need = m ? settingPermOf(m[1]) : null;
+    if (need && !canDo(need)) throw new Error(noPermMsgOf(need));
+  }
   let res;
   try {
     res = await fetch(API_BASE_URL + path, {
@@ -1701,6 +1767,7 @@ function mapOrderFromApi(o) {
     invoiceIssued: o.invoice_issued,
     createdAt: o.order_date ? String(o.order_date).slice(0, 10) : (o.created_at || "").slice(0, 10),
     deliveryDate: o.delivery_date ? String(o.delivery_date).slice(0, 10) : null,
+    createdBy: o.created_by || null, // 올린 사람 (2026-10-17 계정 기능부터)
     completedAt: o.completed_at ? String(o.completed_at).slice(0, 10) : null,
     lines: (o.lines || []).map((l) => ({
       sku: l.sku,
@@ -1721,6 +1788,595 @@ function mapTxFromApi(t) {
 }
 function mapDocFromApi(d) {
   return { docNo: d.doc_no, date: (d.doc_date || "").slice(0, 10), orderNo: d.order_no, customer: d.customer, status: d.status, reprints: d.reprints };
+}
+
+/* ================= 직원 계정·권한·작업 기록 (2026-10-17) ================= */
+const AUDIT_ACTION_LABEL = {
+  login: "로그인",
+  login_fail: "로그인 실패",
+  login_blocked: "중지된 계정 로그인 시도",
+  password_change: "비밀번호 변경",
+  user_create: "계정 만듦",
+  user_update: "계정 변경",
+  user_reset_password: "비밀번호 초기화",
+  upload: "발주파일 업로드",
+  delete_date: "발주 날짜 삭제",
+  delete_all: "발주 전체 삭제",
+  item_delete: "상품 삭제",
+  qty_edit: "수량 수정",
+  settings: "설정 변경",
+  "ui.download_picking": "피킹지 다운로드",
+  "ui.download_anyway": "검증 오류 무시하고 다운로드",
+  "ui.download_invoice": "거래명세서 다운로드",
+  "ui.upload_choice": "업로드 중 선택",
+  "ui.newproduct_confirm": "신제품 확인",
+};
+const AUDIT_ACTION_GROUPS = [
+  { key: "", label: "전체 작업" },
+  { key: "login", label: "로그인" },
+  { key: "upload", label: "발주파일 업로드" },
+  { key: "delete", label: "삭제" },
+  { key: "qty_edit", label: "수량 수정" },
+  { key: "settings", label: "설정 변경" },
+  { key: "ui.download", label: "다운로드" },
+  { key: "user_", label: "계정 관리" },
+];
+const SETTING_KEY_LABEL = [
+  [/^picking_order_?/, "피킹지 순서 설정"],
+  [/^product_info/, "상품 정보 관리"],
+  [/^invoice_settings/, "거래명세서 설정"],
+  [/sheet_colou?rs?/, "시트 색상"],
+  [/pick_settings$/, "피킹지 설정 (0 고정·지역 빼기·당착)"],
+  [/^daily_edits_/, "일별 집계 손 수정"],
+  [/_daily_rules$/, "일별 집계 설정"],
+];
+const settingKeyLabel = (k) => {
+  const hit = SETTING_KEY_LABEL.find(([re]) => re.test(k));
+  return hit ? `${hit[1]} (${k})` : k;
+};
+const roleLabel = (r) => (r === "admin" ? "관리자" : "직원");
+const fmtDateTimeKst = (v) => {
+  if (!v) return "-";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", year: "2-digit", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+};
+function auditDetailText(l) {
+  const d = l.detail || {};
+  switch (l.action) {
+    case "upload":
+      return [
+        (d.files || []).length ? `파일: ${d.files.join(", ")}` : null,
+        d.page ? `페이지: ${d.page}` : null,
+        (d.dates || []).length ? `발주일: ${d.dates.join(", ")}` : null,
+        `등록 ${d.created ?? 0}건${d.skipped ? ` · 이미 있어 건너뜀 ${d.skipped}건` : ""} · 상품 줄 ${d.lines ?? 0}개 · ${Number(d.qty || 0).toLocaleString()}개`,
+        d.notes ? `메모: ${d.notes}` : null,
+      ]
+        .filter(Boolean)
+        .join(" / ");
+    case "delete_date":
+    case "delete_all":
+      return `지운 발주 ${d.deleted ?? 0}건`;
+    case "qty_edit":
+      return `${d.date || ""} ${d.supplier || ""} · ${d.from} → ${d.to}개 (원래 발주 ${d.original}) · 주문 ${d.orderNo || ""}`;
+    case "settings":
+      return settingKeyLabel(l.target || "");
+    case "user_update":
+      return Object.entries(d)
+        .map(([k, v]) =>
+          k === "perms"
+            ? `권한: ${(v.from || []).map((x) => (PERM_LIST.find((p) => p.key === x) || {}).label || x).join(", ") || "없음"} → ${(v.to || []).map((x) => (PERM_LIST.find((p) => p.key === x) || {}).label || x).join(", ") || "없음"}`
+            : k === "active"
+            ? v.to
+              ? "다시 사용"
+              : "사용 중지"
+            : k === "role"
+            ? `역할: ${roleLabel(v.from)} → ${roleLabel(v.to)}`
+            : `${k}: ${v.from} → ${v.to}`
+        )
+        .join(" / ");
+    case "user_create":
+      return `${d.name || ""} · ${roleLabel(d.role)} · 권한: ${(d.perms || []).map((x) => (PERM_LIST.find((p) => p.key === x) || {}).label || x).join(", ") || "없음"}`;
+    default: {
+      const t = Object.entries(d)
+        .filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length))
+        .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join(" / ");
+      return t;
+    }
+  }
+}
+const randomTempPw = () => {
+  const c = "abcdefghjkmnpqrstuvwxyz23456789";
+  let s = "";
+  for (let i = 0; i < 8; i++) s += c[Math.floor(Math.random() * c.length)];
+  return s;
+};
+
+// 비밀번호 바꾸기 폼 (첫 로그인 강제 / 내 계정 화면 공용)
+function PasswordChangeForm({ authToken, onDone, compact }) {
+  const [cur, setCur] = useState("");
+  const [n1, setN1] = useState("");
+  const [n2, setN2] = useState("");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    setErr("");
+    setMsg("");
+    if (n1.length < 6) return setErr("새 비밀번호는 6자 이상이에요.");
+    if (n1 !== n2) return setErr("새 비밀번호 두 칸이 서로 달라요.");
+    setBusy(true);
+    try {
+      await apiFetch("/auth/change-password", authToken, { method: "POST", body: { currentPassword: cur, newPassword: n1 } });
+      setCur("");
+      setN1("");
+      setN2("");
+      setMsg("비밀번호를 바꿨어요.");
+      onDone && onDone();
+    } catch (e2) {
+      setErr(e2.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const lab = { fontSize: 12.5, fontWeight: 600, color: T.inkSoft, marginBottom: 4, display: "block" };
+  return (
+    <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: compact ? "100%" : 360 }}>
+      <label>
+        <span style={lab}>지금 비밀번호 (임시 비밀번호)</span>
+        <input type="password" autoComplete="current-password" style={{ ...inputStyle, width: "100%" }} value={cur} onChange={(e) => setCur(e.target.value)} />
+      </label>
+      <label>
+        <span style={lab}>새 비밀번호 (6자 이상)</span>
+        <input type="password" autoComplete="new-password" style={{ ...inputStyle, width: "100%" }} value={n1} onChange={(e) => setN1(e.target.value)} />
+      </label>
+      <label>
+        <span style={lab}>새 비밀번호 한 번 더</span>
+        <input type="password" autoComplete="new-password" style={{ ...inputStyle, width: "100%" }} value={n2} onChange={(e) => setN2(e.target.value)} />
+      </label>
+      {err && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{err}</div>}
+      {msg && <div style={{ fontSize: 12.5, color: T.teal, fontWeight: 600 }}>{msg}</div>}
+      <button type="submit" disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, justifyContent: "center", opacity: busy ? 0.7 : 1 }}>
+        {busy ? "바꾸는 중..." : "비밀번호 바꾸기"}
+      </button>
+    </form>
+  );
+}
+
+function ChangePasswordGate({ authToken, user, onDone, onLogout }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: T.bg, fontFamily: "'IBM Plex Sans KR', sans-serif", padding: 16 }}>
+      <style>{`${FONT_IMPORT} * { box-sizing: border-box; }`}</style>
+      <div style={{ width: 380, maxWidth: "100%", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "28px 26px" }}>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>{user.name || user.username}님, 처음 오셨네요</div>
+        <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: 1.6, marginBottom: 18 }}>
+          관리자가 만든 임시 비밀번호로 로그인했어요. 계속하려면 나만 아는 비밀번호로 바꿔 주세요. 앞으로 업로드·삭제 같은 작업은 이 계정 이름으로 기록돼요.
+        </div>
+        <PasswordChangeForm authToken={authToken} onDone={onDone} compact />
+        <button onClick={onLogout} style={{ ...smallBtnStyle, marginTop: 12, width: "100%" }}>
+          로그아웃
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MyAccountPage({ authToken, user }) {
+  const perms = user && user.role === "admin" ? PERM_LIST.map((p) => p.label) : PERM_LIST.filter((p) => (user && user.perms ? user.perms : []).includes(p.key)).map((p) => p.label);
+  return (
+    <div>
+      <PageHeader title="내 계정" sub="내 비밀번호를 바꾸고, 나한테 주어진 권한을 확인해요." />
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ ...cardStyle, flex: "1 1 300px", maxWidth: 420 }}>
+          <div style={{ fontWeight: 700, marginBottom: 12 }}>비밀번호 바꾸기</div>
+          <PasswordChangeForm authToken={authToken} />
+        </div>
+        <div style={{ ...cardStyle, flex: "1 1 260px", maxWidth: 420 }}>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>내 정보</div>
+          <div style={{ fontSize: 13, lineHeight: 1.9 }}>
+            <div>
+              이름: <b>{user?.name || "-"}</b>
+            </div>
+            <div>
+              아이디: <b>{user?.username || "-"}</b>
+            </div>
+            <div>
+              역할: <b>{user?.role ? roleLabel(user.role) : "-"}</b>
+            </div>
+            <div>권한: {perms.length ? perms.join(", ") : "보기만 가능 (업로드·수정·삭제·설정 권한 없음)"}</div>
+          </div>
+          <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10 }}>권한이 더 필요하면 관리자에게 요청하세요.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 계정 관리 (권한: accounts)
+function AccountsPage({ authToken, me }) {
+  const [users, setUsers] = useState(null);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(null); // 권한 수정 중인 계정
+  const [form, setForm] = useState(() => ({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload"] }));
+  const isAdmin = me && me.role === "admin";
+  const load = useCallback(async () => {
+    try {
+      const r = await apiFetch("/users", authToken);
+      setUsers(r.users || []);
+      setErr("");
+    } catch (e) {
+      setErr(e.message.includes("요청이 실패") || e.message.includes("404") ? "서버가 아직 계정 기능을 모르는 버전이에요. 백엔드(wms-backend)를 먼저 배포해 주세요." : e.message);
+      setUsers([]);
+    }
+  }, [authToken]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  const togglePerm = (list, k) => (list.includes(k) ? list.filter((x) => x !== k) : [...list, k]);
+  async function create(e) {
+    e.preventDefault();
+    setErr("");
+    setMsg("");
+    setBusy(true);
+    try {
+      const r = await apiFetch("/users", authToken, { method: "POST", body: form });
+      setMsg(`만들었어요: ${r.user.name} (아이디 ${r.user.username} · 임시 비밀번호 ${form.password}) — 이 비밀번호를 직원에게 알려 주세요. 처음 로그인할 때 새 비밀번호로 바꾸게 돼요.`);
+      setForm({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload"] });
+      load();
+    } catch (e2) {
+      setErr(e2.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function patch(u, body, done) {
+    setErr("");
+    setMsg("");
+    try {
+      await apiFetch(`/users/${u.id}`, authToken, { method: "PATCH", body });
+      setMsg(done);
+      load();
+      return true;
+    } catch (e) {
+      setErr(e.message);
+      return false;
+    }
+  }
+  async function resetPw(u) {
+    const pw = window.prompt(`[${u.name}] 임시 비밀번호로 초기화할까요?\n아래 비밀번호를 직원에게 알려 주세요. 다음 로그인 때 새 비밀번호로 바꾸게 돼요.`, randomTempPw());
+    if (!pw) return;
+    setErr("");
+    try {
+      await apiFetch(`/users/${u.id}/reset-password`, authToken, { method: "POST", body: { password: pw } });
+      setMsg(`${u.name} 비밀번호를 초기화했어요. 임시 비밀번호: ${pw}`);
+      load();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+  const lab = { fontSize: 12, fontWeight: 600, color: T.inkSoft, marginBottom: 4, display: "block" };
+  const chip = (on) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "5px 10px",
+    borderRadius: 999,
+    border: `1px solid ${on ? T.steel : T.border}`,
+    background: on ? T.steel : T.surface,
+    color: on ? "#fff" : T.ink,
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  });
+  const PermPicker = ({ value, onChange, disabled }) => (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {PERM_LIST.map((p) => (
+        <button key={p.key} type="button" disabled={disabled} title={p.desc} onClick={() => onChange(togglePerm(value, p.key))} style={{ ...chip(value.includes(p.key)), opacity: disabled ? 0.5 : 1 }}>
+          {value.includes(p.key) ? <Check size={12} /> : null}
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+  return (
+    <div>
+      <PageHeader title="계정 관리" sub="직원마다 아이디를 만들고 권한을 골라서 줘요. 관리자는 모든 권한이 있고, 업로드·삭제·수정·설정 변경은 누가 했는지 작업 기록에 남아요." />
+      {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+      {msg && <div style={{ fontSize: 13, color: T.teal, fontWeight: 600, marginBottom: 12, lineHeight: 1.6 }}>{msg}</div>}
+      <form onSubmit={create} style={{ ...cardStyle, marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 12 }}>새 계정 만들기</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <label style={{ flex: "1 1 160px" }}>
+            <span style={lab}>이름</span>
+            <input style={{ ...inputStyle, width: "100%" }} placeholder="예: 김민수" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label style={{ flex: "1 1 160px" }}>
+            <span style={lab}>아이디 (영문·숫자 3자 이상)</span>
+            <input style={{ ...inputStyle, width: "100%" }} placeholder="예: minsu.kim" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.trim() })} />
+          </label>
+          <label style={{ flex: "1 1 160px" }}>
+            <span style={lab}>임시 비밀번호</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input style={{ ...inputStyle, width: "100%", fontFamily: "'JetBrains Mono', monospace" }} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              <button type="button" onClick={() => setForm({ ...form, password: randomTempPw() })} style={smallBtnStyle} title="새로 만들기">
+                <RotateCcw size={13} />
+              </button>
+            </div>
+          </label>
+          {isAdmin && (
+            <label style={{ flex: "0 1 140px" }}>
+              <span style={lab}>역할</span>
+              <select style={{ ...inputStyle, width: "100%" }} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                <option value="staff">직원</option>
+                <option value="admin">관리자 (모든 권한)</option>
+              </select>
+            </label>
+          )}
+        </div>
+        <span style={lab}>권한 (누르면 켜고 꺼져요)</span>
+        <PermPicker value={form.perms} onChange={(perms) => setForm({ ...form, perms })} disabled={form.role === "admin"} />
+        <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8 }}>권한이 하나도 없으면 화면 보기·피킹지·명세서 다운로드만 할 수 있어요.</div>
+        <button type="submit" disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, marginTop: 14, opacity: busy ? 0.7 : 1 }}>
+          <Plus size={14} /> {busy ? "만드는 중..." : "계정 만들기"}
+        </button>
+      </form>
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>이름</th>
+              <th>아이디</th>
+              <th>역할</th>
+              <th>권한</th>
+              <th>상태</th>
+              <th>마지막 로그인</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {users === null ? (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyRow text="불러오는 중..." />
+                </td>
+              </tr>
+            ) : (
+              users.map((u) => {
+                const self = me && me.id === u.id;
+                const lockedAdmin = u.role === "admin" && !isAdmin;
+                return (
+                  <tr key={u.id} style={{ opacity: u.active ? 1 : 0.5 }}>
+                    <td style={{ fontWeight: 700 }}>
+                      {u.name}
+                      {self && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal }}>나</span>}
+                    </td>
+                    <td style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5 }}>{u.username}</td>
+                    <td>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: u.role === "admin" ? "#FDF1DC" : "#EEF1F4", color: u.role === "admin" ? T.amberDeep : T.steelSoft }}>{roleLabel(u.role)}</span>
+                    </td>
+                    <td style={{ fontSize: 12, color: T.inkSoft, maxWidth: 280 }}>{u.role === "admin" ? "모든 권한" : u.perms.map((x) => (PERM_LIST.find((p) => p.key === x) || {}).label || x).join(", ") || "보기만"}</td>
+                    <td style={{ fontSize: 12.5 }}>
+                      {u.active ? "사용 중" : "사용 중지"}
+                      {u.mustChange && <div style={{ fontSize: 11, color: T.amberDeep }}>첫 로그인 전 (비번 변경 대기)</div>}
+                    </td>
+                    <td style={{ fontSize: 12, color: T.inkSoft }}>{u.lastLoginAt ? fmtDateTimeKst(u.lastLoginAt) : "-"}</td>
+                    <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                      <button disabled={lockedAdmin} onClick={() => setEditing({ ...u })} style={{ ...smallBtnStyle, padding: "5px 9px", marginRight: 4, opacity: lockedAdmin ? 0.4 : 1 }}>
+                        권한 수정
+                      </button>
+                      <button disabled={lockedAdmin} onClick={() => resetPw(u)} style={{ ...smallBtnStyle, padding: "5px 9px", marginRight: 4, opacity: lockedAdmin ? 0.4 : 1 }}>
+                        비번 초기화
+                      </button>
+                      {!self && (
+                        <button
+                          disabled={lockedAdmin}
+                          onClick={() => {
+                            if (!window.confirm(u.active ? `[${u.name}] 계정을 사용 중지할까요? 바로 로그아웃되고 다시 로그인할 수 없어요. (기록은 남아요)` : `[${u.name}] 계정을 다시 쓸 수 있게 할까요?`)) return;
+                            patch(u, { active: !u.active }, u.active ? `${u.name} 계정을 사용 중지했어요.` : `${u.name} 계정을 다시 쓸 수 있어요.`);
+                          }}
+                          style={{ ...smallBtnStyle, padding: "5px 9px", color: u.active ? T.danger : T.teal, borderColor: (u.active ? T.danger : T.teal) + "66", opacity: lockedAdmin ? 0.4 : 1 }}
+                        >
+                          {u.active ? "사용 중지" : "다시 사용"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <BrandModalFrame title={`권한 수정 · ${editing.name}`} sub={`아이디 ${editing.username}`} onClose={() => setEditing(null)} maxWidth={620}>
+          <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+            <label>
+              <span style={lab}>이름</span>
+              <input style={{ ...inputStyle, width: "100%" }} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+            </label>
+            {isAdmin && !(me && me.id === editing.id) && (
+              <label>
+                <span style={lab}>역할</span>
+                <select style={{ ...inputStyle, width: "100%" }} value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>
+                  <option value="staff">직원</option>
+                  <option value="admin">관리자 (모든 권한)</option>
+                </select>
+              </label>
+            )}
+            <div>
+              <span style={lab}>권한</span>
+              <PermPicker value={editing.perms} onChange={(perms) => setEditing({ ...editing, perms })} disabled={editing.role === "admin"} />
+              <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
+                {PERM_LIST.map((p) => (
+                  <div key={p.key}>
+                    · <b>{p.label}</b>: {p.desc}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.border}`, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button onClick={() => setEditing(null)} style={smallBtnStyle}>
+              취소
+            </button>
+            <button
+              className="primary-btn"
+              style={primaryBtnStyle}
+              onClick={async () => {
+                const body = { name: editing.name, perms: editing.perms };
+                if (isAdmin && !(me && me.id === editing.id)) body.role = editing.role;
+                if (await patch(editing, body, `${editing.name} 권한을 저장했어요. 1분 안에 그 직원 화면에도 반영돼요.`)) setEditing(null);
+              }}
+            >
+              저장
+            </button>
+          </div>
+        </BrandModalFrame>
+      )}
+    </div>
+  );
+}
+
+// 작업 기록 (권한: logs)
+function AuditLogPage({ authToken }) {
+  const today = localDateStr();
+  const weekAgo = (() => {
+    const d = new Date(today + "T00:00:00");
+    d.setDate(d.getDate() - 7);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const [from, setFrom] = useState(weekAgo);
+  const [to, setTo] = useState(today);
+  const [user, setUser] = useState("");
+  const [action, setAction] = useState("");
+  const [q, setQ] = useState("");
+  const [logs, setLogs] = useState(null);
+  const [more, setMore] = useState(false);
+  const [err, setErr] = useState("");
+  const [users, setUsers] = useState([]);
+  const PAGE = 200;
+  useEffect(() => {
+    if (canDo("accounts")) apiFetch("/users", authToken).then((r) => setUsers(r.users || [])).catch(() => {});
+  }, [authToken]);
+  const query = (offset) => {
+    const p = new URLSearchParams({ from, to, limit: String(PAGE), offset: String(offset) });
+    if (user) p.set("user", user);
+    if (action) p.set("action", action);
+    if (q.trim()) p.set("q", q.trim());
+    return `/audit?${p.toString()}`;
+  };
+  async function load(append) {
+    setErr("");
+    try {
+      const r = await apiFetch(query(append ? (logs || []).length : 0), authToken);
+      const got = r.logs || [];
+      setLogs(append ? [...(logs || []), ...got] : got);
+      setMore(got.length === PAGE);
+    } catch (e) {
+      setErr(e.message.includes("요청이 실패") ? "서버가 아직 작업 기록 기능을 모르는 버전이에요. 백엔드(wms-backend)를 먼저 배포해 주세요." : e.message);
+      setLogs([]);
+    }
+  }
+  useEffect(() => {
+    load(false);
+  }, [from, to, user, action]); // eslint-disable-line
+  function exportXlsx() {
+    const rows = [["시간", "이름", "아이디", "작업", "대상", "내용", "IP"], ...(logs || []).map((l) => [fmtDateTimeKst(l.at), l.name || "", l.username || "", AUDIT_ACTION_LABEL[l.action] || l.action, l.target || "", auditDetailText(l), l.ip || ""])];
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 18 }, { wch: 40 }, { wch: 80 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "작업기록");
+    XLSX.writeFile(wb, `WMS_작업기록_${from}_${to}.xlsx`);
+  }
+  const colorOf = (a) => (/^login_fail|login_blocked|delete|download_anyway/.test(a) ? T.danger : /^upload|qty_edit/.test(a) ? T.teal : /^settings|^user_/.test(a) ? T.amberDeep : T.inkSoft);
+  return (
+    <div>
+      <PageHeader title="작업 기록" sub="누가 언제 무엇을 했는지 보여줘요. 업로드한 파일 이름, 지운 날짜, 바꾼 수량, 바꾼 설정, 다운로드까지 남아요. (1년 보관)" />
+      <div style={{ ...cardStyle, padding: 14, marginBottom: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input type="date" style={inputStyle} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <span style={{ color: T.inkSoft }}>~</span>
+        <input type="date" style={inputStyle} value={to} onChange={(e) => setTo(e.target.value)} />
+        {users.length ? (
+          <select style={inputStyle} value={user} onChange={(e) => setUser(e.target.value)}>
+            <option value="">모든 사람</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.username}>
+                {u.name} ({u.username})
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input style={{ ...inputStyle, width: 140 }} placeholder="아이디" value={user} onChange={(e) => setUser(e.target.value.trim())} />
+        )}
+        <select style={inputStyle} value={action} onChange={(e) => setAction(e.target.value)}>
+          {AUDIT_ACTION_GROUPS.map((g) => (
+            <option key={g.key} value={g.key}>
+              {g.label}
+            </option>
+          ))}
+        </select>
+        <input style={{ ...inputStyle, flex: "1 1 160px" }} placeholder="검색 (파일 이름·상품·날짜 등)" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(false)} />
+        <button onClick={() => load(false)} style={smallBtnStyle}>
+          <Search size={13} /> 찾기
+        </button>
+        <button onClick={exportXlsx} disabled={!logs || !logs.length} style={{ ...smallBtnStyle, opacity: !logs || !logs.length ? 0.5 : 1 }}>
+          <Download size={13} /> 엑셀
+        </button>
+      </div>
+      {err && <div style={{ fontSize: 13, color: T.danger, fontWeight: 600, marginBottom: 12 }}>{err}</div>}
+      <div className="table-wrap" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>시간</th>
+              <th>사람</th>
+              <th>작업</th>
+              <th>대상</th>
+              <th>내용</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs === null ? (
+              <tr>
+                <td colSpan={5}>
+                  <EmptyRow text="불러오는 중..." />
+                </td>
+              </tr>
+            ) : logs.length === 0 ? (
+              <tr>
+                <td colSpan={5}>
+                  <EmptyRow text="이 조건의 기록이 없어요." />
+                </td>
+              </tr>
+            ) : (
+              logs.map((l) => (
+                <tr key={l.id}>
+                  <td style={{ whiteSpace: "nowrap", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>{fmtDateTimeKst(l.at)}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <b>{l.name || "-"}</b>
+                    <div style={{ fontSize: 11, color: T.inkSoft }}>{l.username || ""}</div>
+                  </td>
+                  <td style={{ whiteSpace: "nowrap", fontWeight: 700, color: colorOf(l.action) }}>{AUDIT_ACTION_LABEL[l.action] || l.action}</td>
+                  <td style={{ fontSize: 12.5, maxWidth: 260, wordBreak: "break-all" }}>{l.action === "settings" ? settingKeyLabel(l.target || "") : l.target || "-"}</td>
+                  <td style={{ fontSize: 12, color: T.inkSoft, maxWidth: 520, lineHeight: 1.5 }}>{l.action === "settings" ? "" : auditDetailText(l)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      {more && (
+        <button onClick={() => load(true)} style={{ ...smallBtnStyle, marginTop: 10 }}>
+          더 보기
+        </button>
+      )}
+    </div>
+  );
 }
 
 function LoginScreen({ onLogin, notice }) {
@@ -1784,6 +2440,7 @@ function LoginScreen({ onLogin, notice }) {
 function WMSApp() {
   const [authToken, setAuthToken] = useState(null);
   const [authUser, setAuthUser] = useState(null);
+  setCurrentUser(authUser); // 화면 곳곳의 권한 판단(canDo)이 보는 현재 사용자
   const [authReady, setAuthReady] = useState(false);
 
   const [tab, setTabState] = useState(() => {
@@ -2129,6 +2786,30 @@ function WMSApp() {
   }
 
   doLogoutRef.current = doLogout;
+  // 로그인 뒤·새로고침 뒤 서버에서 최신 권한을 받아옴 (관리자가 권한을 바꿨을 수 있음). 1분마다 다시 확인
+  useEffect(() => {
+    if (!authToken) return;
+    let alive = true;
+    const pull = () =>
+      apiFetch("/auth/me", authToken)
+        .then((r) => {
+          if (!alive || !r || !r.user) return;
+          setAuthUser((prev) => {
+            const next = { ...(prev || {}), ...r.user };
+            try {
+              localStorage.setItem("wms-auth", JSON.stringify({ token: authToken, user: next }));
+            } catch (e) {}
+            return next;
+          });
+        })
+        .catch(() => {});
+    pull();
+    const t = setInterval(pull, 60000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [authToken]);
   const itemsView = useMemo(() => items.map((i) => ({ ...i, replenished: !!replenishedSkus[i.sku] })), [items, replenishedSkus]);
 
   const lowStock = useMemo(() => items.filter((i) => i.qty < i.safety), [items]);
@@ -2229,6 +2910,8 @@ function WMSApp() {
             lines: order.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, packQty: l.packQty, location: l.location, unit: l.unit })),
           })),
         };
+        if (UPLOAD_META) body.meta = UPLOAD_META;
+        setUploadMeta(null);
         const res = await apiFetch("/orders/bulk", authToken, { method: "POST", body });
         await loadCoreData();
         return res;
@@ -2613,6 +3296,14 @@ function WMSApp() {
         { key: "productinfo", label: "XIII. 상품 정보 관리", icon: Pencil },
       ],
     },
+    {
+      label: "계정",
+      items: [
+        ...(canDo("accounts") ? [{ key: "accounts", label: "계정 관리", icon: Users }] : []),
+        ...(canDo("logs") ? [{ key: "auditlog", label: "작업 기록", icon: History }] : []),
+        { key: "myaccount", label: "내 계정 (비밀번호)", icon: KeyRound },
+      ],
+    },
   ];
   const badgeCount = { new: newOrderCount, alloc: allocatedCount, ship: readyToShipCount };
 
@@ -2627,6 +3318,23 @@ function WMSApp() {
 
   if (!authToken) {
     return <LoginScreen onLogin={doLogin} notice={authNotice} />;
+  }
+  // 관리자가 만들어 준 임시 비밀번호로 처음 로그인했으면: 비밀번호부터 바꾸게 함
+  if (authUser && authUser.mustChange) {
+    return (
+      <ChangePasswordGate
+        authToken={authToken}
+        user={authUser}
+        onDone={() => {
+          const next = { ...authUser, mustChange: false };
+          setAuthUser(next);
+          try {
+            localStorage.setItem("wms-auth", JSON.stringify({ token: authToken, user: next }));
+          } catch (e) {}
+        }}
+        onLogout={doLogout}
+      />
+    );
   }
 
   if (!ready) {
@@ -2771,7 +3479,10 @@ function WMSApp() {
         ))}
 
         <div className="wms-footer" style={{ marginTop: "auto", padding: "10px", borderTop: "1px solid #3E4750", display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ fontSize: 11.5, color: "#C7CCD1" }}>{authUser?.name || authUser?.username} 님</div>
+          <div style={{ fontSize: 11.5, color: "#C7CCD1" }}>
+            {authUser?.name || authUser?.username} 님
+            {authUser?.role && <span style={{ marginLeft: 6, fontSize: 10, color: authUser.role === "admin" ? T.amber : "#9AA3AC" }}>{authUser.role === "admin" ? "관리자" : "직원"}</span>}
+          </div>
           <button
             onClick={doLogout}
             style={{ background: "transparent", border: "1px solid #3E4750", color: "#D7DBDE", borderRadius: 5, padding: "5px 8px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}
@@ -2880,6 +3591,9 @@ function WMSApp() {
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
         {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
+        {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
+        {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
+        {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} />}
         {tab === "productinfo" && <ProductInfoCenter orders={orders} items={itemsView} emartOrders={emartOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
@@ -4581,6 +5295,7 @@ function resolveNamePackOverride(name) {
       if (channelTag) allNewOrders.forEach((o) => (o.channel = channelTag)); // GS 냉동 등: 채널 표시로 GS 일반과 구분
       if (allNewOrders.length > 0) {
         if (onAddBulk) {
+          setUploadMeta({ files: files.map((f) => f.name), page: channelTag || "GS", notes: dupLineCount ? `겹치는 줄 ${dupLineCount}개 건너뜀` : null });
           const res = await onAddBulk(allNewOrders);
           skippedCount = res?.skippedCount || 0;
         } else {
@@ -4935,6 +5650,7 @@ function resolveNamePackOverride(name) {
                   <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(g.date)}</div>
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
                     발주 {g.orderCount}건 · 품목라인 {g.lineCount}개 · 총수량 {g.totalQty.toLocaleString()}개
+                    {uploadersOf(g.orders) && <span style={{ marginLeft: 8, color: T.steelSoft }}>· 올린 사람 {uploadersOf(g.orders)}</span>}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -4955,7 +5671,7 @@ function resolveNamePackOverride(name) {
                   >
                     <ClipboardList size={14} /> 편수리스트
                   </button>
-                  <button
+                  {canDo("delete") && <button
                     onClick={async () => {
                       if (!window.confirm(`${fmtDate(g.date)} 날짜의 발주 ${g.orderCount}건을 삭제합니다. 다른 날짜는 그대로 유지돼요. 계속할까요?`)) return;
                       setDeletingDate(g.date);
@@ -4967,7 +5683,7 @@ function resolveNamePackOverride(name) {
                     style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55", opacity: deletingDate === g.date ? 0.7 : 1 }}
                   >
                     <Trash2 size={14} /> {deletingDate === g.date ? "삭제 중..." : "이 날짜 삭제"}
-                  </button>
+                  </button>}
                 </div>
               </div>
             ))}
@@ -8461,6 +9177,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logUi("download_picking", `${cfg.label} ${activeDate}`, { channel: cfg.brand, date: activeDate, sheets: report.sheetCount, qty: rowsOut.reduce((a, r) => a + r.qty, 0) });
       setMsg(
         `다운로드했어요 (시트 ${report.sheetCount}개, 피킹 ${rowsOut.reduce((a, r) => a + r.qty, 0).toLocaleString()}개${rowsOut.length !== rows.length ? ` · 설정으로 뺀 발주 ${(totalQty - rowsOut.reduce((a, r) => a + r.qty, 0)).toLocaleString()}개` : ""}).` +
           (report.added.length ? ` 템플릿에 없던 상품 ${report.added.length}개는 같은 공급사 시트를 복사해서 추가했어요: ${report.added.map((x) => x.name).join(", ")}.` : "") +
@@ -9795,6 +10512,7 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
       const made = (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
       const miss = rep.missingCenters.length ? ` · 템플릿에 시트가 없는 센터: ${rep.missingCenters.map((m) => `${m.supplier} ${m.center}`).join(", ")}` : "";
       setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${made}${miss}`);
+      logUi("download_invoice", `${(cfgOverride || cfg).label} ${date}${key === "dk" ? " 당착" : ""}${only ? " " + only.join(", ") : ""}`, { channel: cfg.brand, date, suppliers: only || "전체", sheets: rep.sheetCount, dangchak: key === "dk" });
     } catch (e) {
       setMsg(e.message);
     } finally {
@@ -10143,6 +10861,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         await onRegisterItems(Array.from(seen.values()));
       }
       if (channelTag) list2.forEach((o) => (o.channel = channelTag)); // 이마트 냉동: 채널 표시로 이마트 일반과 구분
+      setUploadMeta({ files: Array.from(list).map((f) => f.name), page: channelTag || "EMART", notes: [dupLines ? `이미 있던 줄 ${dupLines}개 건너뜀` : "", batchDup ? `같은 파일 겹친 줄 ${batchDup}개 한 번만` : ""].filter(Boolean).join(" · ") || null });
       const res = await onUpload(list2);
       const dates = Array.from(new Set(list2.map((o) => o.createdAt))).sort();
       setMsg(
@@ -10219,6 +10938,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
                   <div style={{ fontWeight: 700, fontSize: 14.5, fontFamily: "'JetBrains Mono', monospace" }}>{fmtDate(g.date)}</div>
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
                     발주 {g.orderCount}건 · 품목라인 {g.lineCount}개 · 총수량 {g.totalQty.toLocaleString()}개
+                    {uploadersOf(g.orders) && <span style={{ marginLeft: 8, color: T.steelSoft }}>· 올린 사람 {uploadersOf(g.orders)}</span>}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -10245,7 +10965,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
                       <ClipboardList size={14} /> 편수리스트
                     </button>
                   )}
-                  <button
+                  {canDo("delete") && <button
                     onClick={async () => {
                       if (!window.confirm(`${fmtDate(g.date)} 이마트 발주 ${g.orderCount}건을 삭제합니다. GS 발주와 다른 날짜는 그대로 유지돼요. 계속할까요?`)) return;
                       setDeletingDate(g.date);
@@ -10257,7 +10977,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
                     style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55", opacity: deletingDate === g.date ? 0.7 : 1 }}
                   >
                     <Trash2 size={14} /> {deletingDate === g.date ? "삭제 중..." : "이 날짜 삭제"}
-                  </button>
+                  </button>}
                 </div>
               </div>
             ))}
@@ -10594,6 +11314,7 @@ function EmartPickingView({ emartOrders, authToken }) {
                 })(),
         });
         const bad = result.errors.length > 0;
+        logUi("download_picking", `이마트 ${activeDate}`, { channel: "EMART", date: activeDate, sheets: result.stats.sheets, products: result.stats.products, verifyErrors: result.errors.length, verifyWarns: result.warns.length, held: bad, firstError: result.errors[0] ? result.errors[0].text : null });
         setVerify({ result, held: null });
         setVerifyOpen(bad || result.warns.length > 0);
         return !bad;
@@ -10738,6 +11459,7 @@ function EmartPickingView({ emartOrders, authToken }) {
                 verify.held
                   ? () => {
                       saveXlsxBuffer(verify.held.buffer, verify.held.filename);
+                      logUi("download_anyway", `이마트 ${activeDate}`, { file: verify.held.filename, errors: verify.result.errors.slice(0, 5).map((e) => e.text) });
                       setReport((r) => (r ? { ...r, held: null } : r));
                       setVerify({ ...verify, held: null });
                       setVerifyOpen(false);
@@ -11005,6 +11727,13 @@ function useSetting(key, authToken) {
 }
 // 최신 값을 서버에서 다시 읽어 updater로 고친 뒤 저장 (다른 직원이 동시에 바꾼 값 보존)
 async function updateSetting(key, authToken, updater) {
+  const need = settingPermOf(key);
+  if (need && !canDo(need)) {
+    try {
+      window.alert(noPermMsgOf(need));
+    } catch (e) {}
+    return { ok: false, value: SETTING_CACHE[key] ?? null, error: noPermMsgOf(need) };
+  }
   let latest = SETTING_CACHE[key] ?? null;
   try {
     const r = await apiFetch(`/settings/${key}`, authToken);
@@ -11138,7 +11867,17 @@ const settingBtnStyle = { ...smallBtnStyle, display: "inline-flex", alignItems: 
 // 같은 날짜에 이미 발주가 있을 때 업로드 확인 (2026-10-15 버터빵 중복 피킹 재발 방지) - GS·이마트 일반만
 // overlap = 발주번호와 상관없이 "날짜+납품처+공급사+상품"이 이미 올라온 줄과 똑같은 줄 수 (다른 형식 파일로 같은 발주를 또 올린 경우)
 // 돌려주는 값: "skip"(겹치는 줄 빼고 올리기) / "all"(전부 올리기) / "cancel"
+// 그 날짜 발주를 올린 사람들 (계정 기능 전 발주는 이름이 없음)
+function uploadersOf(orders) {
+  const set = new Set((orders || []).map((o) => o.createdBy).filter(Boolean));
+  return set.size ? Array.from(set).join(", ") : "";
+}
 function confirmSameDayUpload(label, existDates, existCount, overlap) {
+  const r = confirmSameDayUploadAsk(label, existDates, existCount, overlap);
+  logUi("upload_choice", `${label} ${existDates.join(", ")}`, { question: overlap > 0 ? `같은 상품 줄 ${overlap}개 겹침` : `같은 날짜에 이미 발주 ${existCount}건`, answer: r === "skip" ? "겹치는 줄 빼고 올리기" : r === "all" ? "전부 올리기" : "업로드 취소" });
+  return r;
+}
+function confirmSameDayUploadAsk(label, existDates, existCount, overlap) {
   const ds = existDates.map(fmtDate).join(", ");
   if (overlap > 0) {
     const a = window.confirm(
@@ -11733,6 +12472,7 @@ function NewProductAlert({ channel, label, orders, activeDate, authToken }) {
         found.forEach((x) => (items[x.code] = { n: x.name, s: x.sup, d: activeDate }));
         return { ...(v || {}), items };
       });
+      logUi("newproduct_confirm", `${label} ${activeDate}`, { count: found.length, items: found.slice(0, 30).map((x) => `${x.kind === "new" ? "신제품" : "리뉴얼"} ${x.name} (${x.code})`) });
     } catch (e) {
       window.alert(`저장하지 못했어요: ${e.message}`);
     } finally {
@@ -16005,6 +16745,7 @@ async function downloadSupplierInvoicePart(products, supplierKey, date, part, se
     a.href = url;
     const partLabel = invPartLabel(part);
     a.download = `${partLabel}_${supplierKey}_거래명세서_${date}.xlsx`;
+    logUi("download_invoice", `GS ${date} ${supplierKey} ${partLabel}`, { channel: "GS", date, supplier: supplierKey, part: partLabel, products: (products || []).length });
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -17006,6 +17747,7 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
   const runVerify = (fullExport) => async (buffer, sheetLog, prods, filename) => {
     const result = verifyGsPicking({ orders, date: activeDate, buffer, sheetLog, products: prods, fullExport });
     const held = result.errors.length > 0 ? { buffer, filename } : null;
+    logUi("download_picking", `GS ${activeDate}`, { channel: "GS", date: activeDate, file: filename, sheets: result.stats.sheets, products: result.stats.products, verifyErrors: result.errors.length, verifyWarns: result.warns.length, held: !!held, firstError: result.errors[0] ? result.errors[0].text : null });
     setVerify({ result, held });
     setVerifyOpen(result.errors.length > 0 || result.warns.length > 0);
     return !held;
@@ -17023,6 +17765,7 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
             verify.held
               ? () => {
                   saveXlsxBuffer(verify.held.buffer, verify.held.filename);
+                  logUi("download_anyway", `GS ${activeDate}`, { file: verify.held.filename, errors: verify.result.errors.slice(0, 5).map((e) => e.text) });
                   setVerify({ ...verify, held: null });
                   setVerifyOpen(false);
                 }
