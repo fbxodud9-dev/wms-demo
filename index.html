@@ -8001,6 +8001,7 @@ function gsFrozenRowsOf(orders, date, tplInfo) {
 //  - 시트 빼기: 이 상품 시트를 피킹지에서 아예 뺌 (순서 설정의 삭제와 같음, 복구 가능)
 function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, onClose, cfg = GS_FROZEN_PICK_CFG }) {
   const p = item.prod;
+  const ZL = cfg.zeroLabel || "0 처리"; // 이마트: "0으로 고정"
   const cur = ((pickCfg && pickCfg.products) || {})[p.sheet] || {};
   const zeroSet = new Set(cur.zero || []);
   const removeSet = new Set(cur.remove || []);
@@ -8028,7 +8029,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   async function apply(kind) {
     const codes = Array.from(pick);
     if (!codes.length) return;
-    const label = kind === "zero" ? "0 처리" : kind === "remove" ? "지역 빼기" : "원래대로";
+    const label = kind === "zero" ? ZL : kind === "remove" ? "지역 빼기" : "원래대로";
     const lost = codes.reduce((a, c) => a + qtyOf(c), 0);
     const text =
       kind === "clear"
@@ -8075,7 +8076,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div>
               <div style={{ fontSize: 17, fontWeight: 800 }}>피킹지 설정 · {item.title}</div>
-              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · {cfg.label}은 편 구분 없이, 지역을 여러 개 고른 뒤 [0 처리] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · {cfg.intro || `${cfg.label}은 편 구분 없이, `}지역을 여러 개 고른 뒤 [{ZL}] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
             </div>
             <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>
               닫기
@@ -8098,11 +8099,11 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
         <div style={{ display: "flex", gap: 16, padding: 16, overflow: "auto", flexWrap: "wrap", alignItems: "flex-start" }}>
           <div style={{ flex: "3 1 460px", minWidth: 0, opacity: sheetHidden ? 0.55 : 1 }}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>· 지역 줄을 모두 누른 뒤 [0 처리] 또는 [지역 빼기]</span>
+              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>· 지역 줄을 모두 누른 뒤 [{ZL}] 또는 [지역 빼기]</span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap", position: "sticky", top: 0, background: T.surface, zIndex: 2, padding: "4px 0" }}>
               <button disabled={busy || !pick.size} onClick={() => apply("zero")} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !pick.size ? 0.5 : 1 }}>
-                0 처리{pick.size ? ` (${pick.size}곳)` : ""}
+                {ZL}{pick.size ? ` (${pick.size}곳)` : ""}
               </button>
               <button disabled={busy || !pick.size} onClick={() => apply("remove")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#fff", background: T.danger, borderColor: T.danger, opacity: busy || !pick.size ? 0.5 : 1 }}>
                 지역 빼기{pick.size ? ` (${pick.size}곳)` : ""}
@@ -8116,7 +8117,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
                 </button>
               )}
               <span style={{ fontSize: 12, color: pick.size ? T.danger : T.inkSoft, fontWeight: pick.size ? 700 : 500 }}>
-                {pick.size ? `고른 지역: ${names(Array.from(pick))}` : zeroList.length || rmList.length ? `지금: 0 처리 ${zeroList.length}곳 · 지역 빼기 ${rmList.length}곳` : "지금 설정 없음"}
+                {pick.size ? `고른 지역: ${names(Array.from(pick))}` : zeroList.length || rmList.length ? `지금: ${ZL} ${zeroList.length}곳 · 지역 빼기 ${rmList.length}곳` : "지금 설정 없음"}
               </span>
             </div>
             <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
@@ -8164,7 +8165,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
                         <td style={{ ...cell, textAlign: "center", fontWeight: 800 }}>
                           {r.short || r.code}
                           {on && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.danger, borderRadius: 8, padding: "1px 6px" }}>선택</span>}
-                          {!on && z && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>0 처리</span>}
+                          {!on && z && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>{ZL}</span>}
                           {!on && rm && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>빠짐</span>}
                         </td>
                         <td style={num}>{b.rem || "- 0"}</td>
@@ -8178,7 +8179,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
           <div style={{ flex: "2 1 280px", minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>설정 요약</div>
             <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
-              <div style={{ background: "#FFF2CC", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124" }}>0 처리 ({zeroList.length}곳) · 줄은 남고 수량 0</div>
+              <div style={{ background: "#FFF2CC", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderBottom: "1px solid #1E2124" }}>{ZL} ({zeroList.length}곳) · 줄은 남고 수량 0</div>
               {zeroList.length ? (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <tbody>
@@ -8210,7 +8211,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
               )}
             </div>
             <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
-              · <b>0 처리</b>: 피킹지에 그 지역 줄은 남고 수량만 0이에요.
+              · <b>{ZL}</b>: 피킹지에 그 지역 줄은 남고 수량만 0이에요.
               <br />· <b>지역 빼기</b>: 그 지역 줄을 숨겨서 안 보여요 (합계에서도 빠져요).
               <br />· <b>시트 빼기</b>: 이 상품 시트가 엑셀에서 아예 안 나와요 (순서 설정의 피킹 안 하는 목록에서도 복구 가능).
               <br />· 일별 집계 숫자는 일별 발주 집계 → {cfg.dailyLabel} 집계 설정에서 따로 빼요.
@@ -8711,6 +8712,17 @@ function getEmFrozenTemplateInfo() {
       });
   return EM_FROZEN_TPL_CACHE;
 }
+// 이마트(일반) 피킹지 설정: GS 냉동 설정창을 그대로 쓰고 문구만 "0으로 고정"으로 (2026-10-16 현장 요청 - 직원 입맛대로 지역 0 고정·지역 빼기)
+const EM_PICK_CFG = {
+  label: "이마트",
+  intro: "상품마다 ",
+  zeroLabel: "0으로 고정",
+  dailyLabel: "이마트",
+  brand: "EMART",
+  orderKey: "picking_order_emart",
+  pickKey: "emart_pick_settings",
+  codeOf: (label) => String(label).trim(),
+};
 const EM_FROZEN_PICK_CFG = {
   label: "이마트 냉동",
   dailyLabel: "이마트냉동",
@@ -10263,6 +10275,19 @@ function EmartPickingView({ emartOrders, authToken }) {
   const tplRef = useRef(null);
   const [verify, setVerify] = useState(null); // 2차 검증 결과
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const knownEm = useSetting("known_products_emart", authToken);
+  // 피킹지 설정 (상품별 지역 0으로 고정 / 지역 빼기)
+  const pickCfg = useSetting(EM_PICK_CFG.pickKey, authToken);
+  const [setFor, setSetFor] = useState(null);
+  const sheetKeyOf = (name, tp) => (tp ? tp.sheet : "new:" + name);
+  const regAdjOf = (name, tp, center) => {
+    const c = ((pickCfg && pickCfg.products) || {})[sheetKeyOf(name, tp)];
+    if (!c) return null;
+    if ((c.remove || []).includes(center)) return "remove";
+    if ((c.zero || []).includes(center)) return "zero";
+    return null;
+  };
+  const firstSeen = useMemo(() => emartFirstSeenMap(emartOrders, knownEm), [emartOrders, knownEm]);
 
   useEffect(() => {
     getEmartTemplateInfo()
@@ -10300,7 +10325,8 @@ function EmartPickingView({ emartOrders, authToken }) {
         p.tpl = matchEmartProduct(tplInfo, p.name, p.code);
         const ov = infoOf(p.name, p.tpl);
         p.packOverride = ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : 0;
-        p.pack = p.packOverride || (p.tpl && p.tpl.pack) || p.box || 0;
+        // 입수: 상품 정보 관리에서 바꾼 값 > 발주파일 입수(2 이상일 때) > 피킹지 원본 템플릿 입수
+        p.pack = p.packOverride || (Number(p.box) > 1 ? Number(p.box) : 0) || (p.tpl && p.tpl.pack) || 0;
         p.sort = p.tpl ? order.get(p.tpl.sheet) : 100000;
       });
       list.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "ko"));
@@ -10345,7 +10371,8 @@ function EmartPickingView({ emartOrders, authToken }) {
     setErr("");
     try {
       const names = new Set((filterOn ? filtered : products).map((p) => p.name));
-      const packOverride = new Map(products.filter((p) => p.packOverride).map((p) => [p.name, p.packOverride]));
+      // 템플릿 입수와 다른 입수(상품 정보 관리 값 또는 발주파일 입수)는 엑셀 시트 입수 칸에도 넣는다
+      const packOverride = new Map(products.filter((p) => p.pack > 0 && (!p.tpl || p.pack !== p.tpl.pack)).map((p) => [p.name, p.pack]));
       // 순서 설정이 있으면 엑셀 시트 순서도 그대로 (공급사 피벗 -> 그 공급사 상품 시트들)
       let sheetRank = null;
       if (orderCfg && (orderCfg.suppliers || orderCfg.products)) {
@@ -10357,7 +10384,16 @@ function EmartPickingView({ emartOrders, authToken }) {
           if (!sheetRank.has(p.tpl.sheet)) sheetRank.set(p.tpl.sheet, n++);
         });
       }
-      const outRows = rows.filter((r) => names.has(r.name));
+      const tpOf = (r) => (tplInfo ? matchEmartProduct(tplInfo, r.name, r.code) : null);
+      const adjusted = []; // 피킹지 설정으로 0 고정·지역 빼기 한 줄 (2차 검증 고정값 안내용)
+      const outRows = rows.filter((r) => {
+        if (!names.has(r.name)) return false;
+        const a = regAdjOf(r.name, tpOf(r), r.center);
+        if (a) adjusted.push({ name: r.name, center: r.center, qty: r.qty, reason: a === "zero" ? "피킹지 설정: 0으로 고정" : "피킹지 설정: 지역 빼기 (줄 숨김)" });
+        return !a;
+      });
+      const hideRegionRows = new Map();
+      Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
       const verifyFn = async (bytes, rep) => {
         const result = verifyEmartPicking({
           emartOrders,
@@ -10366,6 +10402,7 @@ function EmartPickingView({ emartOrders, authToken }) {
           report: rep,
           rows: outRows,
           allRows,
+          adjusted,
           fullExport: !filterOn,
           isHiddenRow: (r) =>
             isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)
@@ -10380,7 +10417,7 @@ function EmartPickingView({ emartOrders, authToken }) {
         setVerifyOpen(bad || result.warns.length > 0);
         return !bad;
       };
-      const rep = await downloadEmartPickingFile(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, verify: verifyFn });
+      const rep = await downloadEmartPickingFile(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim() });
       if (rep.held) setVerify((v) => (v ? { ...v, held: rep.held } : v));
       setReport(rep);
     } catch (e) {
@@ -10405,16 +10442,19 @@ function EmartPickingView({ emartOrders, authToken }) {
           sub = 0;
           return;
         }
-        const q = selected.qty[r.label] || 0;
+        const raw = selected.qty[r.label] || 0;
+        const adj = regAdjOf(selected.name, selected.tpl, r.label);
+        const q = adj ? 0 : raw;
         seen.add(r.label);
         sub += q;
-        out.push({ label: r.label, short: r.short, qty: q, ...bd(q) });
+        out.push({ label: r.label, short: r.short, qty: q, ...bd(q), adj, raw });
       });
     }
     const extra = Object.keys(selected.qty).filter((c) => !seen.has(c));
     extra.forEach((c) => out.push({ label: c, short: "", qty: selected.qty[c], ...bd(selected.qty[c]), missing: !!selected.tpl }));
-    return { rows: out, total: { qty: selected.total, ...bd(selected.total) }, missingCount: selected.tpl ? extra.length : 0 };
-  }, [selected]);
+    const tot = out.filter((x) => !x.subtotal).reduce((a, x) => a + x.qty, 0);
+    return { rows: out, total: { qty: tot, ...bd(tot) }, missingCount: selected.tpl ? extra.length : 0 };
+  }, [selected, pickCfg]); // eslint-disable-line
 
   const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 12, lineHeight: 1.6 };
   const mono = { fontFamily: "'JetBrains Mono', monospace" };
@@ -10531,6 +10571,28 @@ function EmartPickingView({ emartOrders, authToken }) {
             )
           )}
           {verify && <PickVerifyBanner result={verify.result} onOpen={() => setVerifyOpen(true)} />}
+          {setFor && (
+            <FrozenPickSettingModal
+              item={{
+                title: setFor.name,
+                byCode: setFor.qty,
+                prod: setFor.tpl
+                  ? { ...setFor.tpl, pivot: setFor.vendor, pack: setFor.pack, sheet: setFor.tpl.sheet }
+                  : {
+                      sheet: "new:" + setFor.name,
+                      pivot: setFor.vendor,
+                      pack: setFor.pack,
+                      regionRows: [...EMART_STD_REGIONS, ...Object.keys(setFor.qty).filter((c) => !EMART_STD_REGIONS.includes(c))].map((l) => ({ label: l, short: String(l).replace(/\(.*$/, "").replace(/\d+$/, "") })),
+                    },
+              }}
+              tplInfo={tplInfo}
+              pickCfg={pickCfg}
+              orderCfg={orderCfg}
+              authToken={authToken}
+              cfg={EM_PICK_CFG}
+              onClose={() => setSetFor(null)}
+            />
+          )}
 
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
             <div style={{ flex: "1 1 260px" }}>
@@ -10580,7 +10642,19 @@ function EmartPickingView({ emartOrders, authToken }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FDF1DC", color: T.amberDeep }}>이마트</span>
                         <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
-                        {tplInfo && !p.tpl && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FCE8E8", color: T.danger }}>새 상품</span>}
+                        {(() => {
+                          // 신제품 표시: 상품코드를 처음 본 날부터 3일. 첫날만 빨간색, 그다음 이틀은 회색 글자
+                          const d = firstSeen.get(String(p.code || p.name).trim());
+                          if (!d || !activeDate) return null;
+                          const gap = daysBetween(d, activeDate);
+                          if (gap < 0 || gap > 2) return null;
+                          const txt = `${d.slice(5, 7)}.${d.slice(8, 10)} 신제품`;
+                          return gap === 0 ? (
+                            <span style={{ fontSize: 10.5, fontWeight: 800, padding: "1px 7px", borderRadius: 4, background: T.danger, color: "#fff" }}>{txt}</span>
+                          ) : (
+                            <span style={{ fontSize: 10.5, fontWeight: 600, color: T.inkSoft }}>{txt}</span>
+                          );
+                        })()}
                       </div>
                       <div style={{ fontSize: 11, color: T.inkSoft, ...mono, marginTop: 2 }}>
                         {p.vendor} · {p.code} · {Object.keys(p.qty).length}개 센터 · 총 {p.total}개
@@ -10595,6 +10669,13 @@ function EmartPickingView({ emartOrders, authToken }) {
               {selected && preview && (
                 <div style={cardStyle}>
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 6 }}>
+                    <button
+                      onClick={() => setSetFor(selected)}
+                      title="이 상품의 지역을 0으로 고정하거나 지역을 빼요 (피킹지를 보면서)"
+                      style={{ ...smallBtnStyle, borderColor: T.amber, color: T.amberDeep, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <SettingsGear size={14} /> 피킹지 설정
+                    </button>
                     <button onClick={() => exportAll(selected.name)} disabled={exporting} className="ghost-btn" style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }} title="전체 피킹검수 파일을 받고, 이 상품 시트가 열리게 해요">
                       <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
                     </button>
@@ -10631,10 +10712,20 @@ function EmartPickingView({ emartOrders, authToken }) {
                               <td style={{ ...mono, fontWeight: 700 }}>{r.rem}</td>
                             </tr>
                           ) : (
-                            <tr key={r.label} style={r.missing ? { background: "#FCE8E8" } : undefined}>
-                              <td style={{ fontWeight: 600 }}>{r.label}</td>
+                            <tr key={r.label} style={r.missing ? { background: "#FCE8E8" } : r.adj === "remove" ? { background: "#FDECEA" } : r.adj === "zero" ? { background: "#FFF2CC" } : undefined}>
+                              <td style={{ fontWeight: 600, textDecoration: r.adj === "remove" ? "line-through" : "none" }}>
+                                {r.label}
+                                {r.adj && (
+                                  <span style={{ marginLeft: 6, fontSize: 10.5, color: "#fff", background: r.adj === "zero" ? T.amberDeep : "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>
+                                    {r.adj === "zero" ? "0으로 고정" : "빠짐"}
+                                  </span>
+                                )}
+                              </td>
                               <td style={{ ...mono, color: T.inkSoft }}>{r.short || "-"}</td>
-                              <td style={{ ...mono, fontWeight: 700 }}>{r.qty}</td>
+                              <td style={{ ...mono, fontWeight: 700 }}>
+                                {r.qty}
+                                {r.adj && r.raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11 }}> (발주 {r.raw})</span>}
+                              </td>
                               <td style={mono}>{r.box}</td>
                               <td style={mono}>{r.rem}</td>
                             </tr>
@@ -10650,7 +10741,7 @@ function EmartPickingView({ emartOrders, authToken }) {
                       </tbody>
                     </table>
                   </div>
-                  <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>* 센터 순서·입수·센터명은 실물 이마트24 피킹검수 파일의 이 상품 시트를 그대로 따릅니다.</div>
+                  <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 10 }}>* 센터 순서·센터명·서식은 실물 이마트24 피킹검수 파일의 이 상품 시트를 그대로 따릅니다. 입수는 상품 정보 관리에서 바꾼 값 → 발주파일 입수 → 원본 시트 입수 순서로 써요.</div>
                 </div>
               )}
             </div>
@@ -11147,9 +11238,10 @@ function verifyGsPicking({ orders, date, buffer, sheetLog, products, fullExport 
 }
 
 // ---------- 이마트 일반 피킹지 ----------
-function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, isHiddenRow, fullExport }) {
+function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, isHiddenRow, fullExport, adjusted }) {
   const res = pvNewResult();
-  const day = emartOrders.filter((o) => o.createdAt === date);
+  (adjusted || []).forEach((a) => pvAddFixed(res, a.name, a.center, a.qty, a.reason)); // 피킹지 설정(0으로 고정·지역 빼기)
+  const day = emartOrders.filter((o) => o.createdAt === date && !isGsCenterOrder(o));
   pvSourceChecks(day, (o) => emartVendorKey(o.supplier || ""), () => true, res);
   const wb = XLSX.read(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { type: "array" });
   // 엑셀에 들어간 시트(합쳐진 상품명 포함) → 기대 수량
@@ -11353,6 +11445,48 @@ function npItemsOf(orders, date, channel) {
   });
   return Array.from(m.values());
 }
+// 이마트 신제품 "처음 본 날" (상품코드 기준). 발주는 서버에서 14일 지나면 지워지므로 확인 목록(known_products_emart)과 같이 본다
+//  - 확인한 날(d)이 있으면 그날과 첫 발주일 중 빠른 날
+//  - 처음 목록을 채울 때 들어간 상품(d 없음): 그때 이미 있던 발주가 그 상품의 첫 발주면 그날, 아니면 예전 상품(표시 안 함)
+//  - 목록에 없는 상품: 첫 발주일
+function emartFirstSeenMap(orders, saved, channel = "emart") {
+  const first = new Map();
+  let globalFirst = null;
+  orders.forEach((o) => {
+    if ((channel === "emart" && isGsCenterOrder(o)) || !o.createdAt) return;
+    if (!globalFirst || o.createdAt < globalFirst) globalFirst = o.createdAt;
+    o.lines.forEach((l) => {
+      if ((Number(l.changedQty ?? l.qty) || 0) <= 0) return;
+      const code = String(l.sku || l.name || "").trim();
+      if (!first.has(code) || o.createdAt < first.get(code)) first.set(code, o.createdAt);
+    });
+  });
+  const known = (saved && saved.items) || {};
+  const seededAt = (saved && saved.seededAt) || "";
+  const out = new Map();
+  first.forEach((e, code) => {
+    const k = known[code];
+    let d = e;
+    if (k && k.d) d = k.d < e ? k.d : e;
+    else if (k) d = e < seededAt && e > globalFirst ? e : null;
+    out.set(code, d);
+  });
+  return out;
+}
+const daysBetween = (a, b) => Math.round((Date.UTC(...b.split("-").map((x, i) => (i === 1 ? x - 1 : +x))) - Date.UTC(...a.split("-").map((x, i) => (i === 1 ? x - 1 : +x)))) / 86400000);
+// 피킹지 상품 목록의 신제품 표시: 처음 본 날부터 3일. 첫날만 빨간색, 그다음 이틀은 회색 글자 (GS·이마트 공통)
+function NewSinceBadge({ firstSeen, code, activeDate }) {
+  const d = firstSeen && firstSeen.get(String(code || "").trim());
+  if (!d || !activeDate) return null;
+  const gap = daysBetween(d, activeDate);
+  if (gap < 0 || gap > 2) return null;
+  const txt = `${d.slice(5, 7)}.${d.slice(8, 10)} 신제품`;
+  return gap === 0 ? (
+    <span style={{ fontSize: 10.5, fontWeight: 800, padding: "1px 7px", borderRadius: 4, background: T.danger, color: "#fff", whiteSpace: "nowrap" }}>{txt}</span>
+  ) : (
+    <span style={{ fontSize: 10.5, fontWeight: 600, color: T.inkSoft, whiteSpace: "nowrap" }}>{txt}</span>
+  );
+}
 function NewProductAlert({ channel, label, orders, activeDate, authToken }) {
   const key = `known_products_${channel}`;
   const saved = useSetting(key, authToken);
@@ -11375,10 +11509,12 @@ function NewProductAlert({ channel, label, orders, activeDate, authToken }) {
   const found = useMemo(() => {
     if (!saved || !saved.items || !activeDate) return [];
     const known = saved.items;
+    // 신제품은 상품코드를 처음 본 그날 하루만 알림 (다음 날부터는 피킹지 목록에 "10.20 신제품" 글자로만 3일 표시) - GS·이마트 공통
+    const fs = emartFirstSeenMap(orders, saved, channel); // GS도 같은 규칙 (2026-10-16)
     return npItemsOf(orders, activeDate, channel)
       .map((x) => {
         const k = known[x.code];
-        if (!k) return { ...x, kind: "new" };
+        if (!k) return fs && fs.get(x.code) !== activeDate ? null : { ...x, kind: "new" };
         if (String(k.n || "").replace(/\s/g, "") !== x.name.replace(/\s/g, "")) return { ...x, kind: "rename", oldName: k.n };
         return null;
       })
@@ -16608,6 +16744,8 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
   const [supplierFilter, setSupplierFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [verify, setVerify] = useState(null); // 2차 검증 결과 { result, held: {buffer, filename} | null }
+  const knownGs = useSetting("known_products_gs", authToken);
+  const gsFirstSeen = useMemo(() => emartFirstSeenMap(orders, knownGs, "gs"), [orders, knownGs]);
   const [verifyOpen, setVerifyOpen] = useState(false);
 
   useEffect(() => {
@@ -16831,6 +16969,7 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
                           {p.part}편
                         </span>
                         <div style={{ fontSize: 13, fontWeight: 600 }}>{p.displayName || p.name}</div>
+                        <NewSinceBadge firstSeen={gsFirstSeen} code={p.sku} activeDate={activeDate} />
                       </div>
                       <div style={{ fontSize: 11, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
                         {p.supplier ? `${p.supplier} · ` : ""}{p.sku} · {p.regionRows.length}개 지역 · 총 {p.totalQty}개
