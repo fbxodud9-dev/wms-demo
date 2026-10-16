@@ -7588,6 +7588,22 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     if (a2Auto) setCellXml(pv, "A2", a2Auto);
     else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
+  // 이마트 당착: 그 공급사 맨 끝에 "공급사(오전현장)" 시트 (공급사 피벗을 복사해서 당착 센터 × 상품 수량만 씀, 발주 없는 센터도 0으로 남김)
+  const dangchakKeep = [];
+  for (const dk of opts.dangchakSheets || []) {
+    const link = links.find(({ item }) => dk.names.some((n) => (item.names || new Set([item.name])).has(n)));
+    if (!link || !dk.items.length) continue;
+    const pivot = link.prod.pivot;
+    const nm = safeEmartSheetName(`${dk.vendor}(오전현장)`, usedNames);
+    const m0 = () => {};
+    m0.pivot = pivot;
+    const sh = await cloneEmartSheet(tpl, pivot, nm, m0);
+    const cols = dk.items.map((it, i) => ({ k: 2 + i, header: it.header, qty: it.qty }));
+    rewritePivot(sh, date, cols, dk.centers, cols.length + 1);
+    setCellXml(sh, "B1", "당착(오전현장)");
+    dangchakKeep.push(nm);
+    (report.dangchak = report.dangchak || []).push({ sheet: nm, vendor: dk.vendor, items: dk.items, centers: dk.centers });
+  }
   // 피벗 범위가 "A1:O10"처럼 줄 수가 막혀 있는 수식은 열 전체로 (지역 줄이 늘어도 빠지지 않게)
   if (opts.wideLookup) {
     const pivotNames = new Set(tpl.products.map((p) => p.pivot));
@@ -7680,6 +7696,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       keep.add(prod.sheet);
       keep.add(prod.pivot);
     });
+    dangchakKeep.forEach((n) => keep.add(n)); // 이마트 당착 시트
     if (opts.keepVisible) {
       // 원본에서 보이는 시트는 발주가 없어도 그대로(수량 0) - 상품 시트면 그 피벗도 같이
       tpl.sheets.forEach((s) => {
@@ -8005,6 +8022,8 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const cur = ((pickCfg && pickCfg.products) || {})[p.sheet] || {};
   const zeroSet = new Set(cur.zero || []);
   const removeSet = new Set(cur.remove || []);
+  const dkSet = new Set(cur.dangchak || []); // 이마트만: 당착 (그 센터는 평소 시트 0, 공급사 끝 (오전현장) 시트로)
+  const DK = !!cfg.allowDangchak;
   const [pick, setPick] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -8029,24 +8048,32 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   async function apply(kind) {
     const codes = Array.from(pick);
     if (!codes.length) return;
-    const label = kind === "zero" ? ZL : kind === "remove" ? "지역 빼기" : "원래대로";
+    const label = kind === "zero" ? ZL : kind === "remove" ? "지역 빼기" : kind === "dangchak" ? "당착" : "원래대로";
     const lost = codes.reduce((a, c) => a + qtyOf(c), 0);
     const text =
       kind === "clear"
         ? `[${item.title}] ${names(codes)} 지역을 원래대로 돌릴까요? (발주 수량 그대로 나가요)`
         : `[${item.title}] 아래 지역을 "${label}" 할까요?\n\n${names(codes)} (${codes.length}곳)\n지금 발주 수량 ${lost.toLocaleString()}개가 피킹지에서 빠져요.\n\n` +
-          (kind === "zero" ? "· 시트에 그 지역 줄은 남고 수량만 0으로 나가요" : "· 그 지역 줄을 숨겨서 피킹지에 안 보여요 (합계에서도 빠져요)") +
+          (kind === "zero"
+            ? "· 시트에 그 지역 줄은 남고 수량만 0으로 나가요"
+            : kind === "dangchak"
+            ? "· 평소 시트에는 0으로 나가고, 그 수량은 공급사 맨 끝 '(오전현장)' 당착 시트와 당착 거래명세서로 따로 나가요"
+            : "· 그 지역 줄을 숨겨서 피킹지에 안 보여요 (합계에서도 빠져요)") +
           "\n· 언제든 이 창에서 [원래대로]로 되돌릴 수 있어요";
     if (!window.confirm(text)) return;
     setBusy(true);
     const r = await updateSetting(cfg.pickKey, authToken, (v) => {
       const products = { ...((v && v.products) || {}) };
-      const c = { zero: [...((products[p.sheet] || {}).zero || [])], remove: [...((products[p.sheet] || {}).remove || [])] };
+      const old = products[p.sheet] || {};
+      const c = { zero: [...(old.zero || [])], remove: [...(old.remove || [])], dangchak: [...(old.dangchak || [])] };
       c.zero = c.zero.filter((x) => !codes.includes(x));
       c.remove = c.remove.filter((x) => !codes.includes(x));
+      c.dangchak = c.dangchak.filter((x) => !codes.includes(x));
       if (kind === "zero") c.zero.push(...codes);
       if (kind === "remove") c.remove.push(...codes);
-      if (c.zero.length || c.remove.length) products[p.sheet] = c;
+      if (kind === "dangchak") c.dangchak.push(...codes);
+      if (!c.dangchak.length) delete c.dangchak;
+      if (c.zero.length || c.remove.length || (c.dangchak && c.dangchak.length)) products[p.sheet] = c;
       else delete products[p.sheet];
       return { ...v, products };
     });
@@ -8069,6 +8096,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   const num = { ...cell, textAlign: "right", fontFamily: "'JetBrains Mono', monospace" };
   const zeroList = rowsView.filter((r) => !r.subtotal && zeroSet.has(r.code));
   const rmList = rowsView.filter((r) => !r.subtotal && removeSet.has(r.code));
+  const dkList = rowsView.filter((r) => !r.subtotal && dkSet.has(r.code));
   return createPortal(
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
       <div style={{ ...cardStyle, width: "min(980px, 100%)", maxHeight: "94vh", display: "flex", flexDirection: "column", padding: 0 }} onMouseDown={(e) => e.stopPropagation()}>
@@ -8076,7 +8104,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div>
               <div style={{ fontSize: 17, fontWeight: 800 }}>피킹지 설정 · {item.title}</div>
-              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · {cfg.intro || `${cfg.label}은 편 구분 없이, `}지역을 여러 개 고른 뒤 [{ZL}] 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
+              <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>{p.pivot} · {cfg.intro || `${cfg.label}은 편 구분 없이, `}지역을 여러 개 고른 뒤 [{ZL}]{DK ? " · [당착]" : ""} 또는 [지역 빼기]를 누르면 저장돼요 (피킹지에 바로 반영)</div>
             </div>
             <button onClick={onClose} style={{ ...smallBtnStyle, marginLeft: "auto" }}>
               닫기
@@ -8099,7 +8127,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
         <div style={{ display: "flex", gap: 16, padding: 16, overflow: "auto", flexWrap: "wrap", alignItems: "flex-start" }}>
           <div style={{ flex: "3 1 460px", minWidth: 0, opacity: sheetHidden ? 0.55 : 1 }}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>· 지역 줄을 모두 누른 뒤 [{ZL}] 또는 [지역 빼기]</span>
+              평소 피킹지 <span style={{ fontWeight: 500, color: T.inkSoft, fontSize: 12 }}>· 지역 줄을 모두 누른 뒤 [{ZL}]{DK ? " · [당착]" : ""} 또는 [지역 빼기]</span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap", position: "sticky", top: 0, background: T.surface, zIndex: 2, padding: "4px 0" }}>
               <button disabled={busy || !pick.size} onClick={() => apply("zero")} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !pick.size ? 0.5 : 1 }}>
@@ -8108,6 +8136,11 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
               <button disabled={busy || !pick.size} onClick={() => apply("remove")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#fff", background: T.danger, borderColor: T.danger, opacity: busy || !pick.size ? 0.5 : 1 }}>
                 지역 빼기{pick.size ? ` (${pick.size}곳)` : ""}
               </button>
+              {DK && (
+                <button disabled={busy || !pick.size} onClick={() => apply("dangchak")} style={{ ...smallBtnStyle, fontWeight: 700, color: "#7A331A", background: "#FBE9DF", borderColor: "#E8B79A", opacity: busy || !pick.size ? 0.5 : 1 }}>
+                  당착{pick.size ? ` (${pick.size}곳)` : ""}
+                </button>
+              )}
               <button disabled={busy || !pick.size} onClick={() => apply("clear")} style={{ ...smallBtnStyle, opacity: busy || !pick.size ? 0.5 : 1 }}>
                 원래대로
               </button>
@@ -8117,7 +8150,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
                 </button>
               )}
               <span style={{ fontSize: 12, color: pick.size ? T.danger : T.inkSoft, fontWeight: pick.size ? 700 : 500 }}>
-                {pick.size ? `고른 지역: ${names(Array.from(pick))}` : zeroList.length || rmList.length ? `지금: ${ZL} ${zeroList.length}곳 · 지역 빼기 ${rmList.length}곳` : "지금 설정 없음"}
+                {pick.size ? `고른 지역: ${names(Array.from(pick))}` : zeroList.length || rmList.length || dkList.length ? `지금: ${ZL} ${zeroList.length}곳 · 지역 빼기 ${rmList.length}곳${DK ? ` · 당착 ${dkList.length}곳` : ""}` : "지금 설정 없음"}
               </span>
             </div>
             <div style={{ border: "2px solid #1E2124", borderRadius: 4, overflow: "hidden" }}>
@@ -8145,27 +8178,29 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
                     const on = pick.has(r.code);
                     const z = zeroSet.has(r.code);
                     const rm = removeSet.has(r.code);
+                    const dk = dkSet.has(r.code);
                     const raw = qtyOf(r.code);
-                    const q = z || rm ? 0 : raw;
+                    const q = z || rm || dk ? 0 : raw;
                     const b = bd(q);
                     return (
                       <tr
                         key={i}
                         onClick={() => !busy && toggle(r.code)}
                         title={on ? "눌러서 선택 해제" : "눌러서 선택 (여러 개 가능)"}
-                        style={{ cursor: "pointer", background: on ? "#FFE699" : rm ? "#FDECEA" : z ? "#FFF2CC" : undefined, outline: on ? `2px dashed ${T.amberDeep}` : undefined, outlineOffset: -2 }}
+                        style={{ cursor: "pointer", background: on ? "#FFE699" : rm ? "#FDECEA" : dk ? "#FBE9DF" : z ? "#FFF2CC" : undefined, outline: on ? `2px dashed ${T.amberDeep}` : undefined, outlineOffset: -2 }}
                       >
                         <td style={{ ...cell, fontSize: 11.5, textDecoration: rm ? "line-through" : "none", color: rm ? T.inkSoft : T.ink }}>{String(r.label).replace(/ /g, " ")}</td>
                         <td style={{ ...num, textAlign: "center" }}>{pack || "-"}</td>
                         <td style={{ ...num, fontWeight: 700 }}>
                           {q ? q.toLocaleString() : "- 0"}
-                          {(z || rm) && raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11, fontWeight: 700 }}> (발주 {raw})</span>}
+                          {(z || rm || dk) && raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11, fontWeight: 700 }}> ({dk ? "당착" : "발주"} {raw})</span>}
                         </td>
                         <td style={num}>{b.box || "- 0"}</td>
                         <td style={{ ...cell, textAlign: "center", fontWeight: 800 }}>
                           {r.short || r.code}
                           {on && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.danger, borderRadius: 8, padding: "1px 6px" }}>선택</span>}
                           {!on && z && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: T.amberDeep, borderRadius: 8, padding: "1px 6px" }}>{ZL}</span>}
+                          {!on && dk && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: "#C1562F", borderRadius: 8, padding: "1px 6px" }}>당착</span>}
                           {!on && rm && <span style={{ marginLeft: 4, fontSize: 10.5, color: "#fff", background: "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>빠짐</span>}
                         </td>
                         <td style={num}>{b.rem || "- 0"}</td>
@@ -8194,6 +8229,25 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
               ) : (
                 <div style={{ ...cell, color: T.inkSoft }}>없음</div>
               )}
+              {DK && (
+                <>
+                  <div style={{ background: "#FBE9DF", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderTop: "1px solid #1E2124", borderBottom: "1px solid #1E2124" }}>당착 ({dkList.length}곳) · {p.pivot}(오전현장) 시트로</div>
+                  {dkList.length ? (
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <tbody>
+                        {dkList.map((r) => (
+                          <tr key={r.code}>
+                            <td style={{ ...cell, fontWeight: 700 }}>{r.short || r.code}</td>
+                            <td style={num}>{qtyOf(r.code)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ ...cell, color: T.inkSoft }}>없음</div>
+                  )}
+                </>
+              )}
               <div style={{ background: "#FDECEA", padding: "6px 10px", fontWeight: 800, fontSize: 13, borderTop: "1px solid #1E2124", borderBottom: "1px solid #1E2124" }}>지역 빼기 ({rmList.length}곳) · 줄 숨김</div>
               {rmList.length ? (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -8213,6 +8267,11 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
             <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 8, lineHeight: 1.6 }}>
               · <b>{ZL}</b>: 피킹지에 그 지역 줄은 남고 수량만 0이에요.
               <br />· <b>지역 빼기</b>: 그 지역 줄을 숨겨서 안 보여요 (합계에서도 빠져요).
+              {DK && (
+                <>
+                  <br />· <b>당착</b>: 평소 시트에는 0으로, 그 수량은 공급사 맨 끝 "(오전현장)" 시트와 당착 거래명세서로 따로 나가요. 발주가 없는 날에도 당착 센터는 0으로 남아요.
+                </>
+              )}
               <br />· <b>시트 빼기</b>: 이 상품 시트가 엑셀에서 아예 안 나와요 (순서 설정의 피킹 안 하는 목록에서도 복구 가능).
               <br />· 일별 집계 숫자는 일별 발주 집계 → {cfg.dailyLabel} 집계 설정에서 따로 빼요.
             </div>
@@ -8716,6 +8775,7 @@ function getEmFrozenTemplateInfo() {
 const EM_PICK_CFG = {
   label: "이마트",
   intro: "상품마다 ",
+  allowDangchak: true,
   zeroLabel: "0으로 고정",
   dailyLabel: "이마트",
   brand: "EMART",
@@ -9649,7 +9709,28 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
     if (!date && dates[0]) setDate(dates[0]);
   }, [dates]); // eslint-disable-line
   const settings = useSetting(brandSettingKey("invoice_settings", cfg.brand), authToken);
-  const rows = useMemo(() => cfg.rowsOf(emartOrders, date, inv && inv.inv), [emartOrders, date, inv]); // eslint-disable-line
+  const allRows = useMemo(() => cfg.rowsOf(emartOrders, date, inv && inv.inv), [emartOrders, date, inv]); // eslint-disable-line
+  // 이마트(일반): 피킹지 설정에서 "당착"으로 정한 상품·센터는 평소 명세서에서 빼고 [당착 거래명세서]로 따로 (GS 당착 명세서처럼)
+  const isEmart = cfg.brand === "EMART";
+  const emPick = useSetting(EM_PICK_CFG.pickKey, authToken);
+  const emAlias = useSetting("emart_product_alias", authToken);
+  if (isEmart) setEmartAlias(emAlias);
+  const [pickTpl, setPickTpl] = useState(null);
+  useEffect(() => {
+    if (isEmart) getEmartTemplateInfo().then(setPickTpl).catch(() => {});
+  }, [isEmart]);
+  const { rows, dkRows } = useMemo(() => {
+    const prods = (emPick && emPick.products) || {};
+    if (!isEmart || !Object.values(prods).some((c) => (c.dangchak || []).length)) return { rows: allRows, dkRows: [] };
+    const normal = [];
+    const dk = [];
+    allRows.forEach((r) => {
+      const tp = pickTpl ? matchEmartProduct(pickTpl, r.name, r.code) : null;
+      const c = prods[tp ? tp.sheet : "new:" + r.name];
+      ((c && (c.dangchak || []).includes(r.center)) ? dk : normal).push(r);
+    });
+    return { rows: normal, dkRows: dk };
+  }, [allRows, emPick, pickTpl, isEmart]);
   const plan = useMemo(() => (inv && inv.inv ? emartInvoicePlan(inv.inv, rows, settings) : null), [inv, rows, settings]);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
@@ -9672,11 +9753,11 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
     });
     return list;
   }, [inv, plan]);
-  const run = async (key, only) => {
+  const run = async (key, only, rowsOverride, cfgOverride) => {
     setBusy(key);
     setMsg("");
     try {
-      const rep = await downloadEmartInvoiceFile(rows, date, settings, only, cfg);
+      const rep = await downloadEmartInvoiceFile(rowsOverride || rows, date, settings, only, cfgOverride || cfg);
       const made = (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
       const miss = rep.missingCenters.length ? ` · 템플릿에 시트가 없는 센터: ${rep.missingCenters.map((m) => `${m.supplier} ${m.center}`).join(", ")}` : "";
       setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${made}${miss}`);
@@ -9701,6 +9782,16 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
             <button onClick={() => run("all", null)} disabled={!!busy || !active.length} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !active.length ? 0.55 : 1 }}>
               <Download size={15} /> {busy === "all" ? "만드는 중..." : "전체 엑셀 다운로드"}
             </button>
+            {dkRows.length > 0 && (
+              <button
+                onClick={() => run("dk", null, dkRows, { ...cfg, filePrefix: `${cfg.filePrefix}_당착` })}
+                disabled={!!busy}
+                title="피킹지 설정에서 당착으로 정한 센터만 따로 만든 거래명세서"
+                style={{ ...smallBtnStyle, padding: "8px 14px", fontWeight: 700, color: "#7A331A", background: "#FBE9DF", borderColor: "#E8B79A" }}
+              >
+                <Download size={14} /> {busy === "dk" ? "만드는 중..." : `당착 거래명세서 (${dkRows.reduce((a, r) => a + r.qty, 0).toLocaleString()}개)`}
+              </button>
+            )}
           </div>
         }
       />
@@ -10280,10 +10371,12 @@ function EmartPickingView({ emartOrders, authToken }) {
   const pickCfg = useSetting(EM_PICK_CFG.pickKey, authToken);
   const [setFor, setSetFor] = useState(null);
   const sheetKeyOf = (name, tp) => (tp ? tp.sheet : "new:" + name);
+  const regCfgOfName = (name, tp) => ((pickCfg && pickCfg.products) || {})[sheetKeyOf(name, tp)] || null;
   const regAdjOf = (name, tp, center) => {
-    const c = ((pickCfg && pickCfg.products) || {})[sheetKeyOf(name, tp)];
+    const c = regCfgOfName(name, tp);
     if (!c) return null;
     if ((c.remove || []).includes(center)) return "remove";
+    if ((c.dangchak || []).includes(center)) return "dangchak";
     if ((c.zero || []).includes(center)) return "zero";
     return null;
   };
@@ -10386,12 +10479,55 @@ function EmartPickingView({ emartOrders, authToken }) {
       }
       const tpOf = (r) => (tplInfo ? matchEmartProduct(tplInfo, r.name, r.code) : null);
       const adjusted = []; // 피킹지 설정으로 0 고정·지역 빼기 한 줄 (2차 검증 고정값 안내용)
+      const dkByVendor = new Map(); // 당착: 공급사 -> { names, items: 상품 -> {센터: 수량}, centers }
       const outRows = rows.filter((r) => {
         if (!names.has(r.name)) return false;
-        const a = regAdjOf(r.name, tpOf(r), r.center);
-        if (a) adjusted.push({ name: r.name, center: r.center, qty: r.qty, reason: a === "zero" ? "피킹지 설정: 0으로 고정" : "피킹지 설정: 지역 빼기 (줄 숨김)" });
+        const tp = tpOf(r);
+        const a = regAdjOf(r.name, tp, r.center);
+        if (a === "dangchak") {
+          const v = emartVendorKey(r.vendor);
+          const d = dkByVendor.get(v) || { vendor: v, items: new Map(), centers: new Set() };
+          const key = tp ? tp.sheet : r.name;
+          const it = d.items.get(key) || { header: r.name, names: new Set(), qty: {} };
+          it.names.add(r.name);
+          it.qty[r.center] = (it.qty[r.center] || 0) + r.qty;
+          d.items.set(key, it);
+          dkByVendor.set(v, d);
+        }
+        if (a)
+          adjusted.push({
+            name: r.name,
+            center: r.center,
+            qty: r.qty,
+            reason: a === "zero" ? "피킹지 설정: 0으로 고정" : a === "dangchak" ? "피킹지 설정: 당착 → 공급사 (오전현장) 시트로" : "피킹지 설정: 지역 빼기 (줄 숨김)",
+          });
         return !a;
       });
+      // 당착 설정이 있는 상품은 그날 당착 센터 발주가 없어도 당착 시트에 0으로 남김 (그 공급사 발주가 있는 날만)
+      products.forEach((p) => {
+        if (!names.has(p.name)) return;
+        const c = regCfgOfName(p.name, p.tpl);
+        if (!c || !(c.dangchak || []).length) return;
+        const d = dkByVendor.get(p.vendor) || { vendor: p.vendor, items: new Map(), centers: new Set() };
+        const key = p.tpl ? p.tpl.sheet : p.name;
+        if (!d.items.has(key)) d.items.set(key, { header: p.name, names: new Set([p.name]), qty: {} });
+        c.dangchak.forEach((x) => d.centers.add(x));
+        dkByVendor.set(p.vendor, d);
+      });
+      const dangchakSheets = Array.from(dkByVendor.values()).map((d) => {
+        const items = Array.from(d.items.values());
+        items.forEach((it) => Object.keys(it.qty).forEach((c) => d.centers.add(c)));
+        const centers = [...EMART_STD_REGIONS.filter((c) => d.centers.has(c)), ...[...d.centers].filter((c) => !EMART_STD_REGIONS.includes(c))];
+        return { vendor: d.vendor, names: items.flatMap((it) => [...it.names]), items: items.map((it) => ({ header: it.header, qty: it.qty })), centers };
+      });
+      // 당착만 있고 평소 줄이 하나도 안 남은 상품도 피킹지·당착 시트가 나오게: 그 상품 이름의 0짜리 줄 하나는 남김
+      dangchakSheets.forEach((d) =>
+        d.names.forEach((n) => {
+          if (outRows.some((r) => r.name === n)) return;
+          const src = rows.find((r) => r.name === n);
+          if (src) outRows.push({ ...src, qty: 0 });
+        })
+      );
       const hideRegionRows = new Map();
       Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
       const verifyFn = async (bytes, rep) => {
@@ -10417,7 +10553,7 @@ function EmartPickingView({ emartOrders, authToken }) {
         setVerifyOpen(bad || result.warns.length > 0);
         return !bad;
       };
-      const rep = await downloadEmartPickingFile(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim() });
+      const rep = await downloadEmartPickingFile(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets });
       if (rep.held) setVerify((v) => (v ? { ...v, held: rep.held } : v));
       setReport(rep);
     } catch (e) {
@@ -10712,19 +10848,19 @@ function EmartPickingView({ emartOrders, authToken }) {
                               <td style={{ ...mono, fontWeight: 700 }}>{r.rem}</td>
                             </tr>
                           ) : (
-                            <tr key={r.label} style={r.missing ? { background: "#FCE8E8" } : r.adj === "remove" ? { background: "#FDECEA" } : r.adj === "zero" ? { background: "#FFF2CC" } : undefined}>
+                            <tr key={r.label} style={r.missing ? { background: "#FCE8E8" } : r.adj === "remove" ? { background: "#FDECEA" } : r.adj === "dangchak" ? { background: "#FBE9DF" } : r.adj === "zero" ? { background: "#FFF2CC" } : undefined}>
                               <td style={{ fontWeight: 600, textDecoration: r.adj === "remove" ? "line-through" : "none" }}>
                                 {r.label}
                                 {r.adj && (
-                                  <span style={{ marginLeft: 6, fontSize: 10.5, color: "#fff", background: r.adj === "zero" ? T.amberDeep : "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>
-                                    {r.adj === "zero" ? "0으로 고정" : "빠짐"}
+                                  <span style={{ marginLeft: 6, fontSize: 10.5, color: "#fff", background: r.adj === "zero" ? T.amberDeep : r.adj === "dangchak" ? "#C1562F" : "#B03A2E", borderRadius: 8, padding: "1px 6px" }}>
+                                    {r.adj === "zero" ? "0으로 고정" : r.adj === "dangchak" ? "당착" : "빠짐"}
                                   </span>
                                 )}
                               </td>
                               <td style={{ ...mono, color: T.inkSoft }}>{r.short || "-"}</td>
                               <td style={{ ...mono, fontWeight: 700 }}>
                                 {r.qty}
-                                {r.adj && r.raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11 }}> (발주 {r.raw})</span>}
+                                {r.adj && r.raw > 0 && <span style={{ color: T.amberDeep, fontSize: 11 }}> ({r.adj === "dangchak" ? "당착" : "발주"} {r.raw})</span>}
                               </td>
                               <td style={mono}>{r.box}</td>
                               <td style={mono}>{r.rem}</td>
@@ -11298,6 +11434,21 @@ function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, i
         });
       }
     }
+  });
+  // 당착(오전현장) 시트: 당착 센터 수량이 그대로 들어갔는지
+  (report.dangchak || []).forEach((d) => {
+    res.stats.sheets++;
+    const pv = pvReadPivot(pvSheetRows(wb, d.sheet));
+    if (!pv) return res.errors.push({ type: "시트", text: `[${d.sheet}] 당착 시트를 읽지 못했어요.` });
+    d.items.forEach((it) => {
+      const col = pv.data[pvNorm(it.header)] || {};
+      d.centers.forEach((c) => {
+        const a = it.qty[c] || 0;
+        const b = col[c] || 0;
+        res.stats.cells++;
+        if (a !== b) res.errors.push({ type: "당착", text: `[${d.sheet}] ${it.header} · ${c}: 당착 발주 ${a}개인데 시트는 ${b}개예요.` });
+      });
+    });
   });
   (report.unknown || []).forEach((u) => {
     const total = Object.values(u.qty || {}).reduce((a, b) => a + b, 0);
