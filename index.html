@@ -7372,13 +7372,16 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const p = matchEmartProduct(tpl, item.name);
     if (p) {
       links.push({ prod: p, item });
-      if (item.vendor) vendorPivot[item.vendor] = p.pivot;
+      if (item.vendor) emartVendorKeysOf(item.vendor).forEach((k) => !vendorPivot[k] && (vendorPivot[k] = p.pivot));
     } else unmatched.push(item);
   });
   // 새 상품: 같은 거래처 상품이 있는 피벗에 열을 하나 늘리고 시트를 복제
+  // 거래처 이름은 "[빵/디저트_월~토1편]" 같은 꼬리표를 떼고 비교, 그래도 없으면 템플릿 피벗 이름("대광 피벗")으로 찾는다 (2026-10-16 대광 도너츠)
   const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
   for (const item of unmatched) {
-    let pivot = vendorPivot[item.vendor];
+    // (냉동 피킹지는 예전 방식 그대로: keepVisible/cloneUnknownVendor가 있으면 이름 비교만 원래대로)
+    const frozenMode = !!(opts.keepVisible || opts.cloneUnknownVendor);
+    let pivot = frozenMode ? vendorPivot[item.vendor] : emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || emartPivotByVendorName(tpl, item.vendor);
     if (!pivot && opts.cloneUnknownVendor && tpl.products.length) {
       // 템플릿에 없는 공급사(이마트 냉동 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
       const srcPv = tpl.products[0].pivot;
@@ -9693,6 +9696,22 @@ function emartOrdersFromRows(rows) {
   });
   return Array.from(map.values());
 }
+// 거래처 비교용 이름들: 원래 이름 / 꼬리표 뗀 이름 / 편수표 대표 이름(예: "대광")
+function emartVendorKeysOf(v) {
+  const raw = String(v || "").trim();
+  const base = emartVendorKey(raw);
+  const n = base.replace(/\s/g, "");
+  const hit = EMART_VENDOR_PART.find((x) => x.keys.some((k) => n.includes(k)));
+  return Array.from(new Set([raw, base, n, hit ? "canon:" + hit.keys[0] : null].filter(Boolean)));
+}
+// 템플릿 피벗 이름으로 거래처 찾기 ("대광 피벗" ← "대광푸드[빵/디저트_월~토1편]D1")
+function emartPivotByVendorName(tpl, vendor) {
+  const n = emartVendorKey(vendor).replace(/\s/g, "");
+  const hit = EMART_VENDOR_PART.find((x) => x.keys.some((k) => n.includes(k)));
+  const keys = hit ? hit.keys : [n.replace(/(푸드|식품|D\d|\d편)+$/g, "")].filter((k) => k.length >= 2);
+  const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
+  return pivots.find((pv) => keys.some((k) => pv.replace(/\s/g, "").includes(k))) || null;
+}
 // 이마트 거래처명 정리: "[PNB]오뗄[간편식품_월-토]" / "오뗄[간편식품_월-토](TC)" -> "오뗄"
 function emartVendorKey(v) {
   return String(v || "")
@@ -10672,7 +10691,8 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
     const dayRows = rowsOf(dayAll);
     // 피킹지 만들 때 새 상품은 "그날 같은 공급사의 다른 상품이 원본에 있으면" 그 공급사 시트를 복사해서 추가된다
     const vendorHasPivot = new Set();
-    if (tpl) dayRows.forEach((r) => matchEmartProduct(tpl, r.name) && vendorHasPivot.add(r.vendor));
+    if (tpl) dayRows.forEach((r) => matchEmartProduct(tpl, r.name) && emartVendorKeysOf(r.vendor).forEach((k) => vendorHasPivot.add(k)));
+    const hasPivotFor = (v) => emartVendorKeysOf(v).some((k) => vendorHasPivot.has(k)) || (!!tpl && !frozen && !!emartPivotByVendorName(tpl, v));
     const canCloneVendor = !!(frozen && cfg.buildOpts(tpl).cloneUnknownVendor);
     const agg = new Map();
     rowsOf(dayNew).forEach((r) => {
@@ -10693,7 +10713,7 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
         const extra = (c.zero || []).length || (c.remove || []).length ? ` · 0 처리 ${(c.zero || []).length}곳, 지역 빼기 ${(c.remove || []).length}곳` : "";
         return push(date, sup, x.name, x.qty, "ok", `시트 "${tp.sheet}"${extra}`);
       }
-      if (vendorHasPivot.has(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
+      if (hasPivotFor(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
       if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
       push(date, sup, x.name, x.qty, "warn", "피킹지 원본에 이 공급사 상품이 하나도 없어서 피킹지에 안 나와요! 원본(템플릿)에 공급사 시트를 넣거나 [다른 템플릿으로 만들기]를 써주세요");
     });
