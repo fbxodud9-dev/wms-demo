@@ -1893,8 +1893,11 @@ const randomTempPw = () => {
   return s;
 };
 
+// 방금 로그인할 때 친 비밀번호 (화면 메모리에만 잠깐 보관 → 첫 로그인 비번 변경 때 '지금 비밀번호' 칸을 크롬 자동완성이 엉뚱하게 채우는 문제 방지)
+let LAST_LOGIN_PW = "";
+
 // 비밀번호 바꾸기 폼 (첫 로그인 강제 / 내 계정 화면 공용)
-function PasswordChangeForm({ authToken, onDone, compact }) {
+function PasswordChangeForm({ authToken, onDone, compact, presetCurrent }) {
   const [cur, setCur] = useState("");
   const [n1, setN1] = useState("");
   const [n2, setN2] = useState("");
@@ -1909,7 +1912,8 @@ function PasswordChangeForm({ authToken, onDone, compact }) {
     if (n1 !== n2) return setErr("새 비밀번호 두 칸이 서로 달라요.");
     setBusy(true);
     try {
-      await apiFetch("/auth/change-password", authToken, { method: "POST", body: { currentPassword: cur, newPassword: n1 } });
+      await apiFetch("/auth/change-password", authToken, { method: "POST", body: { currentPassword: presetCurrent || cur, newPassword: n1 } });
+      LAST_LOGIN_PW = "";
       setCur("");
       setN1("");
       setN2("");
@@ -1924,10 +1928,12 @@ function PasswordChangeForm({ authToken, onDone, compact }) {
   const lab = { fontSize: 12.5, fontWeight: 600, color: T.inkSoft, marginBottom: 4, display: "block" };
   return (
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: compact ? "100%" : 360 }}>
-      <label>
-        <span style={lab}>지금 비밀번호 (임시 비밀번호)</span>
-        <input type="password" autoComplete="current-password" style={{ ...inputStyle, width: "100%" }} value={cur} onChange={(e) => setCur(e.target.value)} />
-      </label>
+      {!presetCurrent && (
+        <label>
+          <span style={lab}>지금 비밀번호 (임시 비밀번호)</span>
+          <input type="password" autoComplete="off" style={{ ...inputStyle, width: "100%" }} value={cur} onChange={(e) => setCur(e.target.value)} />
+        </label>
+      )}
       <label>
         <span style={lab}>새 비밀번호 (6자 이상)</span>
         <input type="password" autoComplete="new-password" style={{ ...inputStyle, width: "100%" }} value={n1} onChange={(e) => setN1(e.target.value)} />
@@ -1954,7 +1960,7 @@ function ChangePasswordGate({ authToken, user, onDone, onLogout }) {
         <div style={{ fontSize: 12.5, color: T.inkSoft, lineHeight: 1.6, marginBottom: 18 }}>
           관리자가 만든 임시 비밀번호로 로그인했어요. 계속하려면 나만 아는 비밀번호로 바꿔 주세요. 앞으로 업로드·삭제 같은 작업은 이 계정 이름으로 기록돼요.
         </div>
-        <PasswordChangeForm authToken={authToken} onDone={onDone} compact />
+        <PasswordChangeForm authToken={authToken} onDone={onDone} compact presetCurrent={LAST_LOGIN_PW} />
         <button onClick={onLogout} style={{ ...smallBtnStyle, marginTop: 12, width: "100%" }}>
           로그아웃
         </button>
@@ -2392,6 +2398,7 @@ function LoginScreen({ onLogin, notice }) {
     setLoading(true);
     try {
       const data = await apiFetch("/auth/login", null, { method: "POST", body: { username, password } });
+      LAST_LOGIN_PW = password;
       onLogin(data.token, data.user);
     } catch (e) {
       setErr(e.message);
