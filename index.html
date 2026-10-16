@@ -1812,6 +1812,9 @@ function WMSApp() {
   const [cells, setCells] = useState([]);
 
   const [ready, setReady] = useState(false);
+  // 발주 데이터를 서버에서 다시 받는 중인지 (다른 PC가 발주를 올렸을 때 등) - 그동안 피킹지를 받으면 방금 올린 공급사가 빠질 수 있어 화면에 표시
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataLoadedAt, setDataLoadedAt] = useState(null);
   const [apiErr, setApiErr] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   // 쓰는 도중 토큰이 만료되면(서버가 401) 자동 로그아웃 → 로그인 화면에 안내
@@ -1882,6 +1885,7 @@ function WMSApp() {
   const [invChannel, setInvChannel] = useState("gs"); // 거래명세서 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
     if (!authToken) return;
+    setDataLoading(true);
     try {
       setApiErr("");
       const [itemsRes, ordersRes, txRes, docsRes] = await Promise.all([
@@ -1899,11 +1903,13 @@ function WMSApp() {
       setFrozenOrders(allOrders.filter((o) => o.channel === "GSFROZEN"));
       setTx(txRes.transactions.map(mapTxFromApi));
       setPickingDocs(docsRes.docs.map(mapDocFromApi));
+      setDataLoadedAt(new Date());
     } catch (e) {
       setApiErr(e.message);
       if (String(e.message).includes("토큰")) doLogout();
     } finally {
       setReady(true);
+      setDataLoading(false);
     }
   }, [authToken]);
 
@@ -2692,6 +2698,13 @@ function WMSApp() {
         }
       `}</style>
 
+      {ready && dataLoading && (
+        <div className="no-print" style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 2000, background: "#2B3239", color: "#fff", padding: "9px 18px", borderRadius: 999, fontSize: 13, fontWeight: 700, boxShadow: "0 6px 20px rgba(0,0,0,.25)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 99, background: T.amber, display: "inline-block", animation: "wmsPulse 1s ease-in-out infinite" }} />
+          새 발주를 불러오는 중이에요… 끝날 때까지 피킹지·명세서 다운로드는 잠깐 기다려 주세요
+          <style>{"@keyframes wmsPulse{0%,100%{opacity:.35}50%{opacity:1}}"}</style>
+        </div>
+      )}
       {/* sidebar */}
       <div className="wms-sidebar" style={{ width: 236, background: T.steel, color: "#fff", padding: "20px 10px", display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, overflowY: "auto" }}>
         <div className="wms-brand" style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px 16px" }}>
@@ -13260,9 +13273,12 @@ function withZeroFixedProducts(orders, date, products) {
   const prev = prevOrderDate(orders, date);
   if (!prev) return products;
   const names = new Set(products.map((p) => p.name));
+  // 그날 발주가 올라온 공급사만 (공급사 발주를 아직 안 올렸는데 전날 상품이 0 시트로 생기던 문제 - 2026-10-16 탭스)
+  const todaySups = new Set(products.map((p) => pickingSupplierKey(p.supplier || "")));
   const out = [...products];
   buildProductsForDate(orders, prev).forEach((p) => {
     if (names.has(p.name) || !hasZeroFixedRegion(p) || getDangchakInfo(p.name)) return; // 당착은 withZeroDangchakProducts가 따로 처리
+    if (!todaySups.has(pickingSupplierKey(p.supplier || ""))) return;
     if (isGsPickHidden(p)) return;
     names.add(p.name);
     const z = { ...p, sku: `zero-${p.sku}`, regionRows: p.regionRows.map((r) => ({ ...r, qty: 0, rawQty: 0 })), totalQty: 0, noOrder: true };
