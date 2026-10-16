@@ -7156,12 +7156,40 @@ function analyzeEmartTemplate(tpl, regionRe = /\(저온\)|\(상온\)|\(냉동\)/
   return tpl;
 }
 
-function matchEmartProduct(tpl, name) {
+// 이마트 상품 연결 기억: { byName: { 발주파일 상품명: 템플릿 시트 }, byCode: { 상품코드: 템플릿 시트 } } (서버 설정 emart_product_alias)
+// 이마트 발주파일은 같은 상품도 상품명 표기가 제각각이라(띄어쓰기·괄호·브랜드 접두어 등), 한 번 연결된 상품코드/이름은 계속 같은 시트로 간다
+let EMART_ALIAS = { byName: {}, byCode: {} };
+function setEmartAlias(v) {
+  EMART_ALIAS = { byName: (v && v.byName) || {}, byCode: (v && v.byCode) || {} };
+}
+// 느슨한 비교용: 괄호·기호·공백 제거 / 브랜드 접두어("랩)" "스윗)") 제거
+const emartLoose = (s) => String(s == null ? "" : s).toLowerCase().replace(/[\s/()\[\]{}<>·.,_\-+&*'"~!]/g, "");
+const emartNoBrand = (s) => emartLoose(String(s == null ? "" : s).replace(/^[^)]{1,12}\)/, ""));
+function matchEmartProduct(tpl, name, code) {
   const n = emartNorm(name);
+  const regular = !tpl.frozen; // 냉동 템플릿은 예전 방식 그대로
+  if (regular) {
+    const bySheet = (sh) => sh && tpl.products.find((p) => p.sheet === sh);
+    const a = bySheet(EMART_ALIAS.byName[String(name || "").trim()]) || (code && bySheet(EMART_ALIAS.byCode[String(code).trim()]));
+    if (a) return a;
+  }
   let hit = tpl.products.find((p) => p.keys.includes(n));
   if (hit) return hit;
   // 시트 이름은 31자 제한/특수문자 때문에 잘려 있을 수 있어 앞부분 일치도 허용 (8자 이상)
   hit = tpl.products.find((p) => p.keys.some((k) => k.length >= 8 && (n.startsWith(k) || k.startsWith(n))));
+  if (hit || !regular) return hit || null;
+  // 느슨한 비교 (딱 한 상품만 맞을 때만): 괄호·기호 무시 → 브랜드 접두어까지 무시
+  const one = (f) => {
+    const c = tpl.products.filter(f);
+    return c.length === 1 ? c[0] : null;
+  };
+  const l = emartLoose(name);
+  if (l.length >= 4) {
+    hit = one((p) => p.keys.some((k) => emartLoose(k) === l));
+    if (hit) return hit;
+  }
+  const nb = emartNoBrand(name);
+  if (nb.length >= 6) hit = one((p) => p.keys.some((k) => emartNoBrand(k) === nb));
   return hit || null;
 }
 
@@ -7358,18 +7386,20 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   const report = { matched: [], added: [], unknown: [], missingRegions: [] };
 
   // 상품별 집계
-  const agg = new Map(); // 상품명 -> { name, vendor, box, qty: {센터: n} }
+  const agg = new Map(); // 상품(템플릿 시트 또는 상품명) -> { name, vendor, box, code, prod, qty: {센터: n} }
   orderRows.forEach((r) => {
-    const a = agg.get(r.name) || { name: r.name, vendor: r.vendor, box: r.box, qty: {} };
+    const prod = matchEmartProduct(tpl, r.name, r.code);
+    const key = prod ? "sheet:" + prod.sheet : r.name; // 표기가 다른 상품명도 같은 시트면 한 줄로 합침
+    const a = agg.get(key) || { name: r.name, vendor: r.vendor, box: r.box, code: r.code || "", prod, qty: {} };
     a.qty[r.center] = (a.qty[r.center] || 0) + r.qty;
-    agg.set(r.name, a);
+    agg.set(key, a);
   });
   // 템플릿 상품과 연결. 거래처 -> 피벗 추정용
   const vendorPivot = {};
   const links = []; // { prod(템플릿), item }
   const unmatched = [];
   agg.forEach((item) => {
-    const p = matchEmartProduct(tpl, item.name);
+    const p = item.prod;
     if (p) {
       links.push({ prod: p, item });
       if (item.vendor) emartVendorKeysOf(item.vendor).forEach((k) => !vendorPivot[k] && (vendorPivot[k] = p.pivot));
@@ -7441,7 +7471,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe ? emartVendorKey(item.vendor) : srcProd.sheetTitle, isNew: true };
     tpl.products.push(np);
     links.push({ prod: np, item });
-    report.added.push({ name: item.name, sheet: newName, pivot });
+    report.added.push({ name: item.name, code: item.code, sheet: newName, pivot });
   }
 
   // 피벗 다시 쓰기
@@ -9998,8 +10028,119 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
 }
 
 /* ---------- 피킹지시서 출력 > 이마트: GS 피킹지시서 출력과 같은 화면 ---------- */
+// 이마트 피킹지 엑셀을 받은 뒤 결과 팝업: 새로 만든 시트 / 빠진 상품 / 시트에 없는 센터
+// 새 상품·빠진 상품은 "기존 시트에 연결"을 고르면 기억해서(상품명·상품코드) 다음부터 그 시트로 들어간다
+function EmartPickReportModal({ report, tplInfo, authToken, onClose }) {
+  const [linked, setLinked] = useState({}); // 상품명 -> 연결한 시트
+  const [pick, setPick] = useState({});
+  const [busy, setBusy] = useState("");
+  const pivots = useMemo(() => {
+    const m = new Map();
+    ((tplInfo && tplInfo.products) || []).forEach((p) => {
+      if (!m.has(p.pivot)) m.set(p.pivot, []);
+      m.get(p.pivot).push(p);
+    });
+    return Array.from(m.entries());
+  }, [tplInfo]);
+  const link = async (name, code) => {
+    const sheet = pick[name];
+    if (!sheet) return;
+    setBusy(name);
+    try {
+      await updateSetting("emart_product_alias", authToken, (v) => ({
+        byName: { ...((v && v.byName) || {}), [name]: sheet },
+        byCode: { ...((v && v.byCode) || {}), ...(code && code !== name ? { [String(code).trim()]: sheet } : {}) },
+      }));
+      setLinked((x) => ({ ...x, [name]: sheet }));
+    } catch (e) {
+      window.alert(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const linker = (name, code, preferPivot) => (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+      {linked[name] ? (
+        <span style={{ fontSize: 12, color: "#0E4F3F", fontWeight: 700 }}>✓ "{linked[name]}" 시트에 연결했어요. 엑셀을 다시 받으면 그 시트로 들어가요.</span>
+      ) : (
+        <>
+          <select value={pick[name] || ""} onChange={(e) => setPick((x) => ({ ...x, [name]: e.target.value }))} style={{ ...inputStyle, padding: "4px 8px", fontSize: 12, maxWidth: 360 }}>
+            <option value="">기존 시트에 연결 (같은 상품인데 이름만 다를 때)</option>
+            {[...pivots].sort((a, b) => (a[0] === preferPivot ? -1 : b[0] === preferPivot ? 1 : 0)).map(([pv, list]) => (
+              <optgroup key={pv} label={pv}>
+                {list.map((p) => (
+                  <option key={p.sheet} value={p.sheet}>
+                    {frozenTitleOf(p)}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <button disabled={!pick[name] || busy === name} onClick={() => link(name, code)} style={{ ...smallBtnStyle, padding: "4px 10px", fontSize: 12, opacity: !pick[name] ? 0.5 : 1 }}>
+            {busy === name ? "저장 중..." : "연결"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+  const sec = (color, title, sub, children) => (
+    <div style={{ marginTop: 14, border: `1px solid ${color.bd}`, borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ background: color.bg, color: color.fg, padding: "9px 14px", fontWeight: 800, fontSize: 13.5 }}>
+        {title}
+        {sub && <div style={{ fontWeight: 500, fontSize: 12, marginTop: 2 }}>{sub}</div>}
+      </div>
+      <div style={{ padding: "4px 14px 10px" }}>{children}</div>
+    </div>
+  );
+  const red = { bg: "#FDECEA", fg: "#A0281B", bd: "#E6A9A2" };
+  const yel = { bg: "#FFF2CC", fg: "#8A5A00", bd: "#F2D27A" };
+  const row = { padding: "8px 0", borderBottom: `1px solid ${T.border}`, fontSize: 13 };
+  return (
+    <BrandModalFrame title="이마트 피킹지 변환 결과" sub="엑셀은 내려받았어요. 아래 내용만 확인해 주세요." onClose={onClose} maxWidth={920} height="86vh">
+      <div style={{ overflow: "auto", flex: 1, padding: "4px 22px 16px" }}>
+        {report.unknown.length > 0 &&
+          sec(red, `⚠ 피킹지에서 빠진 상품 ${report.unknown.length}개`, "어느 공급사 시트에 넣을지 몰라서 엑셀에 안 들어갔어요. 같은 상품의 기존 시트가 있으면 연결해 주세요.", report.unknown.map((u) => (
+            <div key={u.name} style={row}>
+              <b>{u.name}</b> <span style={{ color: T.inkSoft }}>[{u.vendor}] · {Object.values(u.qty).reduce((a, b) => a + b, 0).toLocaleString()}개</span>
+              {linker(u.name, u.code, null)}
+            </div>
+          )))}
+        {report.added.length > 0 &&
+          sec(yel, `🆕 템플릿에 없던 상품 ${report.added.length}개 — 시트를 새로 만들었어요`, "같은 공급사 첫 시트를 복사했어요. 입수를 확인해 주세요. 이름만 다른 기존 상품이면 그 시트에 연결해 주세요.", report.added.map((a) => (
+            <div key={a.name} style={row}>
+              <b>{a.name}</b> <span style={{ color: T.inkSoft }}>→ {a.pivot}</span>
+              {linker(a.name, a.code, a.pivot)}
+            </div>
+          )))}
+        {report.missingRegions.length > 0 &&
+          sec(red, `피킹지 시트에 없는 센터로 들어온 발주 ${report.missingRegions.length}줄`, "그 시트에 해당 센터 줄이 없어서 엑셀에 안 보여요 (예: 우리가 납품하지 않는 센터).", (
+            <div style={{ fontSize: 12.5, lineHeight: 1.7, paddingTop: 6 }}>
+              {Object.entries(
+                report.missingRegions.reduce((m, x) => {
+                  (m[x.sheet] = m[x.sheet] || []).push(`${String(x.region).replace(/\(.*$/, "")} ${x.qty}`);
+                  return m;
+                }, {})
+              ).map(([sheet, list]) => (
+                <div key={sheet}>
+                  <b>{sheet}</b>: {list.join(", ")}
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
+      <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.border}`, display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={onClose} className="primary-btn" style={primaryBtnStyle}>
+          확인
+        </button>
+      </div>
+    </BrandModalFrame>
+  );
+}
 function EmartPickingView({ emartOrders, authToken }) {
   const orderCfg = useSetting("picking_order_emart", authToken);
+  // 상품 연결 기억 (상품명/상품코드 → 템플릿 시트)
+  const aliasCfg = useSetting("emart_product_alias", authToken);
+  setEmartAlias(aliasCfg);
   const emInfoRaw = useSetting("product_info_emart", authToken);
   const emInfo = useMemo(() => emInfoRaw || {}, [emInfoRaw]);
   const [showOrderSet, setShowOrderSet] = useState(false);
@@ -10050,7 +10191,7 @@ function EmartPickingView({ emartOrders, authToken }) {
     if (tplInfo) {
       const order = new Map(tplInfo.sheets.map((s, i) => [s.name, i]));
       list.forEach((p) => {
-        p.tpl = matchEmartProduct(tplInfo, p.name);
+        p.tpl = matchEmartProduct(tplInfo, p.name, p.code);
         const ov = infoOf(p.name, p.tpl);
         p.packOverride = ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : 0;
         p.pack = p.packOverride || (p.tpl && p.tpl.pack) || p.box || 0;
@@ -10060,7 +10201,18 @@ function EmartPickingView({ emartOrders, authToken }) {
     }
     // 순서 설정(이마트)이 있으면 그 순서로
     return applyBrandOrder(list, orderCfg, (p) => p.vendor, (p) => p.name);
-  }, [rows, tplInfo, orderCfg, emInfo]); // eslint-disable-line
+  }, [rows, tplInfo, orderCfg, emInfo, aliasCfg]); // eslint-disable-line
+  // 이름으로 연결된 상품의 상품코드를 기억 → 다음에 상품명 표기가 달라도 코드로 같은 시트에 들어감
+  useEffect(() => {
+    if (!authToken || !tplInfo || aliasCfg === undefined) return;
+    const add = {};
+    products.forEach((p) => {
+      const code = String(p.code || "").trim();
+      if (p.tpl && code && code !== p.name && EMART_ALIAS.byCode[code] !== p.tpl.sheet) add[code] = p.tpl.sheet;
+    });
+    if (!Object.keys(add).length) return;
+    updateSetting("emart_product_alias", authToken, (v) => ({ byName: (v && v.byName) || {}, byCode: { ...((v && v.byCode) || {}), ...add } })).catch(() => {});
+  }, [products]); // eslint-disable-line
   const vendorOptions = useMemo(() => Array.from(new Set(products.map((p) => p.vendor))), [products]);
   const filtered = products.filter((p) => {
     if (vendorFilter !== "all" && p.vendor !== vendorFilter) return false;
@@ -10138,6 +10290,7 @@ function EmartPickingView({ emartOrders, authToken }) {
 
   return (
     <div>
+      <NewProductAlert channel="emart" label="이마트" orders={emartOrders} activeDate={activeDate} authToken={authToken} />
       <PageHeader
         title="피킹지시서 출력"
         sub="이마트24 발주를 실물 이마트24 피킹검수 양식(공급사별 지역·입수·서식) 그대로 정리합니다"
@@ -10224,29 +10377,7 @@ function EmartPickingView({ emartOrders, authToken }) {
           </div>
 
           {report && (report.added.length > 0 || report.unknown.length > 0 || report.missingRegions.length > 0) && (
-            <div>
-              {report.added.length > 0 && (
-                <div style={warnBox}>
-                  <b>템플릿에 없던 상품이라 같은 공급사 첫 시트를 복사해서 새로 만들었어요.</b> 입수는 발주파일 BOX 입수량으로 넣었으니 확인해 주세요.
-                  <br />
-                  {report.added.map((a) => `${a.name} (${a.pivot})`).join(", ")}
-                </div>
-              )}
-              {report.unknown.length > 0 && (
-                <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
-                  <b>어느 공급사 피킹지에 넣어야 할지 몰라서 빠진 상품이 있어요.</b> (템플릿에 그 거래처 상품이 하나도 없음)
-                  <br />
-                  {report.unknown.map((u) => `${u.name} [${u.vendor}] ${Object.values(u.qty).reduce((a, b) => a + b, 0)}개`).join(", ")}
-                </div>
-              )}
-              {report.missingRegions.length > 0 && (
-                <div style={{ ...warnBox, background: "#FCE8E8", borderColor: T.danger }}>
-                  <b>피킹지 시트에 없는 센터로 발주가 들어왔어요 (그 줄은 시트에 안 보여요).</b>
-                  <br />
-                  {report.missingRegions.map((m) => `${m.sheet} - ${m.region} ${m.qty}개`).join(", ")}
-                </div>
-              )}
-            </div>
+            <EmartPickReportModal report={report} tplInfo={tplInfo} authToken={authToken} onClose={() => setReport(null)} />
           )}
 
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -10589,6 +10720,129 @@ function confirmSameDayUpload(label, existDates, existCount, overlap) {
     return b ? "all" : "cancel";
   }
   return window.confirm(`${ds}에 이미 ${label} 발주 ${existCount.toLocaleString()}건이 올라와 있어요.\n이번 파일은 추가발주가 맞나요?\n\n[확인] 올리기\n[취소] 업로드 취소`) ? "all" : "cancel";
+}
+
+/* ================= 신제품·리뉴얼(상품명 변경) 알림 ================= */
+// 2026-10-16 버터빵 사고 이후: 신제품이 피킹지에 섞여 있어도 직원이 못 보고 지나치는 일이 없게, 피킹지 화면을 열면 팝업으로 알린다.
+// - 서버 설정 known_products_{gs|emart} = { items: { 상품코드: { n: 상품명, s: 공급사, d: 처음 본 날 } } } 에 "확인한 상품"을 모은다 (모든 PC 공통)
+// - 신제품 = 코드가 목록에 없음 / 리뉴얼 = 코드는 있는데 상품명이 바뀜
+// - [확인했어요]를 누르기 전까지 피킹지 화면을 열 때마다 다시 뜬다
+// - 처음 한 번은 지금까지 올라온 발주 전부로 목록을 채운다 → 그다음 올라오는 발주부터 새 상품·이름 바뀐 상품을 알림
+function npItemsOf(orders, date, channel) {
+  const m = new Map();
+  orders.forEach((o) => {
+    if (date && o.createdAt !== date) return;
+    o.lines.forEach((l) => {
+      const qty = Number(l.changedQty ?? l.qty) || 0;
+      if (qty <= 0) return;
+      if (channel === "gs" && productBrandOf(l.name) !== "GS") return;
+      const code = String(l.sku || l.name || "").trim();
+      if (!code) return;
+      const sup = channel === "gs" ? pickingSupplierKey(o.supplier || "") : emartVendorKey(o.supplier || "");
+      const x = m.get(code) || { code, name: String(l.name || "").trim(), sup, qty: 0 };
+      x.qty += qty;
+      m.set(code, x);
+    });
+  });
+  return Array.from(m.values());
+}
+function NewProductAlert({ channel, label, orders, activeDate, authToken }) {
+  const key = `known_products_${channel}`;
+  const saved = useSetting(key, authToken);
+  const [loaded, setLoaded] = useState(key in SETTING_CACHE);
+  const [snoozed, setSnoozed] = useState({}); // 이 화면에서 [나중에] 누른 날짜
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (loaded) return;
+    const t = setInterval(() => key in SETTING_CACHE && (setLoaded(true), clearInterval(t)), 300);
+    return () => clearInterval(t);
+  }, [loaded, key]);
+  // 처음 한 번: 목록 채우기
+  useEffect(() => {
+    if (!loaded || !authToken || saved || !orders.length) return;
+    // 지금까지 올라온 발주 전부를 "확인한 상품"으로 (처음 한 번에 알림이 쏟아지지 않게) → 다음 업로드부터 새 상품만 알림
+    const items = {};
+    npItemsOf(orders, null, channel).forEach((x) => (items[x.code] = { n: x.name, s: x.sup }));
+    updateSetting(key, authToken, (v) => (v && v.items ? v : { items, seededAt: localDateStr() })).catch(() => {});
+  }, [loaded, saved, orders.length]); // eslint-disable-line
+  const found = useMemo(() => {
+    if (!saved || !saved.items || !activeDate) return [];
+    const known = saved.items;
+    return npItemsOf(orders, activeDate, channel)
+      .map((x) => {
+        const k = known[x.code];
+        if (!k) return { ...x, kind: "new" };
+        if (String(k.n || "").replace(/\s/g, "") !== x.name.replace(/\s/g, "")) return { ...x, kind: "rename", oldName: k.n };
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.sup.localeCompare(b.sup, "ko") || (a.kind === b.kind ? 0 : a.kind === "new" ? -1 : 1) || a.name.localeCompare(b.name, "ko"));
+  }, [saved, orders, activeDate, channel]);
+  if (!found.length || snoozed[activeDate]) return null;
+  const nNew = found.filter((x) => x.kind === "new").length;
+  const nRen = found.length - nNew;
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await updateSetting(key, authToken, (v) => {
+        const items = { ...((v && v.items) || {}) };
+        found.forEach((x) => (items[x.code] = { n: x.name, s: x.sup, d: activeDate }));
+        return { ...(v || {}), items };
+      });
+    } catch (e) {
+      window.alert(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const groups = [];
+  found.forEach((x) => {
+    const g = groups.find((y) => y.sup === x.sup) || (groups.push({ sup: x.sup, items: [] }), groups[groups.length - 1]);
+    g.items.push(x);
+  });
+  return createPortal(
+    <div style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.55)", zIndex: 1500, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
+      <div style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth: 860, maxHeight: "88vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.25)", border: `3px solid ${T.danger}` }}>
+        <div style={{ background: T.danger, color: "#fff", padding: "16px 22px" }}>
+          <div style={{ fontSize: 19, fontWeight: 800 }}>⚠ {label} 신제품·상품명 변경 확인 ({fmtDate(activeDate)})</div>
+          <div style={{ fontSize: 13, marginTop: 4, opacity: 0.95 }}>
+            {nNew > 0 && <b>신제품 {nNew}개</b>}
+            {nNew > 0 && nRen > 0 && " · "}
+            {nRen > 0 && <b>상품명 바뀐 상품 {nRen}개</b>}
+            {" "}가 있어요. 피킹지·현장에 제대로 나가는지 꼭 확인한 뒤 [확인했어요]를 눌러주세요.
+          </div>
+        </div>
+        <div style={{ overflow: "auto", flex: 1, padding: "8px 22px 14px" }}>
+          {groups.map((g) => (
+            <div key={g.sup} style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 14, padding: "5px 0", borderBottom: `2px solid ${T.ink}` }}>{g.sup}</div>
+              {g.items.map((x) => (
+                <div key={x.code} style={{ display: "grid", gridTemplateColumns: "92px 1fr 90px", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${T.border}`, fontSize: 13.5 }}>
+                  <span style={{ textAlign: "center", borderRadius: 6, padding: "3px 6px", fontSize: 12, fontWeight: 800, background: x.kind === "new" ? "#FDECEA" : "#FFF2CC", color: x.kind === "new" ? "#A0281B" : "#8A5A00", border: `1px solid ${x.kind === "new" ? "#E6A9A2" : "#F2D27A"}` }}>{x.kind === "new" ? "🆕 신제품" : "🔄 리뉴얼"}</span>
+                  <span>
+                    <b>{x.name}</b>
+                    {x.kind === "rename" && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>예전 이름: {x.oldName}</div>}
+                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{x.code}</div>
+                  </span>
+                  <span style={{ textAlign: "right", fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>{x.qty.toLocaleString()}개</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: T.inkSoft, marginRight: "auto" }}>[나중에]를 누르면 이 화면을 다시 열 때 또 떠요. [확인했어요]는 모든 PC에 저장돼요.</span>
+          <button onClick={() => setSnoozed((s0) => ({ ...s0, [activeDate]: true }))} style={smallBtnStyle}>
+            나중에
+          </button>
+          <button disabled={busy} onClick={confirm} className="primary-btn" style={{ ...primaryBtnStyle, background: T.danger, opacity: busy ? 0.6 : 1 }}>
+            <Check size={15} /> {busy ? "저장 중..." : `확인했어요 (${found.length}개)`}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 /* ================= 발주 업로드 결과 팝업 ================= */
@@ -11420,6 +11674,7 @@ const SHEET_COLOR_KINDS = {
     types: [
       { key: "dangchak", label: "당착 시트 (조인앤조인 등 전 지역 당착)", special: true },
       { key: "ojeon", label: "오전현장 시트 (지역 골라서 당착)", special: true },
+      { key: "pivot", label: "공급사 피벗 시트 (공급사 색이 없을 때)" },
       { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
     ],
   },
@@ -13316,6 +13571,82 @@ function withZeroFixedProducts(orders, date, products) {
   return out;
 }
 
+// GS 피킹지 공급사별 피벗 시트 (실물 "GS 피킹지" 파일의 "○○피벗" 시트와 같은 모양, 2026-10-16 현장 요청)
+// A1 = 날짜(10/03), B1 = "열 레이블", 2행 = 상품, 3행부터 37개 센터(명세서 피벗과 같은 순서), 맨 아래 총합계. 수량은 발주파일 원래 수량(0고정 전)
+function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) {
+  const items = products.filter((p) => !String(p.sku).startsWith("zero-") && p.regionRows.some((r) => (r.rawQty ?? r.qty) > 0));
+  if (!items.length) return null;
+  const ws = workbook.addWorksheet(safeSheetName(`${String(supplierKey).replace(/\s+/g, "")}피벗`, usedNames));
+  ws.__sheetMeta = { supplier: supplierKey, type: "pivot" };
+  const [, m, d] = String(date || todayStr()).split("-").map(Number);
+  const hdrFont = { name: "맑은 고딕", size: 10, bold: true };
+  const bodyFont = { name: "맑은 고딕", size: 10 };
+  const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
+  const box = { top: thin, bottom: thin, left: thin, right: thin };
+  const qtyOf = (p, code) => {
+    const r = p.regionRows.find((x) => x.key === code);
+    return r ? Number(r.rawQty ?? r.qty) || 0 : 0;
+  };
+  // 센터 줄: 명세서 피벗 순서 + 그 밖에 발주가 있는 센터
+  const codes = [...INVOICE_PIVOT_ORDER];
+  const labelOf = {};
+  items.forEach((p) => p.regionRows.forEach((r) => {
+    if (!labelOf[r.key]) labelOf[r.key] = r.label;
+    if ((r.rawQty ?? r.qty) > 0 && !codes.includes(r.key)) codes.push(r.key);
+  }));
+  ws.getCell(1, 1).value = `${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}`;
+  ws.getCell(1, 2).value = "열 레이블";
+  ws.getCell(1, 1).font = hdrFont;
+  ws.getCell(1, 2).font = hdrFont;
+  ws.getCell(2, 1).value = "행 레이블";
+  items.forEach((p, i) => (ws.getCell(2, 2 + i).value = p.displayName || p.name));
+  const totalCol = 2 + items.length;
+  ws.getCell(2, totalCol).value = "총합계";
+  for (let c = 1; c <= totalCol; c++) {
+    const cell = ws.getCell(2, c);
+    cell.font = hdrFont;
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEBF7" } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = box;
+  }
+  ws.getRow(2).height = 42;
+  const colTotals = items.map(() => 0);
+  let r = 3;
+  codes.forEach((code) => {
+    const info = REGION_ADDRESS_MAP[code];
+    ws.getCell(r, 1).value = (info && info.vvLabel) || labelOf[code] || code;
+    let rowTotal = 0;
+    items.forEach((p, i) => {
+      const q = qtyOf(p, code);
+      rowTotal += q;
+      colTotals[i] += q;
+      if (q > 0) ws.getCell(r, 2 + i).value = q;
+    });
+    if (rowTotal > 0) ws.getCell(r, totalCol).value = rowTotal;
+    for (let c = 1; c <= totalCol; c++) {
+      const cell = ws.getCell(r, c);
+      cell.font = c === totalCol ? hdrFont : bodyFont;
+      cell.border = box;
+      if (c > 1) cell.alignment = { horizontal: "center", vertical: "middle" };
+    }
+    r++;
+  });
+  ws.getCell(r, 1).value = "총합계";
+  items.forEach((p, i) => (ws.getCell(r, 2 + i).value = colTotals[i]));
+  ws.getCell(r, totalCol).value = colTotals.reduce((a, b) => a + b, 0);
+  for (let c = 1; c <= totalCol; c++) {
+    const cell = ws.getCell(r, c);
+    cell.font = hdrFont;
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEBF7" } };
+    cell.border = box;
+    if (c > 1) cell.alignment = { horizontal: "center", vertical: "middle" };
+  }
+  ws.getColumn(1).width = 34;
+  for (let c = 2; c <= totalCol; c++) ws.getColumn(c).width = 16;
+  ws.views = [{ state: "frozen", xSplit: 1, ySplit: 2 }];
+  return ws;
+}
+
 async function downloadStyledInspectionExcel(products, filename, setBusy, date, activeSku) {
   if (setBusy) setBusy(true);
   products = withZeroDangchakProducts(products);
@@ -13340,6 +13671,8 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
     const sheetIdxOfSku = new Map();
     const pendingCombined = []; // 아직 넣지 못한 당착 그룹 (그룹 마지막 상품이 들어간 공급사 묶음 끝에 넣음)
     blocks.forEach((blk) => {
+      // ⓪ 공급사 피벗 (여러 상품을 한 파일로 받을 때만 - 한 상품만 받을 땐 생략)
+      if (products.length > 1) addPickingPivotSheet(workbook, blk.key, blk.items.map(({ p }) => p), usedNames, date);
       // ① 공급사배포용
       blk.items.forEach(({ p }) => {
         if (needsSupplierCopy(p)) addStyledInspectionSheet(workbook, customerVersionOfProduct(p), usedNames, date, false, supplierCopySheetName(p));
@@ -15465,6 +15798,7 @@ function PickingInspection({ orders, orderCfg, productInfo, authToken, onOrderCf
 
   return (
     <div>
+      <NewProductAlert channel="gs" label="GS" orders={orders} activeDate={activeDate} authToken={authToken} />
       <PageHeader
         title="피킹지시서 출력"
         sub="발주번호와 상관없이, 상품 하나를 기준으로 화주사 지정 순서·A/B구역대로 지역별 수량을 정리합니다"
