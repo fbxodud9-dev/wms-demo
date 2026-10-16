@@ -7158,6 +7158,8 @@ function analyzeEmartTemplate(tpl, regionRe = /\(저온\)|\(상온\)|\(냉동\)/
 
 // 이마트 상품 연결 기억: { byName: { 발주파일 상품명: 템플릿 시트 }, byCode: { 상품코드: 템플릿 시트 } } (서버 설정 emart_product_alias)
 // 이마트 발주파일은 같은 상품도 상품명 표기가 제각각이라(띄어쓰기·괄호·브랜드 접두어 등), 한 번 연결된 상품코드/이름은 계속 같은 시트로 간다
+// 이마트 그린델리카 수도권 센터 - 우리가 납품하지 않는 곳 (결과 팝업 "시트에 없는 센터"에 안 띄움)
+const EMART_NOT_OUR_CENTERS = new Set(["양지2", "청라2", "평택2", "포천2", "화성2"]);
 let EMART_ALIAS = { byName: {}, byCode: {} };
 function setEmartAlias(v) {
   EMART_ALIAS = { byName: (v && v.byName) || {}, byCode: (v && v.byCode) || {} };
@@ -7480,7 +7482,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: item.name, qty: item.qty });
     const regSet = new Set(prod.regions);
     Object.entries(item.qty).forEach(([reg, q]) => {
-      if (!regSet.has(reg)) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
+      if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
     });
     report.matched.push({ name: item.name, sheet: prod.sheet, pivot: prod.pivot, total: Object.values(item.qty).reduce((a, b) => a + b, 0), isNew: !!prod.isNew });
   });
