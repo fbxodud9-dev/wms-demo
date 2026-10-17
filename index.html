@@ -2059,7 +2059,7 @@ function AccountsPage({ authToken, me }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(null); // 권한 수정 중인 계정
-  const [form, setForm] = useState(() => ({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload"] }));
+  const [form, setForm] = useState(() => ({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload", "delete"] }));
   const isAdmin = me && me.role === "admin";
   const load = useCallback(async () => {
     try {
@@ -2083,7 +2083,7 @@ function AccountsPage({ authToken, me }) {
     try {
       const r = await apiFetch("/users", authToken, { method: "POST", body: form });
       setMsg(`만들었어요: ${r.user.name} (아이디 ${r.user.username} · 임시 비밀번호 ${form.password}) — 이 비밀번호를 직원에게 알려 주세요. 처음 로그인할 때 새 비밀번호로 바꾸게 돼요.`);
-      setForm({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload"] });
+      setForm({ name: "", username: "", password: randomTempPw(), role: "staff", perms: ["upload", "delete"] });
       load();
     } catch (e2) {
       setErr(e2.message);
