@@ -8006,8 +8006,11 @@ function matchEmartProduct(tpl, name, code) {
   const regular = !tpl.frozen; // 냉동 템플릿은 예전 방식 그대로
   if (regular) {
     const bySheet = (sh) => sh && tpl.products.find((p) => p.sheet === sh);
-    const a = bySheet(EMART_ALIAS.byName[String(name || "").trim()]) || (code && bySheet(EMART_ALIAS.byCode[String(code).trim()]));
-    if (a) return a;
+    const byNm = bySheet(EMART_ALIAS.byName[String(name || "").trim()]);
+    if (byNm) return byNm;
+    // 코드로 기억된 연결: "(사전예약)" 같은 별개 상품 표시가 이 상품명에만 있으면 무시 (예전에 잘못 기억된 연결 방지)
+    const byCd = code && bySheet(EMART_ALIAS.byCode[String(code).trim()]);
+    if (byCd && !(EMART_DISTINCT_RE.test(name || "") && !byCd.keys.some((k) => EMART_DISTINCT_RE.test(k)))) return byCd;
   }
   let hit = tpl.products.find((p) => p.keys.includes(n));
   if (hit) return hit;
@@ -8225,15 +8228,67 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   const report = { matched: [], added: [], unknown: [], missingRegions: [] };
 
   // 상품별 집계
-  const agg = new Map(); // 상품(템플릿 시트 또는 상품명) -> { name, vendor, box, code, prod, qty: {센터: n} }
-  orderRows.forEach((r) => {
-    const prod = matchEmartProduct(tpl, r.name, r.code);
-    const key = prod ? "sheet:" + prod.sheet : r.name; // 표기가 다른 상품명도 같은 시트면 한 줄로 합침
-    const a = agg.get(key) || { name: r.name, vendor: r.vendor, box: r.box, code: r.code || "", prod, qty: {}, names: new Set() };
-    a.qty[r.center] = (a.qty[r.center] || 0) + r.qty;
-    a.names.add(r.name);
-    agg.set(key, a);
-  });
+  let agg = new Map(); // 상품(템플릿 시트 또는 상품명) -> { name, vendor, box, code, prod, qty: {센터: n} }
+  // 냉동 피킹지(GS 냉동·이마트 냉동)는 예전 방식 그대로: 같은 시트면 코드가 달라도 합침
+  if (tpl.frozen || opts.keepVisible || opts.cloneUnknownVendor) {
+    orderRows.forEach((r) => {
+      const prod = matchEmartProduct(tpl, r.name, r.code);
+      const key = prod ? "sheet:" + prod.sheet : r.name; // 표기가 다른 상품명도 같은 시트면 한 줄로 합침
+      const a = agg.get(key) || { name: r.name, vendor: r.vendor, box: r.box, code: r.code || "", prod, qty: {}, names: new Set() };
+      a.qty[r.center] = (a.qty[r.center] || 0) + r.qty;
+      a.names.add(r.name);
+      agg.set(key, a);
+    });
+  } else {
+    // 이마트: 상품코드가 다르면 상품명이 같거나 비슷해도 "다른 상품" (2026-10-18 사전예약 상품이 일반 상품 시트에 합쳐지던 문제)
+    // 1) 시트(또는 상품명) + 상품코드별로 모음
+    const byCode = new Map();
+    orderRows.forEach((r) => {
+      const prod = matchEmartProduct(tpl, r.name, r.code);
+      const code = String(r.code || "").trim();
+      const key = (prod ? "sheet:" + prod.sheet : "name:" + r.name) + "|" + code;
+      const a = byCode.get(key) || { name: r.name, vendor: r.vendor, box: r.box, code, prod, qty: {}, names: new Set() };
+      a.qty[r.center] = (a.qty[r.center] || 0) + r.qty;
+      a.names.add(r.name);
+      byCode.set(key, a);
+    });
+    // 2) 한 시트에 상품코드가 여러 개면: 원래 그 시트 상품(이름이 시트와 정확히 같거나, 연결해 둔 코드, 아니면 수량 많은 쪽)만 그 시트에 남기고
+    //    나머지 코드는 새 상품으로 → 같은 공급사 피벗에 같은 모양의 시트를 따로 만듦. 상품코드 빈 줄은 원래 상품에 합침
+    const groups = new Map(); // 묶음 키(시트/상품명) -> [item]
+    byCode.forEach((it, key) => {
+      const g = key.slice(0, key.lastIndexOf("|"));
+      (groups.get(g) || groups.set(g, []).get(g)).push(it);
+    });
+    const total = (it) => Object.values(it.qty).reduce((x, y) => x + y, 0);
+    const mergeInto = (dst, src) => {
+      Object.entries(src.qty).forEach(([c, q]) => (dst.qty[c] = (dst.qty[c] || 0) + q));
+      src.names.forEach((n) => dst.names.add(n));
+    };
+    report.splitByCode = [];
+    groups.forEach((items, g) => {
+      const coded = items.filter((it) => it.code);
+      const blank = items.filter((it) => !it.code);
+      if (coded.length <= 1) {
+        const main = coded[0] || blank[0];
+        items.filter((it) => it !== main).forEach((it) => mergeInto(main, it));
+        agg.set(g, main);
+        return;
+      }
+      const prod = items[0].prod;
+      const exact = (it) => prod && [...it.names].some((n) => prod.keys.includes(emartNorm(n)));
+      const linked = (it) => prod && EMART_ALIAS.byCode[it.code] === prod.sheet;
+      const owner = prod ? [...coded].sort((a, b) => Number(linked(b)) - Number(linked(a)) || Number(exact(b)) - Number(exact(a)) || total(b) - total(a))[0] : null;
+      blank.forEach((it) => mergeInto(owner || coded[0], it));
+      coded.forEach((it) => {
+        if (it === owner) return agg.set(g, it);
+        // 다른 상품코드: 템플릿 시트와 연결을 끊고 새 시트로 (서식은 부딪힌 그 상품 시트를 그대로 복사)
+        if (prod) report.splitByCode.push({ name: it.name, code: it.code, likeSheet: prod.sheet, ownerName: owner && owner.name, ownerCode: owner && owner.code });
+        it.likeProd = prod || null;
+        it.prod = null;
+        agg.set(g + "|" + it.code, it);
+      });
+    });
+  }
   // 템플릿 상품과 연결. 거래처 -> 피벗 추정용
   const vendorPivot = {};
   const links = []; // { prod(템플릿), item }
@@ -8251,7 +8306,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   for (const item of unmatched) {
     // (냉동 피킹지는 예전 방식 그대로: keepVisible/cloneUnknownVendor가 있으면 이름 비교만 원래대로)
     const frozenMode = !!(opts.keepVisible || opts.cloneUnknownVendor);
-    let pivot = frozenMode ? vendorPivot[item.vendor] : emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || emartPivotByVendorName(tpl, item.vendor);
+    let pivot = (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] : emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || emartPivotByVendorName(tpl, item.vendor));
     if (!pivot && opts.cloneUnknownVendor && tpl.products.length) {
       // 템플릿에 없는 공급사(이마트 냉동 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
       const srcPv = tpl.products[0].pivot;
@@ -8269,10 +8324,12 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     }
     const sameP = tpl.products.filter((p) => p.pivot === pivot);
     const k = sameP.length ? Math.max(...sameP.map((p) => p.k)) + 1 : 2;
-    const srcProd = sameP[0] || tpl.products[0];
+    const srcProd = (item.likeProd && item.likeProd.pivot === pivot && item.likeProd) || sameP[0] || tpl.products[0];
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
-    const newName = safeEmartSheetName(item.name, usedNames);
+    // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
+    const wantName = item.code && usedNames.has(String(item.name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(item.name).slice(0, 24)}(${item.code.slice(-5)})` : item.name;
+    const newName = safeEmartSheetName(wantName, usedNames);
     const mutate = (sheet) => {
       Array.from(sheet.doc.getElementsByTagName("c")).forEach((c) => {
         const f = c.getElementsByTagName("f")[0];
@@ -8322,7 +8379,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     Object.entries(item.qty).forEach(([reg, q]) => {
       if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
     });
-    report.matched.push({ name: item.name, names: Array.from(item.names || [item.name]), col: prod.col || 3, k: prod.k, sheet: prod.sheet, pivot: prod.pivot, total: Object.values(item.qty).reduce((a, b) => a + b, 0), isNew: !!prod.isNew });
+    report.matched.push({ name: item.name, names: Array.from(item.names || [item.name]), code: item.code || "", col: prod.col || 3, k: prod.k, sheet: prod.sheet, pivot: prod.pivot, total: Object.values(item.qty).reduce((a, b) => a + b, 0), isNew: !!prod.isNew });
   });
   // 발주 없는 템플릿 상품도 피벗 머리글은 남김 (GS 냉동: 시트를 0으로 유지)
   if (opts.keepVisible) {
@@ -11255,12 +11312,23 @@ function EmartPickingView({ emartOrders, authToken }) {
   useEffect(() => {
     if (!authToken || !tplInfo || aliasCfg === undefined) return;
     const add = {};
+    const drop = [];
     products.forEach((p) => {
       const code = String(p.code || "").trim();
-      if (p.tpl && code && code !== p.name && EMART_ALIAS.byCode[code] !== p.tpl.sheet) add[code] = p.tpl.sheet;
+      if (!code || code === p.name) return;
+      // 상품명이 시트와 "정확히" 같을 때만 코드를 기억 (비슷한 이름으로 붙은 별개 상품 코드를 기억하면 계속 합쳐짐 - 2026-10-18 사전예약)
+      if (p.tpl && p.tpl.keys.includes(emartNorm(p.name)) && EMART_ALIAS.byCode[code] !== p.tpl.sheet) add[code] = p.tpl.sheet;
+      // 예전에 잘못 기억된 연결 지우기: "(사전예약)" 등 별개 상품 표시가 있는데 표시 없는 시트에 코드가 묶여 있으면
+      const linked = EMART_ALIAS.byCode[code] && tplInfo.products.find((x) => x.sheet === EMART_ALIAS.byCode[code]);
+      if (linked && EMART_DISTINCT_RE.test(p.name) && !linked.keys.some((k) => EMART_DISTINCT_RE.test(k))) drop.push(code);
     });
-    if (!Object.keys(add).length) return;
-    updateSetting("emart_product_alias", authToken, (v) => ({ byName: (v && v.byName) || {}, byCode: { ...((v && v.byCode) || {}), ...add } })).catch(() => {});
+    if (!Object.keys(add).length && !drop.length) return;
+    drop.forEach((c) => delete EMART_ALIAS.byCode[c]);
+    updateSetting("emart_product_alias", authToken, (v) => {
+      const byCode = { ...((v && v.byCode) || {}), ...add };
+      drop.forEach((c) => delete byCode[c]);
+      return { byName: (v && v.byName) || {}, byCode };
+    }).catch(() => {});
   }, [products]); // eslint-disable-line
   const vendorOptions = useMemo(() => Array.from(new Set(products.map((p) => p.vendor))), [products]);
   const filtered = products.filter((p) => {
@@ -12073,7 +12141,7 @@ function pvSourceChecks(dayOrders, supKeyOf, include, res) {
     if (m.size > 1) res.warns.push({ type: "상품코드", text: `상품코드 ${code} 하나에 상품명이 ${m.size}개예요: ${Array.from(m.values()).join(" / ")}. 리뉴얼(이름 변경)이 아니면 확인해 주세요.` });
   });
   codesOfName.forEach((x) => {
-    if (x.codes.size > 1) res.warns.push({ type: "상품코드", text: `${x.name}: 같은 상품명인데 상품코드가 ${x.codes.size}개예요 (${Array.from(x.codes).join(", ")}). 시트가 따로 나갈 수 있어요.` });
+    if (x.codes.size > 1) res.warns.push({ type: "상품코드", text: `${x.name}: 같은 상품명인데 상품코드가 ${x.codes.size}개예요 (${Array.from(x.codes).join(", ")}). 상품코드가 다르면 다른 상품이라 이마트 피킹지는 시트를 따로 만들어요 (시트 이름 뒤에 코드 끝자리).` });
   });
 }
 // ③ 이상 수량: 최근 같은 요일(최대 4번) 평균의 2배 이상 & 10개 이상 차이
@@ -12240,11 +12308,17 @@ function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, i
   const wb = XLSX.read(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { type: "array" });
   // 엑셀에 들어간 시트(합쳐진 상품명 포함) → 기대 수량
   const sheetOfName = new Map();
-  (report.matched || []).forEach((m) => (m.names || [m.name]).forEach((n) => sheetOfName.set(n, m)));
+  const sheetOfNC = new Map(); // 상품명|상품코드 -> 시트 (같은 이름이라도 코드가 다르면 다른 시트)
+  (report.matched || []).forEach((m) =>
+    (m.names || [m.name]).forEach((n) => {
+      if (!sheetOfName.has(n)) sheetOfName.set(n, m);
+      if (m.code) sheetOfNC.set(n + "|" + m.code, m);
+    })
+  );
   const want = new Map(); // sheet -> { m, qty: {center: n} }
   const codesOfSheet = new Map(); // sheet -> Map(code -> 상품명)
   rows.forEach((r) => {
-    const m = sheetOfName.get(r.name);
+    const m = sheetOfNC.get(r.name + "|" + String(r.code || "").trim()) || sheetOfName.get(r.name);
     if (!m) return;
     const w = want.get(m.sheet) || { m, qty: {} };
     w.qty[r.center] = (w.qty[r.center] || 0) + r.qty;
