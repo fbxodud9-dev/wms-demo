@@ -6280,7 +6280,8 @@ const DAILY_SHEETS = [
   { name: "GS재고", head: "GS재고", cold: true },
   { name: "GS냉동", head: "GS냉동", cold: false },
   { name: "GS슈퍼", head: "GS슈퍼", cold: false },
-  { name: "이마트", head: "이마트", cold: false },
+  // 이마트: 4번째 칸 = 데어리젠(당착) 상품 합계 (2026-10-20 요청, 일일물동량에는 더하지 않음 - 이미 1편/2편에 들어 있음)
+  { name: "이마트", head: "이마트", cold: false, dkHead: "해당 제품 당착", dkRe: /데어리젠/ },
   { name: "이마트냉동", head: "이마트냉동", cold: false },
 ];
 
@@ -6316,7 +6317,7 @@ async function downloadGsDailyExcel(table, setBusy) {
         ws.getCell(a).fill = a.endsWith("3") ? green : gray;
         ws.getCell(a).border = box;
       });
-      const heads = [`일일물동량\n${meta.head}`, "1편수량", "2편수량", meta.cold ? "냉장" : "", "발주일자", "요일", "센터\n입고일자", "요일"];
+      const heads = [`일일물동량\n${meta.head}`, "1편수량", "2편수량", meta.cold ? "냉장" : meta.dkHead || "", "발주일자", "요일", "센터\n입고일자", "요일"];
       heads.forEach((h, i) => {
         const c = ws.getCell(4, 2 + i);
         c.value = h;
@@ -6373,11 +6374,13 @@ async function downloadGsDailyExcel(table, setBusy) {
         if (withStock && stockCol && (stockCol !== "D" || stockHas2)) f += `+'GS재고'!${stockCol}${rr}`;
         return f;
       };
+      const dkIdx = meta.dkRe ? sh.columns.map((c, i) => (meta.dkRe.test(String(c.supplier || "")) ? i : -1)).filter((i) => i >= 0) : [];
+      const dkCell = (r, rr) => ({ formula: dkIdx.length ? dkIdx.map((i) => `${ws.getColumn(10 + i).letter}${rr}`).join("+") : "0", result: dkIdx.reduce((a, i) => a + (Number(r.cells[i]) || 0), 0) });
       sh.rows.forEach((r, k) => {
         const rr = 6 + k;
         const cC = { formula: partFormula(r, rr, "1", "C"), result: r.p1 };
         const cD = show2 ? { formula: partFormula(r, rr, "2", "D"), result: r.p2 } : null;
-        const cE = meta.cold ? { formula: partFormula(r, rr, "c", "E"), result: r.cold } : null;
+        const cE = meta.cold ? { formula: partFormula(r, rr, "c", "E"), result: r.cold } : meta.dkRe ? dkCell(r, rr) : null;
         const cB = { formula: meta.cold ? `C${rr}+${show2 ? `D${rr}+` : ""}E${rr}` : `C${rr}+D${rr}`, result: r.total };
         [cB, cC, cD, cE].forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
         ws.getCell(rr, 6).value = invDate(r.date);
@@ -6400,7 +6403,8 @@ async function downloadGsDailyExcel(table, setBusy) {
       const tr = 6 + sh.rows.length;
       ws.getCell(tr, 6).value = "합계";
       const colSum = (c, result) => ({ formula: `SUM(${ws.getColumn(c).letter}6:${ws.getColumn(c).letter}${tr - 1})`, result });
-      [sh.totals.total, sh.totals.p1, show2 ? sh.totals.p2 : null, meta.cold ? sh.totals.cold : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v === null ? null : colSum(2 + i, v)));
+      const dkTotal = dkIdx.reduce((a, i) => a + (Number(sh.totals.cells[i]) || 0), 0);
+      [sh.totals.total, sh.totals.p1, show2 ? sh.totals.p2 : null, meta.cold ? sh.totals.cold : meta.dkRe ? dkTotal : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v === null ? null : colSum(2 + i, v)));
       sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = colSum(10 + i, v)));
       for (let c = 2; c < 10 + sh.columns.length; c++) {
         const cell = ws.getCell(tr, c);
