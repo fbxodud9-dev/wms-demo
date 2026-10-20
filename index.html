@@ -15136,6 +15136,8 @@ const XL_GRAY_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9
 
 // 실제 피킹지시서 디자인(테두리·음영·폰트 크기)을 그대로 적용해 1개 품목 시트를 만듦
 const JOIN_NAME_FILL = "FFF2CC"; // 연한 노란색 (엑셀 "금색, 강조 4, 80% 더 밝게")
+// 피킹지 파일을 만드는 동안만 쓰는 "피벗 칸 주소" (sku|센터 -> 셀). 만들기 전에 채우고 끝나면 비움
+let GS_PIVOT_REFS = null;
 function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero, sheetNameOverride) {
   const pack = product.packQty || 0;
   const bd = (q) => (pack > 0 ? { box: Math.floor(q / pack), rem: q % pack } : { box: 0, rem: q });
@@ -15243,6 +15245,9 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero, 
       c.border = { top: XL_THIN, bottom: XL_THIN, left: col === "A" ? XL_MEDIUM : XL_THIN, right: col === "F" ? XL_MEDIUM : XL_THIN };
     });
     const rn = row.number;
+    // 수량 칸: 같은 파일 공급사 피벗의 그 칸을 그대로 봄 (0고정·당착으로 바뀐 칸은 고정값 그대로)
+    const pvRef = GS_PIVOT_REFS && GS_PIVOT_REFS.get(`${product.sku}|${r.key}`);
+    if (pvRef && !skipZero && r.qty === (r.rawQty ?? r.qty)) row.getCell("C").value = { formula: `N(${pvRef})`, result: r.qty };
     row.getCell("D").value = { formula: `IF(B${rn}=0,0,INT(C${rn}/B${rn}))`, result: box };
     row.getCell("F").value = { formula: `IF(B${rn}=0,C${rn},C${rn}-D${rn}*B${rn})`, result: rem };
     // 체크포인트: 화주사가 지정한 특정 지역에서만 표시 (1편: 강릉·신광주2·아신A·김포3·도화2·신오산3 / 2편: 김해2·신제주·익산·경산3·공주2·아신A·신오산3·포천2)
@@ -15614,7 +15619,10 @@ function prevOrderDate(orders, date) {
   orders.forEach((o) => o.createdAt && o.createdAt < date && (!best || o.createdAt > best) && (best = o.createdAt));
   return best;
 }
+const GS_NO_ORDER_ZERO_SHEETS_OFF = true;
 function withZeroFixedProducts(orders, date, products) {
+  // 2026-10-20 현장 요청: 그날 발주가 없는 상품은 (0고정 지역이 있어도) 시트를 만들지 않음 (맛요일 (주문)예약)3900치즈미역국 0 시트)
+  if (GS_NO_ORDER_ZERO_SHEETS_OFF) return products;
   if (!date || !products) return products;
   const prev = prevOrderDate(orders, date);
   if (!prev) return products;
@@ -15682,6 +15690,11 @@ function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) 
   }
   ws.getRow(2).height = 42;
   const colTotals = items.map(() => 0);
+  // 피벗 칸 주소 기억 → 상품 시트 수량 칸이 이 칸을 보도록 (피벗에서 숫자를 고치면 그 상품 시트·합계가 같이 바뀜, 2026-10-20 현장 요청)
+  const refs = new Map(); // "sku|센터코드" -> "'피벗'!C5"
+  const qName = `'${ws.name.replace(/'/g, "''")}'`;
+  const colL = (c) => ws.getColumn(c).letter;
+  const HIDE0 = '0;-0;"";@'; // 0은 빈칸처럼 보이게 (예전처럼 발주 없는 칸은 비어 보임)
   let r = 3;
   codes.forEach((code) => {
     const info = REGION_ADDRESS_MAP[code];
@@ -15692,8 +15705,10 @@ function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) 
       rowTotal += q;
       colTotals[i] += q;
       if (q > 0) ws.getCell(r, 2 + i).value = q;
+      refs.set(`${p.sku}|${code}`, `${qName}!$${colL(2 + i)}$${r}`);
     });
-    if (rowTotal > 0) ws.getCell(r, totalCol).value = rowTotal;
+    ws.getCell(r, totalCol).value = { formula: `SUM(${colL(2)}${r}:${colL(totalCol - 1)}${r})`, result: rowTotal };
+    ws.getCell(r, totalCol).numFmt = HIDE0;
     for (let c = 1; c <= totalCol; c++) {
       const cell = ws.getCell(r, c);
       cell.font = c === totalCol ? hdrFont : bodyFont;
@@ -15703,8 +15718,9 @@ function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) 
     r++;
   });
   ws.getCell(r, 1).value = "총합계";
-  items.forEach((p, i) => (ws.getCell(r, 2 + i).value = colTotals[i]));
-  ws.getCell(r, totalCol).value = colTotals.reduce((a, b) => a + b, 0);
+  items.forEach((p, i) => (ws.getCell(r, 2 + i).value = { formula: `SUM(${colL(2 + i)}3:${colL(2 + i)}${r - 1})`, result: colTotals[i] }));
+  ws.getCell(r, totalCol).value = { formula: `SUM(${colL(totalCol)}3:${colL(totalCol)}${r - 1})`, result: colTotals.reduce((a, b) => a + b, 0) };
+  ws.__pivotRefs = refs;
   for (let c = 1; c <= totalCol; c++) {
     const cell = ws.getCell(r, c);
     cell.font = hdrFont;
@@ -15757,9 +15773,14 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
     const pendingCombined = []; // 아직 넣지 못한 당착 그룹 (그룹 마지막 상품이 들어간 공급사 묶음 끝에 넣음)
     blocks.forEach((blk) => {
       // ⓪ 공급사 피벗 (여러 상품을 한 파일로 받을 때만 - 한 상품만 받을 땐 생략)
+      GS_PIVOT_REFS = null;
       if (products.length > 1) {
         const pvItems = blk.items.map(({ p }) => p);
-        if (addPickingPivotSheet(workbook, blk.key, pvItems, usedNames, date)) logLast("pivot", { items: pvItems });
+        const pvWs = addPickingPivotSheet(workbook, blk.key, pvItems, usedNames, date);
+        if (pvWs) {
+          logLast("pivot", { items: pvItems });
+          GS_PIVOT_REFS = pvWs.__pivotRefs || null;
+        }
       }
       // ① 공급사배포용
       blk.items.forEach(({ p }) => {
@@ -15812,6 +15833,7 @@ async function downloadStyledInspectionExcel(products, filename, setBusy, date, 
     saveXlsxBuffer(buffer, filename);
     return { buffer, filename };
   } finally {
+    GS_PIVOT_REFS = null;
     if (setBusy) setBusy(false);
   }
 }
