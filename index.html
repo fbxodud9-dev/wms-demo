@@ -3654,7 +3654,7 @@ function WMSApp() {
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} authToken={authToken} />}
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
         {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
@@ -11270,13 +11270,27 @@ function EmartPickingView({ emartOrders, authToken }) {
   }, []);
 
   // XIII. 상품 정보 관리(이마트)에서 바꾼 값: 입수 / 일시중지·삭제 상품은 피킹지에서 뺌
-  const infoOf = (name, tp) => emInfo[name] || (tp ? emInfo[String(tp.title || "").replace(/\s*\n\s*/g, "").trim()] : null) || null;
+  // 상품 정보(입수 등)는 상품명으로 저장돼 있어서, 같은 상품코드인데 상품명 표기가 바뀌면 못 찾았음 (2026-10-20 에그타르트 입수 36 → 2로 나감)
+  // → 상품명으로 못 찾으면 상품코드로 찾음 (저장할 때 넣은 코드 + 최근 발주에서 그 상품명에 붙어 있던 코드)
+  const emInfoByCode = useMemo(() => {
+    const m = {};
+    Object.values(emInfo).forEach((e) => e && e.sku && !m[e.sku] && (m[String(e.sku).trim()] = e));
+    emartOrders.forEach((o) =>
+      o.lines.forEach((l) => {
+        const e = emInfo[String(l.name || "").trim()];
+        const c = String(l.sku || "").trim();
+        if (e && c && c !== l.name && !m[c]) m[c] = e;
+      })
+    );
+    return m;
+  }, [emInfo, emartOrders]);
+  const infoOf = (name, tp, code) => emInfo[name] || (code && emInfoByCode[String(code).trim()]) || (tp ? emInfo[String(tp.title || "").replace(/\s*\n\s*/g, "").trim()] : null) || null;
   const allRows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate && !isGsCenterOrder(o))), [emartOrders, activeDate]);
   const rows = useMemo(
     () =>
       allRows.filter((r) => {
         if (isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)) return false; // 피킹지 순서 설정에서 뺀(삭제한) 공급사·상품
-        const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
+        const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name, r.code) : null, r.code);
         return !(ov && (ov.paused || ov.discontinued || (ov.brand && ov.brand !== "EMART"))); // 브랜드 설정에서 다른 브랜드로 정한 상품도 뺌
       }),
     [allRows, emInfo, tplInfo, orderCfg] // eslint-disable-line
@@ -11297,7 +11311,7 @@ function EmartPickingView({ emartOrders, authToken }) {
       const order = new Map(tplInfo.sheets.map((s, i) => [s.name, i]));
       list.forEach((p) => {
         p.tpl = matchEmartProduct(tplInfo, p.name, p.code);
-        const ov = infoOf(p.name, p.tpl);
+        const ov = infoOf(p.name, p.tpl, p.code);
         p.packOverride = ov && Number(ov.packQty) > 0 ? Number(ov.packQty) : 0;
         // 입수: 상품 정보 관리에서 바꾼 값 > 발주파일 입수(2 이상일 때) > 피킹지 원본 템플릿 입수
         p.pack = p.packOverride || (Number(p.box) > 1 ? Number(p.box) : 0) || (p.tpl && p.tpl.pack) || 0;
@@ -11446,7 +11460,7 @@ function EmartPickingView({ emartOrders, authToken }) {
             isBrandHidden(orderCfg, emartVendorKey(r.vendor), r.name)
               ? "순서 설정에서 '피킹 안 함'(삭제)"
               : (() => {
-                  const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name) : null);
+                  const ov = infoOf(r.name, tplInfo ? matchEmartProduct(tplInfo, r.name, r.code) : null, r.code);
                   return ov && ov.brand && ov.brand !== "EMART" ? "브랜드 설정에서 다른 브랜드로 정함" : "상품 정보 관리에서 일시중지·삭제(단종)";
                 })(),
         });
@@ -14452,9 +14466,12 @@ function BrandProductInfoView({ brand, label, rows: allRowsIn, authToken, loadin
   async function setEntry(name, fn, done) {
     setBusy(name);
     setMsg("");
+    const rowSku = (list.find((x) => x.name === name) || {}).sku || "";
     const r = await updateSetting(key, authToken, (v) => {
       const e = fn({ ...(v[name] || {}) });
-      if (e && Object.keys(e).length) v[name] = e;
+      // 상품코드도 같이 저장 → 나중에 발주파일 상품명 표기가 바뀌어도 코드로 같은 상품 정보(입수 등)를 찾음
+      if (e && rowSku && Object.keys(e).some((k) => k !== "sku")) e.sku = rowSku;
+      if (e && Object.keys(e).some((k) => k !== "sku")) v[name] = e;
       else delete v[name];
       return v;
     });
@@ -20060,7 +20077,32 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
   );
 }
 
-function ProductMaster({ items, onSave, onCreate, onDelete }) {
+// 상품마스터에서 등록·수정한 품목은 하루(24시간) 동안 목록 맨 위에 (2026-10-20 현장 요청: 맨 밑에 있어서 찾기 힘듦)
+// 서버 설정 wms_item_touched = { 상품코드: 수정한 시각(ms) } - 모든 PC에서 같이 보임, 하루 지난 건 저장할 때 자동 정리
+const ITEM_TOUCH_MS = 24 * 60 * 60 * 1000;
+function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }) {
+  const touched = useSetting("wms_item_touched", authToken) || {};
+  const nowMs = Date.now();
+  const touchedAt = (sku) => {
+    const t = Number(touched[sku]) || 0;
+    return nowMs - t < ITEM_TOUCH_MS ? t : 0;
+  };
+  const items = useMemo(() => {
+    const recent = itemsIn.filter((i) => touchedAt(i.sku)).sort((a, b) => touchedAt(b.sku) - touchedAt(a.sku));
+    if (!recent.length) return itemsIn;
+    const set = new Set(recent);
+    return [...recent, ...itemsIn.filter((i) => !set.has(i))];
+  }, [itemsIn, touched]); // eslint-disable-line
+  const markTouched = (sku, oldSku) => {
+    if (!authToken || !sku) return;
+    updateSetting("wms_item_touched", authToken, (v) => {
+      const now = Date.now();
+      const out = {};
+      Object.entries(v || {}).forEach(([k, t]) => now - Number(t) < ITEM_TOUCH_MS && k !== oldSku && (out[k] = t));
+      out[sku] = now;
+      return out;
+    }).catch(() => {});
+  };
   const [selectedSku, setSelectedSku] = useState(items[0]?.sku || null);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState(null);
@@ -20111,6 +20153,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
     if (code !== selected.sku && items.some((i) => i.sku === code)) return window.alert("이미 다른 품목이 사용 중인 상품코드예요.");
     if (code !== selected.sku && !window.confirm(`상품코드를 ${selected.sku} → ${code} 로 바꿀까요?\n(이 코드로 들어온 기존 발주·입출고 이력도 같이 바뀝니다)`)) return;
     onSave(selected.sku, form);
+    markTouched(code, code !== selected.sku ? selected.sku : null);
     if (code !== selected.sku) setSelectedSku(code);
   }
   function submitCreate() {
@@ -20118,6 +20161,7 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
     if (!createForm.sku.trim() || !createForm.name.trim()) return setCreateErr("상품코드와 품목명은 필수입니다.");
     if (items.some((i) => i.sku === createForm.sku.trim())) return setCreateErr("이미 존재하는 상품코드입니다.");
     onCreate({ ...createForm, sku: createForm.sku.trim(), location: createForm.location.trim() || "미배정" });
+    markTouched(createForm.sku.trim());
     setCreateForm({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0, brands: brandFilter === "all" ? "GS" : brandFilter });
   }
 
@@ -20170,7 +20214,10 @@ function ProductMaster({ items, onSave, onCreate, onDelete }) {
                   shownItems.map((i) => (
                     <tr key={i.id || i.sku} className="rowhover">
                       <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
-                      <td style={{ fontWeight: 600, minWidth: 200 }}>{i.name}</td>
+                      <td style={{ fontWeight: 600, minWidth: 200 }}>
+                        {i.name}
+                        {touchedAt(i.sku) > 0 && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: T.tealDeep, background: "#E4F2EE", borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>방금 등록·수정</span>}
+                      </td>
                       <td>
                         <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                           {itemBrandsOf(i).map((b) => (
