@@ -2537,6 +2537,7 @@ function WMSApp() {
   const pastDatesRef = useRef(new Set()); // 직원이 불러온 지난 날짜들 (새로고침 전까지 유지)
   const [loadedDates, setLoadedDates] = useState(null); // 지금 화면에 있는 발주 날짜 (null = 서버가 전부 줌, 예전 서버)
   const [orderDateSummary, setOrderDateSummary] = useState([]); // 서버에 남아 있는 날짜별 요약
+  const loadedByGroupRef = useRef(null); // 묶음(GS계열·이마트·GS냉동·이마트냉동)마다 최근 이틀 날짜
   const [apiErr, setApiErr] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [lastUsername, setLastUsername] = useState("");
@@ -2625,6 +2626,7 @@ function WMSApp() {
       const seenIds = new Set();
       const rawOrders = [...ordersRes.orders, ...((extraRes && extraRes.orders) || [])].filter((o) => (seenIds.has(o.id) ? false : (seenIds.add(o.id), true)));
       setLoadedDates(Array.isArray(ordersRes.loadedDates) ? Array.from(new Set([...ordersRes.loadedDates, ...extra])).sort() : null);
+      loadedByGroupRef.current = ordersRes.loadedByGroup || null;
       if (datesRes && Array.isArray(datesRes.dates)) setOrderDateSummary(datesRes.dates);
       // 이마트 발주(channel "EMART")는 GS 화면·집계와 섞이지 않게 따로 보관
       const allOrders = rawOrders.map(mapOrderFromApi);
@@ -2692,13 +2694,15 @@ function WMSApp() {
     const gone = new Set(pastDatesRef.current);
     pastDatesRef.current = new Set();
     setPastView(null);
-    // 받아 둔 지난 날짜 발주는 바로 빼기 (서버에 다시 묻지 않아 즉시 원래대로)
-    const keep = (o) => !gone.has(o.createdAt);
-    setOrders((x) => x.filter(keep));
-    setEmartOrders((x) => x.filter(keep));
-    setFrozenOrders((x) => x.filter(keep));
-    setEmFrozenOrders((x) => x.filter(keep));
-    setLoadedDates((x) => (x ? x.filter((d) => !gone.has(d)) : x));
+    // 받아 둔 지난 날짜 발주는 바로 빼기 (서버에 다시 묻지 않아 즉시 원래대로). 그 묶음의 최근 이틀에 들어 있는 날짜면 남김
+    const win = loadedByGroupRef.current || {};
+    const keepOf = (grp) => (o) => !gone.has(o.createdAt) || (win[grp] || []).includes(o.createdAt);
+    setOrders((x) => x.filter(keepOf("GS")));
+    setEmartOrders((x) => x.filter(keepOf("EMART")));
+    setFrozenOrders((x) => x.filter(keepOf("GSFROZEN")));
+    setEmFrozenOrders((x) => x.filter(keepOf("EMARTFROZEN")));
+    const allWin = new Set(Object.values(win).flat());
+    setLoadedDates((x) => (x ? x.filter((d) => !gone.has(d) || allWin.has(d)) : x));
   }, [pastView]);
   // 발주 화면(주문정보·피킹지·명세서·출고)을 벗어나면 지난 기록 보기는 자동으로 끝
   useEffect(() => {
@@ -3646,7 +3650,18 @@ function WMSApp() {
             </button>
           </div>
         )}
-        {PAST_DATE_TABS.has(tab) && <PastDateLoader summary={orderDateSummary} loadedDates={loadedDates} busy={dataLoading} onLoad={loadPastDates} pastView={pastView} onClose={closePastView} />}
+        {PAST_DATE_TABS.has(tab) && (
+          <PastDateLoader
+            summary={orderDateSummary}
+            loadedDates={loadedDates}
+            groupDates={loadedByGroupRef.current}
+            group={pastGroupOf(tab, pickChannel, invChannel)}
+            busy={dataLoading}
+            onLoad={loadPastDates}
+            pastView={pastView}
+            onClose={closePastView}
+          />
+        )}
         {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
@@ -4352,14 +4367,26 @@ function EmptyRow({ text }) {
 // ---------- 지난 날짜 불러오기 (2026-10-22) ----------
 // 화면은 처음에 채널마다 최근 발주일 3개만 받는다. 그보다 예전 날짜는 여기서 골라서 그날만 받아 합친다 (서버에는 14일치 그대로)
 const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "pickingedit", "pickinginspection", "invoice", "shipping"]);
+// 지금 화면이 어느 묶음 발주를 보는지 (📅 막대에 그 묶음의 최근 이틀·지난 날짜만 보이게)
+const groupOfChannel = (ch) => (["EMART", "GSFROZEN", "EMARTFROZEN"].includes(ch) ? ch : "GS");
+function pastGroupOf(tab, pickChannel, invChannel) {
+  if (tab === "orderinfo-emart") return "EMART";
+  if (tab === "orderinfo-gsfrozen") return "GSFROZEN";
+  if (tab === "orderinfo-emfrozen") return "EMARTFROZEN";
+  const key = tab === "pickinginspection" ? pickChannel : tab === "invoice" ? invChannel : "gs";
+  const ch = (PICKING_CHANNELS.find((c) => c.key === key) || {}).brand || "GS";
+  return groupOfChannel(ch);
+}
 const CH_SHORT = { GS: "GS", GSSUPER: "GS슈퍼", GSFROZEN: "GS냉동", EMART: "이마트", EMARTFROZEN: "이마트냉동", BGF: "BGF", SEVEN: "세븐" };
-function PastDateLoader({ summary, loadedDates, busy, onLoad, pastView, onClose }) {
+function PastDateLoader({ summary, loadedDates, groupDates, group, busy, onLoad, pastView, onClose }) {
   const [pick, setPick] = useState("");
   const [msg, setMsg] = useState("");
-  const loaded = useMemo(() => new Set(loadedDates || []), [loadedDates]);
+  // 이 화면 묶음의 최근 이틀 (서버가 묶음별로 알려 줌). 모르면 전체
+  const loaded = useMemo(() => new Set((groupDates && group && groupDates[group]) || loadedDates || []), [loadedDates, groupDates, group]);
   const byDate = useMemo(() => {
     const m = new Map();
     (summary || []).forEach((r) => {
+      if (group && groupDates && groupOfChannel(r.channel) !== group) return; // 다른 묶음 날짜는 안 보임
       const d = String(r.date).slice(0, 10);
       const x = m.get(d) || { date: d, parts: [], orders: 0 };
       x.parts.push(`${CH_SHORT[r.channel] || r.channel || "기타"} ${Number(r.orders).toLocaleString()}건`);
@@ -4367,7 +4394,7 @@ function PastDateLoader({ summary, loadedDates, busy, onLoad, pastView, onClose 
       m.set(d, x);
     });
     return Array.from(m.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
-  }, [summary]);
+  }, [summary, group, groupDates]);
   if (!loadedDates) return null; // 예전 서버(전부 받음)면 필요 없음
   const recent = byDate.filter((x) => loaded.has(x.date) && x.date !== pastView);
   const past = byDate.filter((x) => !loaded.has(x.date) || x.date === pastView);
