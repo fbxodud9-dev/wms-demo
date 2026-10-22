@@ -1946,6 +1946,8 @@ const randomTempPw = () => {
 
 // 방금 로그인할 때 친 비밀번호 (화면 메모리에만 잠깐 보관 → 첫 로그인 비번 변경 때 '지금 비밀번호' 칸을 크롬 자동완성이 엉뚱하게 채우는 문제 방지)
 let LAST_LOGIN_PW = "";
+// 처음 불러오는 발주: 채널마다 최근 발주일 몇 개 (서버에는 14일치가 그대로 남아 있음)
+const RECENT_ORDER_DATES = 3;
 const PW_CHANGED_NOTICE = "비밀번호를 바꿨어요. 새 비밀번호로 다시 로그인해 주세요.";
 
 // 비밀번호 바꾸기 폼 (첫 로그인 강제 / 내 계정 화면 공용)
@@ -2531,6 +2533,10 @@ function WMSApp() {
   // 발주 데이터를 서버에서 다시 받는 중인지 (다른 PC가 발주를 올렸을 때 등) - 그동안 피킹지를 받으면 방금 올린 공급사가 빠질 수 있어 화면에 표시
   const [dataLoading, setDataLoading] = useState(false);
   const [dataLoadedAt, setDataLoadedAt] = useState(null);
+  // 발주는 처음에 "채널마다 최근 발주일 3개"만 받음 (2026-10-22, 속도·서버 메모리). 지난 날짜는 [지난 날짜 불러오기]로 그날만 받아서 합침
+  const pastDatesRef = useRef(new Set()); // 직원이 불러온 지난 날짜들 (새로고침 전까지 유지)
+  const [loadedDates, setLoadedDates] = useState(null); // 지금 화면에 있는 발주 날짜 (null = 서버가 전부 줌, 예전 서버)
+  const [orderDateSummary, setOrderDateSummary] = useState([]); // 서버에 남아 있는 날짜별 요약
   const [apiErr, setApiErr] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [lastUsername, setLastUsername] = useState("");
@@ -2605,15 +2611,23 @@ function WMSApp() {
     setDataLoading(true);
     try {
       setApiErr("");
-      const [itemsRes, ordersRes, txRes, docsRes] = await Promise.all([
+      const extra = Array.from(pastDatesRef.current).sort();
+      const [itemsRes, ordersRes, extraRes, txRes, docsRes, datesRes] = await Promise.all([
         apiFetch("/items", authToken),
-        apiFetch("/orders", authToken),
+        apiFetch(`/orders?recent=${RECENT_ORDER_DATES}`, authToken),
+        extra.length ? apiFetch(`/orders?dates=${extra.join(",")}`, authToken) : Promise.resolve(null),
         apiFetch("/transactions?limit=300", authToken),
         apiFetch("/orders/picking-docs", authToken),
+        apiFetch("/orders/dates", authToken).catch(() => null),
       ]);
       setItems(itemsRes.items.map(mapItemFromApi));
+      // 최근 날짜 + 불러온 지난 날짜 합치기 (같은 발주는 한 번만)
+      const seenIds = new Set();
+      const rawOrders = [...ordersRes.orders, ...((extraRes && extraRes.orders) || [])].filter((o) => (seenIds.has(o.id) ? false : (seenIds.add(o.id), true)));
+      setLoadedDates(Array.isArray(ordersRes.loadedDates) ? Array.from(new Set([...ordersRes.loadedDates, ...extra])).sort() : null);
+      if (datesRes && Array.isArray(datesRes.dates)) setOrderDateSummary(datesRes.dates);
       // 이마트 발주(channel "EMART")는 GS 화면·집계와 섞이지 않게 따로 보관
-      const allOrders = ordersRes.orders.map(mapOrderFromApi);
+      const allOrders = rawOrders.map(mapOrderFromApi);
       setOrders(allOrders.filter((o) => o.channel !== "EMART" && o.channel !== "GSFROZEN" && o.channel !== "EMARTFROZEN"));
       setEmFrozenOrders(allOrders.filter((o) => o.channel === "EMARTFROZEN"));
       setEmartOrders(allOrders.filter((o) => o.channel === "EMART"));
@@ -2633,6 +2647,42 @@ function WMSApp() {
   useEffect(() => {
     if (authToken) loadCoreData();
   }, [authToken]); // eslint-disable-line
+  // 상품 정보 관리 화면: 최근 3일에 없던 상품도 나오게, 서버에 남은 14일치 상품 목록(가벼운 요약)을 받아서 같이 보여 줌
+  const [productCatalog, setProductCatalog] = useState(null);
+  useEffect(() => {
+    if (!authToken || tab !== "productinfo" || !loadedDates) return;
+    let alive = true;
+    apiFetch("/orders/catalog", authToken)
+      .then((r) => alive && setProductCatalog(Array.isArray(r.products) ? r.products : null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [authToken, tab, dataLoadedAt]); // eslint-disable-line
+  const catalogOrders = useMemo(
+    () =>
+      (productCatalog || []).map((p, i) => ({
+        id: "catalog-" + i,
+        orderNo: "",
+        createdAt: String(p.date || "").slice(0, 10),
+        supplier: p.supplier || "",
+        channel: p.channel || "",
+        storeCode: p.gs_center ? "VV00" : "",
+        customer: "",
+        lines: [{ sku: p.sku, name: p.name, qty: 1, changedQty: 1, packQty: Number(p.pack) || 0 }],
+      })),
+    [productCatalog]
+  );
+  const piOrders = useMemo(() => (catalogOrders.length ? [...orders, ...catalogOrders.filter((o) => !["EMART", "GSFROZEN", "EMARTFROZEN"].includes(o.channel))] : orders), [orders, catalogOrders]);
+  const piEmartOrders = useMemo(() => (catalogOrders.length ? [...emartOrders, ...catalogOrders.filter((o) => o.channel === "EMART")] : emartOrders), [emartOrders, catalogOrders]);
+  // 지난 날짜 불러오기 / 빼기
+  const loadPastDates = useCallback(
+    async (dates, remove) => {
+      (dates || []).forEach((d) => (remove ? pastDatesRef.current.delete(d) : pastDatesRef.current.add(d)));
+      await loadCoreData();
+    },
+    [loadCoreData]
+  );
 
   // 직원이 상품마스터에서 바꾼 상품 정보(입수·소비기한·표시 상품명·DC/당착 분류)를 로그인 후 한 번 불러온다
   const [productInfo, setProductInfoState] = useState({});
@@ -2830,6 +2880,7 @@ function WMSApp() {
     } catch (e) {}
   }
   function doLogout(notice) {
+    pastDatesRef.current.clear();
     // 비밀번호를 바꾼 뒤 등: 로그인 화면에 안내 문구 + 아이디를 미리 채워 둠
     if (typeof notice === "string" && notice) {
       setAuthNotice(notice);
@@ -3567,6 +3618,7 @@ function WMSApp() {
             </button>
           </div>
         )}
+        {PAST_DATE_TABS.has(tab) && <PastDateLoader summary={orderDateSummary} loadedDates={loadedDates} busy={dataLoading} onLoad={loadPastDates} />}
         {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
@@ -3658,7 +3710,7 @@ function WMSApp() {
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
         {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
-        {tab === "productinfo" && <ProductInfoCenter orders={orders} items={itemsView} emartOrders={emartOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
+        {tab === "productinfo" && <ProductInfoCenter orders={piOrders} items={itemsView} emartOrders={piEmartOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -4267,6 +4319,59 @@ function SectionHead({ icon: Icon, title, color, onMore }) {
 
 function EmptyRow({ text }) {
   return <div style={{ padding: "28px 16px", textAlign: "center", color: T.inkSoft, fontSize: 13 }}>{text}</div>;
+}
+
+// ---------- 지난 날짜 불러오기 (2026-10-22) ----------
+// 화면은 처음에 채널마다 최근 발주일 3개만 받는다. 그보다 예전 날짜는 여기서 골라서 그날만 받아 합친다 (서버에는 14일치 그대로)
+const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "pickingedit", "pickinginspection", "invoice", "shipping"]);
+const CH_SHORT = { GS: "GS", GSSUPER: "GS슈퍼", GSFROZEN: "GS냉동", EMART: "이마트", EMARTFROZEN: "이마트냉동", BGF: "BGF", SEVEN: "세븐" };
+function PastDateLoader({ summary, loadedDates, busy, onLoad }) {
+  const [pick, setPick] = useState("");
+  const [msg, setMsg] = useState("");
+  const loaded = useMemo(() => new Set(loadedDates || []), [loadedDates]);
+  const byDate = useMemo(() => {
+    const m = new Map();
+    (summary || []).forEach((r) => {
+      const d = String(r.date).slice(0, 10);
+      const x = m.get(d) || { date: d, parts: [], orders: 0 };
+      x.parts.push(`${CH_SHORT[r.channel] || r.channel || "기타"} ${Number(r.orders).toLocaleString()}건`);
+      x.orders += Number(r.orders) || 0;
+      m.set(d, x);
+    });
+    return Array.from(m.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [summary]);
+  if (!loadedDates) return null; // 예전 서버(전부 받음)면 필요 없음
+  const recent = byDate.filter((x) => loaded.has(x.date));
+  const past = byDate.filter((x) => !loaded.has(x.date));
+  const label = (d) => `${d.slice(5, 7)}.${d.slice(8, 10)}(${gsWeekday(d)})`;
+  const go = async (d, remove) => {
+    if (!d) return;
+    setMsg("");
+    await onLoad([d], remove);
+    setMsg(remove ? `${label(d)}를 화면에서 뺐어요.` : `${label(d)} 발주를 불러왔어요. 아래 날짜 목록·날짜 선택에서 ${label(d)}를 고르세요.`);
+    setPick("");
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12.5 }}>
+      <span style={{ fontWeight: 700, color: T.ink }}>📅 불러온 날짜</span>
+      <span style={{ color: T.inkSoft }}>{recent.length ? recent.map((x) => label(x.date)).join(" · ") : "-"}</span>
+      <span style={{ flex: 1 }} />
+      <span style={{ color: T.inkSoft }}>지난 날짜 보기</span>
+      <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12.5, minWidth: 220 }} disabled={busy || !past.length}>
+        <option value="">{past.length ? `날짜 고르기 (${past.length}일 남아 있음)` : "더 불러올 날짜 없음"}</option>
+        {past.map((x) => (
+          <option key={x.date} value={x.date}>
+            {label(x.date)} · {x.parts.join(", ")}
+          </option>
+        ))}
+      </select>
+      <button onClick={() => go(pick)} disabled={busy || !pick} className="primary-btn" style={{ ...primaryBtnStyle, padding: "7px 12px", fontSize: 12.5, opacity: busy || !pick ? 0.6 : 1 }}>
+        {busy ? "불러오는 중..." : "불러오기"}
+      </button>
+      {msg && <div style={{ width: "100%", color: T.tealDeep, fontWeight: 600 }}>{msg}</div>}
+      <div style={{ width: "100%", fontSize: 11.5, color: T.inkSoft }}>빠르게 열리도록 채널마다 최근 발주일 {RECENT_ORDER_DATES}개만 불러와요. 발주는 서버에 14일 동안 그대로 남아 있고, 일별 발주 집계 숫자는 날짜와 상관없이 계속 남아요.</div>
+    </div>
+  );
 }
 
 function ComingSoon({ title }) {
