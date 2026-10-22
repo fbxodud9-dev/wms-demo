@@ -1946,8 +1946,8 @@ const randomTempPw = () => {
 
 // 방금 로그인할 때 친 비밀번호 (화면 메모리에만 잠깐 보관 → 첫 로그인 비번 변경 때 '지금 비밀번호' 칸을 크롬 자동완성이 엉뚱하게 채우는 문제 방지)
 let LAST_LOGIN_PW = "";
-// 처음 불러오는 발주: 채널마다 최근 발주일 몇 개 (서버에는 14일치가 그대로 남아 있음)
-const RECENT_ORDER_DATES = 3;
+// 처음 불러오는 발주: 채널마다 최근 발주일 몇 개 (서버에는 14일치가 그대로 남아 있음). 2026-10-22: 이틀치
+const RECENT_ORDER_DATES = 2;
 const PW_CHANGED_NOTICE = "비밀번호를 바꿨어요. 새 비밀번호로 다시 로그인해 주세요.";
 
 // 비밀번호 바꾸기 폼 (첫 로그인 강제 / 내 계정 화면 공용)
@@ -2675,14 +2675,41 @@ function WMSApp() {
   );
   const piOrders = useMemo(() => (catalogOrders.length ? [...orders, ...catalogOrders.filter((o) => !["EMART", "GSFROZEN", "EMARTFROZEN"].includes(o.channel))] : orders), [orders, catalogOrders]);
   const piEmartOrders = useMemo(() => (catalogOrders.length ? [...emartOrders, ...catalogOrders.filter((o) => o.channel === "EMART")] : emartOrders), [emartOrders, catalogOrders]);
-  // 지난 날짜 불러오기 / 빼기
+  // 지난 기록 보기: 고른 날짜 하나만 따로 받아서 그 날짜만 화면에 보여 줌 → [최근 이틀로 돌아가기]나 발주 화면을 벗어나면 바로 이틀치로 원래대로
+  const [pastView, setPastView] = useState(null);
   const loadPastDates = useCallback(
-    async (dates, remove) => {
-      (dates || []).forEach((d) => (remove ? pastDatesRef.current.delete(d) : pastDatesRef.current.add(d)));
+    async (dates) => {
+      const d = (dates || [])[0];
+      if (!d) return;
+      pastDatesRef.current = new Set([d]); // 한 번에 한 날짜만 (예전에 본 날짜는 버림)
+      setPastView(d);
       await loadCoreData();
     },
     [loadCoreData]
   );
+  const closePastView = useCallback(() => {
+    if (!pastDatesRef.current.size && !pastView) return;
+    const gone = new Set(pastDatesRef.current);
+    pastDatesRef.current = new Set();
+    setPastView(null);
+    // 받아 둔 지난 날짜 발주는 바로 빼기 (서버에 다시 묻지 않아 즉시 원래대로)
+    const keep = (o) => !gone.has(o.createdAt);
+    setOrders((x) => x.filter(keep));
+    setEmartOrders((x) => x.filter(keep));
+    setFrozenOrders((x) => x.filter(keep));
+    setEmFrozenOrders((x) => x.filter(keep));
+    setLoadedDates((x) => (x ? x.filter((d) => !gone.has(d)) : x));
+  }, [pastView]);
+  // 발주 화면(주문정보·피킹지·명세서·출고)을 벗어나면 지난 기록 보기는 자동으로 끝
+  useEffect(() => {
+    if (pastView && !PAST_DATE_TABS.has(tab)) closePastView();
+  }, [tab]); // eslint-disable-line
+  // 지난 기록을 보는 동안은 발주 화면에 그 날짜만
+  const onlyPast = (list) => (pastView ? list.filter((o) => o.createdAt === pastView) : list);
+  const vOrders = useMemo(() => onlyPast(orders), [orders, pastView]); // eslint-disable-line
+  const vEmartOrders = useMemo(() => onlyPast(emartOrders), [emartOrders, pastView]); // eslint-disable-line
+  const vFrozenOrders = useMemo(() => onlyPast(frozenOrders), [frozenOrders, pastView]); // eslint-disable-line
+  const vEmFrozenOrders = useMemo(() => onlyPast(emFrozenOrders), [emFrozenOrders, pastView]); // eslint-disable-line
 
   // 직원이 상품마스터에서 바꾼 상품 정보(입수·소비기한·표시 상품명·DC/당착 분류)를 로그인 후 한 번 불러온다
   const [productInfo, setProductInfoState] = useState({});
@@ -2880,7 +2907,8 @@ function WMSApp() {
     } catch (e) {}
   }
   function doLogout(notice) {
-    pastDatesRef.current.clear();
+    pastDatesRef.current = new Set();
+    setPastView(null);
     // 비밀번호를 바꾼 뒤 등: 로그인 화면에 안내 문구 + 아이디를 미리 채워 둠
     if (typeof notice === "string" && notice) {
       setAuthNotice(notice);
@@ -3618,7 +3646,7 @@ function WMSApp() {
             </button>
           </div>
         )}
-        {PAST_DATE_TABS.has(tab) && <PastDateLoader summary={orderDateSummary} loadedDates={loadedDates} busy={dataLoading} onLoad={loadPastDates} />}
+        {PAST_DATE_TABS.has(tab) && <PastDateLoader summary={orderDateSummary} loadedDates={loadedDates} busy={dataLoading} onLoad={loadPastDates} pastView={pastView} onClose={closePastView} />}
         {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
@@ -3629,7 +3657,7 @@ function WMSApp() {
         {tab === "orderinfo" && (
           <OrderInfo
             items={itemsView}
-            orders={orders}
+            orders={vOrders}
             onAdd={addOrder}
             onAddBulk={addOrdersBulk}
             onRegisterItemsBulk={registerItemsBulk}
@@ -3648,7 +3676,7 @@ function WMSApp() {
             title="주문정보 (GS 냉동)"
             sub="GS 냉동 발주파일(네이처·아미 등)을 올려요. GS 일반 발주와 섞이지 않고 피킹지시서 출력 > GS 냉동에서 피킹지를 받아요. 예전 형식·새 형식 둘 다 돼요."
             items={itemsView}
-            orders={frozenOrders}
+            orders={vFrozenOrders}
             onAdd={addOrder}
             onAddBulk={addOrdersBulk}
             onRegisterItemsBulk={registerItemsBulk}
@@ -3665,42 +3693,42 @@ function WMSApp() {
             channelTag="EMARTFROZEN"
             title="주문정보 (이마트 냉동)"
             sub="이마트24 냉동 발주파일을 올려요. 이마트 일반·GS와 섞이지 않고 피킹지시서 출력 > 이마트 냉동에서 피킹지를 받아요. 예전 형식·새 형식 둘 다 돼요."
-            emartOrders={emFrozenOrders}
+            emartOrders={vEmFrozenOrders}
             authToken={authToken}
             onUpload={addOrdersBulk}
             onRegisterItems={registerItemsBulk}
             onDeleteDate={(d) => deleteOrdersByDate(d, "EMARTFROZEN")}
           />
         )}
-        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={emartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
+        {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={vEmartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickingedit" && <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} />}
+        {tab === "pickingedit" && <PickingEditPage orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} />}
         {tab === "pickinginspection" && (
           <PickingCenter
             channel={pickChannel}
             onChannel={setPickChannel}
-            emartOrders={emartOrders}
-            frozenOrders={frozenOrders}
-            emFrozenOrders={emFrozenOrders}
+            emartOrders={vEmartOrders}
+            frozenOrders={vFrozenOrders}
+            emFrozenOrders={vEmFrozenOrders}
             authToken={authToken}
-            gsView={<PickingInspection orders={orders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
+            gsView={<PickingInspection orders={vOrders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
           />
         )}
 
         {tab === "shipping" && (
-          <Shipping orders={orders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
+          <Shipping orders={vOrders} stores={stores} onShip={shipOrder} onCancelShip={cancelShip} onConfirmPms={confirmPms} />
         )}
         {tab === "gsdaily" && <GsDailyPage orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} authToken={authToken} productInfo={productInfo} />}
         {tab === "invoice" && (
           <InvoiceCenter
             channel={invChannel}
             onChannel={setInvChannel}
-            emartOrders={emartOrders}
-            frozenOrders={frozenOrders}
-            emFrozenOrders={emFrozenOrders}
+            emartOrders={vEmartOrders}
+            frozenOrders={vFrozenOrders}
+            emFrozenOrders={vEmFrozenOrders}
             authToken={authToken}
-            gsView={<InvoiceView orders={orders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
+            gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
           />
         )}
 
@@ -4325,7 +4353,7 @@ function EmptyRow({ text }) {
 // 화면은 처음에 채널마다 최근 발주일 3개만 받는다. 그보다 예전 날짜는 여기서 골라서 그날만 받아 합친다 (서버에는 14일치 그대로)
 const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "pickingedit", "pickinginspection", "invoice", "shipping"]);
 const CH_SHORT = { GS: "GS", GSSUPER: "GS슈퍼", GSFROZEN: "GS냉동", EMART: "이마트", EMARTFROZEN: "이마트냉동", BGF: "BGF", SEVEN: "세븐" };
-function PastDateLoader({ summary, loadedDates, busy, onLoad }) {
+function PastDateLoader({ summary, loadedDates, busy, onLoad, pastView, onClose }) {
   const [pick, setPick] = useState("");
   const [msg, setMsg] = useState("");
   const loaded = useMemo(() => new Set(loadedDates || []), [loadedDates]);
@@ -4341,35 +4369,50 @@ function PastDateLoader({ summary, loadedDates, busy, onLoad }) {
     return Array.from(m.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
   }, [summary]);
   if (!loadedDates) return null; // 예전 서버(전부 받음)면 필요 없음
-  const recent = byDate.filter((x) => loaded.has(x.date));
-  const past = byDate.filter((x) => !loaded.has(x.date));
+  const recent = byDate.filter((x) => loaded.has(x.date) && x.date !== pastView);
+  const past = byDate.filter((x) => !loaded.has(x.date) || x.date === pastView);
   const label = (d) => `${d.slice(5, 7)}.${d.slice(8, 10)}(${gsWeekday(d)})`;
-  const go = async (d, remove) => {
+  const go = async (d) => {
     if (!d) return;
     setMsg("");
-    await onLoad([d], remove);
-    setMsg(remove ? `${label(d)}를 화면에서 뺐어요.` : `${label(d)} 발주를 불러왔어요. 아래 날짜 목록·날짜 선택에서 ${label(d)}를 고르세요.`);
+    await onLoad([d]);
     setPick("");
   };
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12.5 }}>
-      <span style={{ fontWeight: 700, color: T.ink }}>📅 불러온 날짜</span>
-      <span style={{ color: T.inkSoft }}>{recent.length ? recent.map((x) => label(x.date)).join(" · ") : "-"}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: pastView ? "#FFF6E5" : T.surface, border: `1px solid ${pastView ? T.amber : T.border}`, borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12.5 }}>
+      {pastView ? (
+        <>
+          <span style={{ fontWeight: 800, color: T.amberDeep }}>🕘 지난 기록 보는 중: {label(pastView)}</span>
+          <span style={{ color: T.inkSoft }}>이 날짜 발주만 보여요 (최근 이틀은 잠깐 숨김)</span>
+          <button onClick={onClose} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, padding: "7px 12px", fontSize: 12.5 }}>
+            최근 이틀로 돌아가기
+          </button>
+        </>
+      ) : (
+        <>
+          <span style={{ fontWeight: 700, color: T.ink }}>📅 최근 이틀</span>
+          <span style={{ color: T.inkSoft }}>{recent.length ? recent.map((x) => label(x.date)).join(" · ") : "-"}</span>
+        </>
+      )}
       <span style={{ flex: 1 }} />
-      <span style={{ color: T.inkSoft }}>지난 날짜 보기</span>
-      <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12.5, minWidth: 220 }} disabled={busy || !past.length}>
-        <option value="">{past.length ? `날짜 고르기 (${past.length}일 남아 있음)` : "더 불러올 날짜 없음"}</option>
-        {past.map((x) => (
+      <span style={{ color: T.inkSoft }}>지난 기록 보기</span>
+      <select value={pick} onChange={(e) => setPick(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12.5, minWidth: 220 }} disabled={busy || !past.filter((x) => x.date !== pastView).length}>
+        <option value="">{past.filter((x) => x.date !== pastView).length ? `날짜 고르기 (${past.filter((x) => x.date !== pastView).length}일 남아 있음)` : "더 볼 날짜 없음"}</option>
+        {past.filter((x) => x.date !== pastView).map((x) => (
           <option key={x.date} value={x.date}>
             {label(x.date)} · {x.parts.join(", ")}
           </option>
         ))}
       </select>
       <button onClick={() => go(pick)} disabled={busy || !pick} className="primary-btn" style={{ ...primaryBtnStyle, padding: "7px 12px", fontSize: 12.5, opacity: busy || !pick ? 0.6 : 1 }}>
-        {busy ? "불러오는 중..." : "불러오기"}
+        {busy ? "불러오는 중..." : "보기"}
       </button>
       {msg && <div style={{ width: "100%", color: T.tealDeep, fontWeight: 600 }}>{msg}</div>}
-      <div style={{ width: "100%", fontSize: 11.5, color: T.inkSoft }}>빠르게 열리도록 채널마다 최근 발주일 {RECENT_ORDER_DATES}개만 불러와요. 발주는 서버에 14일 동안 그대로 남아 있고, 일별 발주 집계 숫자는 날짜와 상관없이 계속 남아요.</div>
+      <div style={{ width: "100%", fontSize: 11.5, color: T.inkSoft }}>
+        {pastView
+          ? "다른 메뉴로 가거나 [최근 이틀로 돌아가기]를 누르면 바로 최근 이틀로 돌아가요. 주문정보·피킹지·명세서·출고 화면 사이를 오가는 동안은 이 날짜가 유지돼요."
+          : `빠르게 열리도록 채널마다 최근 발주일 ${RECENT_ORDER_DATES}개만 불러와요. 지난 기록은 날짜를 고르면 그 날짜만 따로 보여 줘요. 발주는 서버에 14일 동안 남아 있고, 일별 발주 집계 숫자는 계속 남아요.`}
+      </div>
     </div>
   );
 }
