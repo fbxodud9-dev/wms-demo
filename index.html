@@ -2617,6 +2617,8 @@ function WMSApp() {
   const [emFrozenOrders, setEmFrozenOrders] = useState([]); // 이마트 냉동 발주 (channel "EMARTFROZEN")
   const [sevenOrders, setSevenOrders] = useState([]); // 세븐일레븐 발주 (channel "SEVEN", 2026-10-25)
   const [sevenFrozenOrders, setSevenFrozenOrders] = useState([]); // 세븐 냉동 발주 (channel "SEVENFROZEN")
+  const [bgfOrders, setBgfOrders] = useState([]); // BGF(CU) 발주 (channel "BGF", 2026-10-25)
+  const [bgfFrozenOrders, setBgfFrozenOrders] = useState([]); // BGF 냉동 발주 (channel "BGFFROZEN")
   const [pickChannel, setPickChannel] = useState("gs"); // 피킹지시서 출력 화면의 브랜드 탭
   const [invChannel, setInvChannel] = useState("gs"); // 거래명세서 화면의 브랜드 탭
   const loadCoreData = useCallback(async () => {
@@ -2646,6 +2648,8 @@ function WMSApp() {
       setEmFrozenOrders(allOrders.filter((o) => o.channel === "EMARTFROZEN"));
       setSevenOrders(allOrders.filter((o) => o.channel === "SEVEN"));
       setSevenFrozenOrders(allOrders.filter((o) => o.channel === "SEVENFROZEN"));
+      setBgfOrders(allOrders.filter((o) => o.channel === "BGF"));
+      setBgfFrozenOrders(allOrders.filter((o) => o.channel === "BGFFROZEN"));
       setEmartOrders(allOrders.filter((o) => o.channel === "EMART"));
       setFrozenOrders(allOrders.filter((o) => o.channel === "GSFROZEN"));
       setTx(txRes.transactions.map(mapTxFromApi));
@@ -2691,6 +2695,8 @@ function WMSApp() {
   );
   const piOrders = useMemo(() => (catalogOrders.length ? [...orders, ...catalogOrders.filter((o) => !SEPARATE_CHANNELS.includes(o.channel))] : orders), [orders, catalogOrders]);
   const piSevenOrders = useMemo(() => (catalogOrders.length ? [...sevenOrders, ...catalogOrders.filter((o) => o.channel === "SEVEN")] : sevenOrders), [sevenOrders, catalogOrders]);
+  const piBgfOrders = useMemo(() => (catalogOrders.length ? [...bgfOrders, ...catalogOrders.filter((o) => o.channel === "BGF")] : bgfOrders), [bgfOrders, catalogOrders]);
+  const piBgfFrozenOrders = useMemo(() => (catalogOrders.length ? [...bgfFrozenOrders, ...catalogOrders.filter((o) => o.channel === "BGFFROZEN")] : bgfFrozenOrders), [bgfFrozenOrders, catalogOrders]);
   const piSevenFrozenOrders = useMemo(() => (catalogOrders.length ? [...sevenFrozenOrders, ...catalogOrders.filter((o) => o.channel === "SEVENFROZEN")] : sevenFrozenOrders), [sevenFrozenOrders, catalogOrders]);
   const piEmartOrders = useMemo(() => (catalogOrders.length ? [...emartOrders, ...catalogOrders.filter((o) => o.channel === "EMART")] : emartOrders), [emartOrders, catalogOrders]);
   // 지난 기록 보기: 고른 날짜 하나만 따로 받아서 그 날짜만 화면에 보여 줌 → [최근 이틀로 돌아가기]나 발주 화면을 벗어나면 바로 이틀치로 원래대로
@@ -2719,6 +2725,8 @@ function WMSApp() {
     setEmFrozenOrders((x) => x.filter(keepOf("EMARTFROZEN")));
     setSevenOrders((x) => x.filter(keepOf("SEVEN")));
     setSevenFrozenOrders((x) => x.filter(keepOf("SEVENFROZEN")));
+    setBgfOrders((x) => x.filter(keepOf("BGF")));
+    setBgfFrozenOrders((x) => x.filter(keepOf("BGFFROZEN")));
     const allWin = new Set(Object.values(win).flat());
     setLoadedDates((x) => (x ? x.filter((d) => !gone.has(d) || allWin.has(d)) : x));
   }, [pastView]);
@@ -2734,6 +2742,8 @@ function WMSApp() {
   const vEmFrozenOrders = useMemo(() => onlyPast(emFrozenOrders), [emFrozenOrders, pastView]); // eslint-disable-line
   const vSevenOrders = useMemo(() => onlyPast(sevenOrders), [sevenOrders, pastView]); // eslint-disable-line
   const vSevenFrozenOrders = useMemo(() => onlyPast(sevenFrozenOrders), [sevenFrozenOrders, pastView]); // eslint-disable-line
+  const vBgfOrders = useMemo(() => onlyPast(bgfOrders), [bgfOrders, pastView]); // eslint-disable-line
+  const vBgfFrozenOrders = useMemo(() => onlyPast(bgfFrozenOrders), [bgfFrozenOrders, pastView]); // eslint-disable-line
 
   // 직원이 상품마스터에서 바꾼 상품 정보(입수·소비기한·표시 상품명·DC/당착 분류)를 로그인 후 한 번 불러온다
   const [productInfo, setProductInfoState] = useState({});
@@ -3329,6 +3339,11 @@ function WMSApp() {
   const deleteOrdersByDate = useCallback(
     async (date, channel) => {
       try {
+        if (channel === "BGF" || channel === "BGFFROZEN") {
+          await apiFetch(`/orders/by-date/${date}/channel/${channel}`, authToken, { method: "DELETE" });
+          await loadCoreData();
+          return;
+        }
         if (channel === "SEVEN" || channel === "SEVENFROZEN") {
           await apiFetch(`/orders/by-date/${date}/channel/${channel}`, authToken, { method: "DELETE" });
           await updateSetting((channel === "SEVEN" ? sevenDailyKey : sevenFrozenDailyKey)(date.slice(0, 7)), authToken, (v) => {
@@ -3736,8 +3751,32 @@ function WMSApp() {
             onDeleteDate={deleteOrdersByDate}
           />
         )}
-        {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
-        {tab === "orderinfo-bgffrozen" && <ComingSoon title="주문정보 (BGF 냉동)" />}
+        {tab === "orderinfo-bgf" && (
+          <EmartOrderPage
+            kind="BGF"
+            channelTag="BGF"
+            title="주문정보 (BGF)"
+            sub="BGF(CU) 발주파일(ASN 엑셀)을 올려요. 다른 브랜드와 섞이지 않고 피킹지시서 출력 > BGF에서 피킹지를 받아요."
+            emartOrders={vBgfOrders}
+            authToken={authToken}
+            onUpload={addOrdersBulk}
+            onRegisterItems={registerItemsBulk}
+            onDeleteDate={(d) => deleteOrdersByDate(d, "BGF")}
+          />
+        )}
+        {tab === "orderinfo-bgffrozen" && (
+          <EmartOrderPage
+            kind="BGFFROZEN"
+            channelTag="BGFFROZEN"
+            title="주문정보 (BGF 냉동)"
+            sub="BGF(CU) 냉동 발주파일(ASN 엑셀)을 올려요. BGF 냉장과 섞이지 않고 피킹지시서 출력 > BGF 냉동에서 피킹지를 받아요."
+            emartOrders={vBgfFrozenOrders}
+            authToken={authToken}
+            onUpload={addOrdersBulk}
+            onRegisterItems={registerItemsBulk}
+            onDeleteDate={(d) => deleteOrdersByDate(d, "BGFFROZEN")}
+          />
+        )}
         {tab === "orderinfo-seven" && (
           <EmartOrderPage
             kind="SEVEN"
@@ -3807,6 +3846,8 @@ function WMSApp() {
             emFrozenOrders={vEmFrozenOrders}
             sevenOrders={vSevenOrders}
             sevenFrozenOrders={vSevenFrozenOrders}
+            bgfOrders={vBgfOrders}
+            bgfFrozenOrders={vBgfFrozenOrders}
             authToken={authToken}
             gsView={<PickingInspection orders={vOrders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
           />
@@ -3825,6 +3866,8 @@ function WMSApp() {
             emFrozenOrders={vEmFrozenOrders}
             sevenOrders={vSevenOrders}
             sevenFrozenOrders={vSevenFrozenOrders}
+            bgfOrders={vBgfOrders}
+            bgfFrozenOrders={vBgfFrozenOrders}
             authToken={authToken}
             gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
           />
@@ -3836,7 +3879,7 @@ function WMSApp() {
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
         {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
-        {tab === "productinfo" && <ProductInfoCenter orders={piOrders} items={itemsView} emartOrders={piEmartOrders} sevenOrders={piSevenOrders} sevenFrozenOrders={piSevenFrozenOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
+        {tab === "productinfo" && <ProductInfoCenter orders={piOrders} items={itemsView} emartOrders={piEmartOrders} sevenOrders={piSevenOrders} sevenFrozenOrders={piSevenFrozenOrders} bgfOrders={piBgfOrders} bgfFrozenOrders={piBgfFrozenOrders} authToken={authToken} productInfo={productInfo} onSaved={applyProductInfo} />}
         {tab === "cell" && <WarehouseCell cells={cells} onAdd={addCell} onDelete={deleteCell} />}
         {tab === "course" && (
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
@@ -4540,8 +4583,8 @@ function OrderFamilySwitch({ tab, onGo }) {
     </div>
   );
 }
-const SEPARATE_CHANNELS = ["EMART", "GSFROZEN", "EMARTFROZEN", "SEVEN", "SEVENFROZEN"];
-const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "orderinfo-seven", "orderinfo-sevenfrozen", "pickingedit", "pickinginspection", "invoice", "shipping"]);
+const SEPARATE_CHANNELS = ["EMART", "GSFROZEN", "EMARTFROZEN", "SEVEN", "SEVENFROZEN", "BGF", "BGFFROZEN"];
+const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "orderinfo-seven", "orderinfo-sevenfrozen", "orderinfo-bgf", "orderinfo-bgffrozen", "pickingedit", "pickinginspection", "invoice", "shipping"]);
 // 지금 화면이 어느 묶음 발주를 보는지 (📅 막대에 그 묶음의 최근 이틀·지난 날짜만 보이게)
 const groupOfChannel = (ch) => (SEPARATE_CHANNELS.includes(ch) ? ch : "GS");
 function pastGroupOf(tab, pickChannel, invChannel) {
@@ -4550,11 +4593,13 @@ function pastGroupOf(tab, pickChannel, invChannel) {
   if (tab === "orderinfo-emfrozen") return "EMARTFROZEN";
   if (tab === "orderinfo-seven") return "SEVEN";
   if (tab === "orderinfo-sevenfrozen") return "SEVENFROZEN";
+  if (tab === "orderinfo-bgf") return "BGF";
+  if (tab === "orderinfo-bgffrozen") return "BGFFROZEN";
   const key = tab === "pickinginspection" ? pickChannel : tab === "invoice" ? invChannel : "gs";
   const ch = (PICKING_CHANNELS.find((c) => c.key === key) || {}).brand || "GS";
   return groupOfChannel(ch);
 }
-const CH_SHORT = { GS: "GS", GSSUPER: "GS슈퍼", GSFROZEN: "GS냉동", EMART: "이마트", EMARTFROZEN: "이마트냉동", BGF: "BGF", SEVEN: "세븐", SEVENFROZEN: "세븐냉동" };
+const CH_SHORT = { GS: "GS", GSSUPER: "GS슈퍼", GSFROZEN: "GS냉동", EMART: "이마트", EMARTFROZEN: "이마트냉동", BGF: "BGF", BGFFROZEN: "BGF냉동", SEVEN: "세븐", SEVENFROZEN: "세븐냉동" };
 function PastDateLoader({ summary, loadedDates, groupDates, group, busy, onLoad, pastView, onClose }) {
   const [pick, setPick] = useState("");
   const [msg, setMsg] = useState("");
@@ -8946,6 +8991,146 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     });
   }
 
+  // BGF 제주권: 제주·서귀포는 본 상품 시트에서 0 고정 (피벗에는 실제 수량이 남고, 그 수량은 "제주권(AZ공유)" 시트로 나감)
+  if (opts.jejuZero && opts.jejuZero.length) {
+    const zs = new Set(opts.jejuZero);
+    report.jejuMoved = [];
+    tpl.products.forEach((p) => {
+      const s = tpl.sheets.find((x) => x.name === p.sheet);
+      if (!s) return;
+      readSheetCells(s, tpl.sst);
+      const qc = numToCol(p.col || 3);
+      const hits = [];
+      s.cells.forEach((cell, ref) => {
+        const pr = splitRef(ref);
+        if (pr && pr.c === 1 && typeof cell.v === "string" && zs.has(cell.v.trim()) && s.cells.get(qc + pr.r)) hits.push(qc + pr.r);
+      });
+      hits.forEach((ref) => setCellXml(s, ref, 0));
+    });
+    links.forEach(({ item }) => opts.jejuZero.forEach((c) => (item.qty[c] || 0) > 0 && report.jejuMoved.push({ name: item.name, center: c, qty: item.qty[c] })));
+  }
+  // 제주권 시트가 원본에 없으면(BGF 냉장) 상품 시트 하나를 복사해서 냉동 원본 "제주권(AZ공유)"과 같은 모양으로 새로 만든다:
+  //   맨 위 A1 "10/21 납품", 상품마다 [날짜·공급사 □] [납품일 | 입수 | 상품명 | 박스 | 센터명 | 낱개] [서귀포] [제주] [총합계] [총 박스/낱개] 블록
+  if (opts.jejuShare && opts.jejuShare.build && !tpl.sheets.some((x) => opts.jejuShare.match.test(x.name) && !tpl.products.some((p) => p.sheet === x.name))) {
+    const regs = opts.jejuShare.regions || [opts.jejuShare.region];
+    const order = tpl.sheets.map((s) => s.name);
+    const blocks = links.filter(({ item }) => regs.some((g) => (item.qty[g] || 0) > 0)).sort((a, b) => order.indexOf(a.prod.sheet) - order.indexOf(b.prod.sheet) || a.prod.k - b.prod.k);
+    const src = blocks.map((x) => x.prod).find((p) => regs.every((g) => (p.regions || []).includes(g))) || tpl.products.find((p) => regs.every((g) => (p.regions || []).includes(g)));
+    if (blocks.length && src) {
+      const srcWs = tpl.sheets.find((x) => x.name === src.sheet);
+      readSheetCells(srcWs, tpl.sst);
+      const aText = (r) => {
+        const c = srcWs.cells.get("A" + r);
+        return c && typeof c.v === "string" ? c.v.trim() : "";
+      };
+      let titleRow = 2, totalRow = 0, boxRow = 0;
+      const regRow = {};
+      for (let r = 1; r <= srcWs.maxRow; r++) {
+        const a = srcWs.cells.get("A" + r);
+        if (a && a.f && /^TODAY\(\)$/i.test(a.f.trim()) && r < 6) titleRow = r;
+        const t = aText(r);
+        if (regs.includes(t)) regRow[t] = r;
+        if (t === "총합계" && !totalRow) totalRow = r;
+        if (/^총\s*박스/.test(t) && !boxRow) boxRow = r;
+      }
+      const headRow = titleRow + 1;
+      const anyReg = regRow[regs[0]] || regRow[regs.find((g) => regRow[g])];
+      const titleMerged = Array.from(srcWs.doc.getElementsByTagName("mergeCell")).some((m) => m.getAttribute("ref") === `B${titleRow}:F${titleRow}`);
+      const sheetName = safeEmartSheetName(opts.jejuShare.sheetName || "제주권(AZ공유)", new Set(tpl.sheets.map((s) => s.name.toLowerCase())));
+      const mut = (sheet) => {
+        const doc = sheet.doc;
+        const sd = doc.getElementsByTagName("sheetData")[0];
+        const srcRows = new Map(Array.from(sd.getElementsByTagName("row")).map((el) => [Number(el.getAttribute("r")), el]));
+        ["conditionalFormatting", "dataValidations", "drawing", "legacyDrawing", "rowBreaks", "colBreaks", "hyperlinks"].forEach((t) => Array.from(doc.getElementsByTagName(t)).forEach((el) => el.parentNode.removeChild(el)));
+        const mc = doc.getElementsByTagName("mergeCells")[0];
+        if (mc) Array.from(mc.getElementsByTagName("mergeCell")).forEach((m) => mc.removeChild(m));
+        while (sd.firstChild) sd.removeChild(sd.firstChild);
+        const put = (fromR, toR) => {
+          const from = srcRows.get(fromR);
+          const el = from ? from.cloneNode(true) : doc.createElementNS(XL_NS, "row");
+          el.setAttribute("r", String(toR));
+          el.removeAttribute("hidden");
+          Array.from(el.getElementsByTagName("c")).forEach((c) => {
+            const p = splitRef(c.getAttribute("r"));
+            if (p.c > 6) return el.removeChild(c);
+            c.setAttribute("r", numToCol(p.c) + toR);
+            while (c.firstChild) c.removeChild(c.firstChild);
+            c.removeAttribute("t");
+          });
+          sd.appendChild(el);
+        };
+        const sh = { doc };
+        const merges = [];
+        const [y0, m0, d0] = date.split("-").map(Number);
+        const nd = new Date(Date.UTC(y0, m0 - 1, d0 + (opts.jejuShare.dayOffset ?? 1)));
+        put(0, 1);
+        setCellXml(sh, "A1", `${nd.getUTCMonth() + 1}/${nd.getUTCDate()} 납품`);
+        setCellXml(sh, "B1", "납품일");
+        let S = 3;
+        blocks.forEach(({ prod, item }) => {
+          const vend = (opts.supKey || emartVendorKey)(item.vendor);
+          const pack = Number(prod.pack) > 0 ? Number(prod.pack) : Number(item.box) || "";
+          put(titleRow, S);
+          emInvSetFormula(sh, "A" + S, "TODAY()");
+          setCellXml(sh, "B" + S, opts.jejuShare.label ? opts.jejuShare.label(vend) : `${vend} □`);
+          if (titleMerged) merges.push(`B${S}:F${S}`);
+          put(headRow, S + 1);
+          emInvSetFormula(sh, "A" + (S + 1), "$A$1");
+          [["B", "입수"], ["C", item.name], ["D", "박스"], ["E", "센터명"], ["F", "낱개"]].forEach(([col, v]) => setCellXml(sh, col + (S + 1), v));
+          const r1 = S + 2;
+          regs.forEach((g, i) => {
+            const r = r1 + i;
+            put(regRow[g] || anyReg, r);
+            const e = srcWs.cells.get("E" + (regRow[g] || anyReg));
+            setCellXml(sh, "A" + r, g);
+            setCellXml(sh, "B" + r, pack === "" ? null : pack);
+            emInvSetFormula(sh, "C" + r, `IFERROR(VLOOKUP(A${r},'${prod.pivot.replace(/'/g, "''")}'!$A:$ZZ,${prod.k},FALSE),0)`);
+            emInvSetFormula(sh, "D" + r, `IFERROR(ROUNDDOWN(C${r}/B${r},0),"")`);
+            setCellXml(sh, "E" + r, regRow[g] && e && typeof e.v === "string" ? e.v : g.replace(/^BGF로지스/, ""));
+            emInvSetFormula(sh, "F" + r, `IFERROR(C${r}-(D${r}*B${r}),"")`);
+          });
+          const r2 = r1 + regs.length - 1;
+          const T = r2 + 2;
+          put(totalRow || anyReg, T);
+          setCellXml(sh, "A" + T, "총합계");
+          setCellXml(sh, "B" + T, pack === "" ? null : pack);
+          emInvSetFormula(sh, "C" + T, `SUM(C${r1}:C${r2})`);
+          emInvSetFormula(sh, "D" + T, `IFERROR(ROUNDDOWN(C${T}/B${T},0),"")`);
+          emInvSetFormula(sh, "F" + T, `IFERROR(C${T}-(D${T}*B${T}),"")`);
+          put(boxRow || totalRow || anyReg, T + 1);
+          setCellXml(sh, "A" + (T + 1), (boxRow && aText(boxRow)) || "총 박스 수량  / 총 낱개 수량");
+          setCellXml(sh, "B" + (T + 1), "□");
+          emInvSetFormula(sh, "D" + (T + 1), `SUM(D${r1}:D${r2})`);
+          emInvSetFormula(sh, "F" + (T + 1), `SUM(F${r1}:F${r2})`);
+          S = T + 3;
+        });
+        const last = S - 2;
+        if (mc) {
+          merges.forEach((ref) => {
+            const m = doc.createElementNS(XL_NS, "mergeCell");
+            m.setAttribute("ref", ref);
+            mc.appendChild(m);
+          });
+          mc.setAttribute("count", String(merges.length));
+          if (!merges.length) mc.parentNode.removeChild(mc);
+        }
+        const dim = doc.getElementsByTagName("dimension")[0];
+        if (dim) dim.setAttribute("ref", `A1:F${last}`);
+        // 인쇄: 상품 시트는 "한 장에 맞춤"이라 블록이 많으면 글씨가 작아짐 → 가로만 한 장, 세로는 여러 장으로
+        Array.from(doc.getElementsByTagName("pageSetup")).forEach((ps) => ps.setAttribute("fitToHeight", "0"));
+        sheet.jejuLast = last;
+      };
+      mut.pivot = "__jeju__";
+      tpl.lastSheetOfPivot["__jeju__"] = tpl.sheets[tpl.sheets.length - 1].name;
+      const js = await cloneEmartSheet(tpl, srcWs.name, sheetName, mut);
+      (tpl.definedNames || []).forEach((dn) => {
+        if (dn.sheet === js.name && dn.el.getAttribute("name") === "_xlnm.Print_Area") dn.el.textContent = `'${js.name.replace(/'/g, "''")}'!$A$1:$F$${js.jejuLast}`;
+      });
+      dangchakKeep.push(js.name);
+      report.jejuSheet = { sheet: js.name, items: blocks.map(({ item }) => item.name) };
+    }
+  }
+
   // 수식 결과값 다시 계산해서 넣기
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
   const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
@@ -8987,13 +9172,20 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     if (az) {
       readSheetCells(az, tpl.sst);
       if (a2Shared) setCellXml(az, "A1", a2Shared);
+      // 블록마다 따로 적힌 "10/15 납품" 글자(BGF 냉동 메롱바 블록 A71 등)도 그날 납품일로
+      if (a2Shared && opts.jejuShare.regions)
+        az.cells.forEach((c, ref) => {
+          const pr = splitRef(ref);
+          if (pr.c === 1 && pr.r > 1 && !c.f && typeof c.v === "string" && /^\s*\d{1,2}\/\d{1,2}\s*납품\s*$/.test(c.v)) setCellXml(az, ref, a2Shared);
+        });
       const reg = opts.jejuShare.region;
       const have = new Set();
       az.cells.forEach((c) => {
         const m = c.f && /VLOOKUP\([^,]+,\s*('(?:[^']|'')*'|[^!,]+)!.*?,\s*(\d+)\s*,/.exec(c.f);
         if (m) have.add(m[1].replace(/^'|'$/g, "").replace(/''/g, "'") + "|" + m[2]);
       });
-      const need = links.filter(({ prod, item }) => (item.qty[reg] || 0) > 0 && !have.has(prod.pivot + "|" + prod.k));
+      const regs = opts.jejuShare.regions || [reg];
+      const need = links.filter(({ prod, item }) => regs.some((g) => (item.qty[g] || 0) > 0) && !have.has(prod.pivot + "|" + prod.k));
       // 블록 시작 줄 = A열 =TODAY() 줄
       const starts = [];
       az.cells.forEach((c, ref) => {
@@ -9054,14 +9246,19 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
           });
           readSheetCells(az, tpl.sst);
           const vend = (opts.supKey || emartVendorKey)(item.vendor);
-          setCellXml(az, "B" + S, `${vend} _세븐 <냉동> □`);
+          setCellXml(az, "B" + S, opts.jejuShare.label ? opts.jejuShare.label(vend) : `${vend} _세븐 <냉동> □`);
           setCellXml(az, "C" + (S + oHead), item.name);
           const R = S + oRegRow;
           const pack = Number(prod.pack) > 0 ? Number(prod.pack) : Number(item.box) || 1;
-          setCellXml(az, "B" + R, pack);
-          const fc = az.cells.get("C" + R);
-          const fEl = fc && fc.el.getElementsByTagName("f")[0];
-          if (fEl) fEl.textContent = `IFERROR(VLOOKUP(A${R},${q(prod.pivot)}!$A:$ZZ,${prod.k},FALSE),0)`;
+          // 블록 안 센터 줄 전부 (세븐 냉동은 제주 한 줄, BGF는 서귀포·제주 두 줄): 입수·수량 수식을 이 상품으로
+          for (let r = R; r < S + gap; r++) {
+            const fc = az.cells.get("C" + r);
+            const fEl = fc && fc.el.getElementsByTagName("f")[0];
+            if (!fEl || !/VLOOKUP/.test(fEl.textContent || "")) continue;
+            fEl.textContent = `IFERROR(VLOOKUP(A${r},${q(prod.pivot)}!$A:$ZZ,${prod.k},FALSE),0)`;
+            const b = az.cells.get("B" + r);
+            if (r === R || (b && !b.f && typeof b.v === "number")) setCellXml(az, "B" + r, pack);
+          }
           // 총합계 줄의 입수(B)도 숫자면 같이
           for (let r = R + 1; r < S + gap; r++) {
             const a = az.cells.get("A" + r), b = az.cells.get("B" + r);
@@ -10450,6 +10647,7 @@ function emartInvoicePlan(inv, rows, settings) {
   unknownRows.forEach((r) => {
     const vk = emartVendorKey(r.vendor);
     let p = vendorPivot[vk];
+    if (inv.lay && inv.lay.pickPivot) p = inv.lay.pickPivot(r, inv.pivots, p) || p; // BGF: 같은 공급사 피벗이 1편·2편으로 나뉜 경우 상품명 끝 숫자로
     if (!p) {
       const v = nk(vk);
       p = inv.pivots.find((x) => {
@@ -10796,7 +10994,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       };
       mut.pivot = newPivot;
       await cloneEmartSheet(tpl, sh.name, nm, mut);
-      sheetsInfo.push({ name: nm, pivot: newPivot, center: sh.center, rows: [], b13Offset: sh.b13Offset, caps });
+      sheetsInfo.push({ name: nm, pivot: newPivot, center: sh.center, rows: [], b13Offset: lay.cloneNoOffset ? 0 : sh.b13Offset, caps });
     }
     x.pivot = { pivot: newPivot, supplier: label, sheets: sheetsInfo, products: new Map(), info: {} };
     report.newSuppliers.push(label);
@@ -11192,9 +11390,10 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
   }, [settingsSaved, cfg.defaultInfo]);
   const [rowsTick, setRowsTick] = useState(0); // 세븐: 피킹 원본(입수)을 다 읽으면 다시 계산
   useEffect(() => {
-    if (cfg.brand !== "SEVEN" && cfg.brand !== "SEVENFROZEN") return;
+    const load = cfg.loadPickTpl || (cfg.brand === "SEVENFROZEN" ? getSevenFrozenTemplateInfo : cfg.brand === "SEVEN" ? getSevenTemplateInfo : null);
+    if (!load) return;
     let alive = true;
-    (cfg.brand === "SEVENFROZEN" ? getSevenFrozenTemplateInfo() : getSevenTemplateInfo())
+    load()
       .then(() => alive && setRowsTick((t) => t + 1))
       .catch(() => {});
     return () => {
@@ -11308,11 +11507,17 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
       </div>
       {plan && cfg.friendlyNew && plan.list.some((x) => x.total > 0) && (
         <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#9BC2E6", background: "#F2F8FD", fontSize: 12.5, lineHeight: 1.7 }}>
-          <b>공급사마다 세븐 명세서 양식으로 자동으로 만들어요.</b> 그날 발주가 있는 냉동 센터 명세서만 나와요.
-          <div style={{ color: T.danger, fontWeight: 700 }}>
-            공급자 사업자 정보(등록번호·상호·대표자·주소 등)는 [거래명세서 설정]에서 공급사마다 한 번만 넣어주세요: {plan.list.filter((x) => x.total > 0).map((x) => x.supplier).join(", ")}
-          </div>
-          <div style={{ color: T.inkSoft, marginTop: 2 }}>받는 센터 주소는 같은 지역 센터 주소로 채워져요. 다운로드 후 안내되는 센터 주소만 한 번 확인해주세요. 입수·소비기한은 [거래명세서 설정 → 상품]에서 정할 수 있어요.</div>
+          {cfg.friendlyText ? cfg.friendlyText : (<><b>공급사마다 세븐 명세서 양식으로 자동으로 만들어요.</b> 그날 발주가 있는 냉동 센터 명세서만 나와요.</>)}
+          {(() => {
+            // BGF: 사업자 정보가 이미 있는 공급사(원본 명세서·기본값·설정)는 빼고, 같은 공급사는 한 번만
+            const sups = Array.from(new Set(plan.list.filter((x) => x.total > 0 && (!cfg.friendlyText || !(((x.settings || {}).info || {}).regNo || ((x.pivot || {}).info || {}).regNo))).map((x) => x.supplier)));
+            return sups.length > 0 ? (
+              <div style={{ color: T.danger, fontWeight: 700 }}>
+                공급자 사업자 정보(등록번호·상호·대표자·주소 등)는 [거래명세서 설정]에서 공급사마다 한 번만 넣어주세요: {sups.join(", ")}
+              </div>
+            ) : null;
+          })()}
+          <div style={{ color: T.inkSoft, marginTop: 2 }}>{cfg.friendlyText ? "" : "받는 센터 주소는 같은 지역 센터 주소로 채워져요. 다운로드 후 안내되는 센터 주소만 한 번 확인해주세요. "}입수·소비기한은 [거래명세서 설정 → 상품]에서 정할 수 있어요.</div>
         </div>
       )}
       {plan && !cfg.friendlyNew && plan.added.length > 0 && (
@@ -11942,6 +12147,330 @@ function sevenRowsFromOrders(orders) {
   return emartRowsFromOrders(orders);
 }
 
+/* ================= BGF (CU) 냉장·냉동 (2026-10-25) ================= */
+// 발주파일: BGF 협력사 ASN 엑셀 (ASN_YYYYMMDD_HHMMSS.xlsx). 머리글: 번호 | 센터 코드 | 센터명 | 상품 코드 | 상품명 | 납품원가 | 납품예정일자 | … | 총수량 | 수정수량 | … | 상품그룹(냉장1·냉장2·냉동…)
+//   공급사 이름 칸이 없음 → 상품으로 피킹지 원본의 공급사(피벗)를 찾고, 그래도 모르면 올릴 때 물어봄 (공급사 하나당 파일 하나). 한 번 정한 공급사는 상품코드로 기억 (bgf_vendor_codes)
+//   같은 상품 = 상품코드(바코드)가 같을 때만. 센터 = 센터 코드 (코드 표에 없는 코드는 센터명으로). 수량 = 수정수량 (없으면 총수량)
+//   냉동 발주파일은 아직 실물이 없어서 냉장과 같은 형식으로 봄 (상품그룹이 "냉동…"이거나 냉동 피킹지 원본 상품이면 냉동 파일)
+// 피킹지: 실물 BGF 피킹검수 (공급사 피벗 + 상품 시트). 제주·서귀포는 본 상품 시트에서 0 고정, 수량은 맨 끝 "제주권(AZ공유)" 시트로 (냉동 원본 시트 모양)
+// 거래명세서: 실물 CU 명세서(대신 1편·2편 + 센터별 명세서)가 원본. 원본에 없는 공급사는 대신 블록을 복사하고 사업자 정보는 설정(참조은은 받은 명세서 정보 기본)
+const BGF_PICKING_TEMPLATE_URL = "bgf_picking_template.xlsx";
+const BGF_FROZEN_PICKING_TEMPLATE_URL = "bgf_frozen_picking_template.xlsx";
+const BGF_INVOICE_TEMPLATE_URL = "bgf_invoice_template.xlsx";
+// 피벗 센터 순서 (원본 피벗과 같은 가나다 순)
+const BGF_STD_REGIONS = ["BGF로지스강릉", "BGF로지스검단", "BGF로지스광주", "BGF로지스나주", "BGF로지스대구", "BGF로지스부산", "BGF로지스서귀포", "BGF로지스서인천1", "BGF로지스서인천2", "BGF로지스아산", "BGF로지스안성", "BGF로지스양주", "BGF로지스제주", "BGF로지스진주", "BGF로지스진천", "BGF로지스화성", "극동로지스", "김해물류", "동부로지스", "씨제이경산", "씨제이군포", "씨제이김제", "씨제이오산", "아신", "엑소후레쉬양산", "하이로지스", "화인로지텍"];
+// 발주파일 센터 코드 → 피킹지 센터 줄 이름 (2026-10-20 참조은·대신 실제 ASN 기준). 김해물류는 아직 발주파일에 나온 적이 없어 이름으로 연결
+const BGF_CENTER_BY_CODE = {
+  904: "BGF로지스양주", 905: "BGF로지스제주", 906: "하이로지스", 907: "BGF로지스대구", 908: "BGF로지스화성", 909: "동부로지스", 912: "극동로지스", 916: "아신", 920: "화인로지텍",
+  921: "BGF로지스안성", 924: "BGF로지스나주", 925: "BGF로지스진주", 929: "BGF로지스강릉", 931: "엑소후레쉬양산", 934: "BGF로지스서귀포", 942: "씨제이경산", 944: "BGF로지스진천",
+  945: "BGF로지스광주", 946: "BGF로지스아산", 947: "씨제이군포", 951: "씨제이오산", 952: "BGF로지스검단", 954: "씨제이김제", 957: "BGF로지스서인천1", 958: "BGF로지스서인천2", 959: "BGF로지스부산",
+};
+const BGF_JEJU_REGIONS = ["BGF로지스서귀포", "BGF로지스제주"]; // 본 시트 0 고정, 제주권 시트로
+const BGF_JEJU_RE = /제주권|공유/;
+// 상품 시트 센터 줄 (A열): BGF로지스…·씨제이…·아신·화인로지텍… (합계 줄 제외)
+const BGF_REGION_RE = /^(?!.*합계)(?!총)(?!행\s*레이블)\s*(BGF로지스|씨제이|아신|화인로지텍|극동로지스|동부로지스|하이로지스|엑소후레쉬|김해물류)/;
+// 센터 정하기: 코드 표 → 없으면 이름(띄어쓰기 무시)으로 피킹지 센터 찾기. how: "code" | "name" | "none"
+function bgfCenterOf(code, rawName) {
+  const k = String(code == null ? "" : code).trim().replace(/\.0+$/, "");
+  if (BGF_CENTER_BY_CODE[k]) return { center: BGF_CENTER_BY_CODE[k], how: "code" };
+  const raw = String(rawName || "").trim();
+  const n = (x) => String(x || "").replace(/\s|\(주\)|㈜/g, "").replace(/센터$/, "");
+  const kn = n(raw);
+  const hit = BGF_STD_REGIONS.find((r) => n(r) === kn) || BGF_STD_REGIONS.find((r) => kn.length >= 3 && (kn.startsWith(n(r)) || n(r).startsWith(kn)));
+  return hit ? { center: hit, how: "name" } : { center: raw, how: "none" };
+}
+const bgfYmd = (v) => {
+  const t = String(v == null ? "" : v).replace(/\D/g, "");
+  if (t.length >= 8 && /^20\d{6}/.test(t)) return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}`;
+  return xlSerialToYmd(v);
+};
+// ASN 한 시트 → 줄 목록. 공급사·작업 날짜는 아직 안 정함 (업로드 때 정함)
+function parseBgfAsnRows(rows) {
+  const h = rows.findIndex((r) => r && r.some((v) => emartHead(v) === "센터코드") && r.some((v) => emartHead(v) === "상품명") && r.some((v) => /^(총수량|수정수량)$/.test(emartHead(v))));
+  if (h === -1) {
+    const first = rows.find((r) => r && r.some((v) => emartHead(v)));
+    throw new Error(`BGF 발주파일(ASN) 형식이 아니에요 (센터 코드·상품명·총수량 머리글을 찾지 못했어요). 첫 줄: ${first ? first.map(emartHead).filter(Boolean).slice(0, 6).join(", ") : "(빈 시트)"}`);
+  }
+  const top = rows[h].map(emartHead);
+  const col = (name) => top.findIndex((v) => v === name);
+  const c = { cc: col("센터코드"), center: col("센터명"), code: col("상품코드"), name: col("상품명"), deliv: col("납품예정일자"), qty: col("총수량"), fix: col("수정수량"), grp: col("상품그룹"), unit: col("발주단위수량") };
+  if (c.name === -1 || (c.cc === -1 && c.center === -1)) throw new Error("BGF 발주파일에서 센터·상품명 칸을 찾지 못했어요.");
+  const num = (x) => (x === "" || x == null ? null : Number(String(x).replace(/,/g, "")));
+  const out = [];
+  for (let i = h + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const name = String(r[c.name] == null ? "" : r[c.name]).trim();
+    const cc = c.cc !== -1 ? String(r[c.cc] == null ? "" : r[c.cc]).trim().replace(/\.0+$/, "") : "";
+    const cn = c.center !== -1 ? String(r[c.center] == null ? "" : r[c.center]).trim() : "";
+    if (!name || (!cc && !cn) || /^합계/.test(String(r[0] || ""))) continue;
+    const fq = c.fix !== -1 ? num(r[c.fix]) : null;
+    const tq = c.qty !== -1 ? num(r[c.qty]) : null;
+    const qty = Number.isFinite(fq) ? fq : Number.isFinite(tq) ? tq : 0;
+    if (!(qty > 0)) continue;
+    const code = c.code !== -1 ? String(r[c.code] == null ? "" : r[c.code]).trim().replace(/\.0+$/, "") : "";
+    const unit = c.unit !== -1 ? Number(r[c.unit]) || 0 : 0;
+    out.push({ orderNo: "", synthetic: true, vendor: "", vendorCode: "", centerCode: cc, centerName: cn, center: cn, name, code: code || name, productCode: code, box: unit > 1 ? unit : 0, qty, inDate: c.deliv !== -1 ? bgfYmd(r[c.deliv]) : "", group: c.grp !== -1 ? String(r[c.grp] == null ? "" : r[c.grp]).trim() : "", date: "", due: "" });
+  }
+  return out;
+}
+// 공급사 이름: 상품 시트 B2 "참조은 □" / "호연(대신) 1편 □" / "BGF 냉동 참조은 □" / "스위트레쉬피 (1편) □" → "참조은" / "대신" / "참조은" / "스위트레시피"
+const BGF_VENDOR_ALIAS = { 스위트레쉬피: "스위트레시피", 호연: "대신", 대신에프에스: "대신", 참조은에스에프: "참조은" };
+function bgfTitleVendor(t) {
+  let s = String(t || "")
+    .replace(/BGF|CU|냉동|냉장|□/g, "")
+    .replace(/\(\s*\d\s*편\s*\)|\d\s*편/g, "")
+    .trim();
+  const m = /\(([^)]+)\)/.exec(s);
+  if (m) s = m[1];
+  s = s.replace(/\s+/g, "");
+  return BGF_VENDOR_ALIAS[s] || s;
+}
+let BGF_KEYS = ["참조은", "대신", "조인앤조인", "네이처몬스터", "스윗밸런스", "스위트레시피", "스위트조이"];
+function bgfSupKey(v) {
+  const n = String(v || "").replace(/주식회사|\(주\)|㈜|\(유\)|유한회사|\s/g, "");
+  if (BGF_VENDOR_ALIAS[n]) return BGF_VENDOR_ALIAS[n];
+  const hit = BGF_KEYS.filter((k) => k && n.includes(k)).sort((a, b) => b.length - a.length)[0];
+  return hit || n || "미지정";
+}
+// 공급사 → 원본 피벗 (APP예약 피벗보다 일반 피벗 먼저)
+function bgfPivotOfVendor(tpl, vendor) {
+  const key = bgfSupKey(vendor);
+  const list = Object.entries((tpl && tpl.bgfPivotVendor) || {})
+    .filter(([, v]) => v === key)
+    .map(([p]) => p);
+  return list.find((p) => !/APP|예약/i.test(p)) || list[0] || null;
+}
+async function getBgfPickingTemplateBuffer(frozen) {
+  const url = frozen ? BGF_FROZEN_PICKING_TEMPLATE_URL : BGF_PICKING_TEMPLATE_URL;
+  const res = await fetch(url, { cache: "no-store" });
+  const ct = res.headers.get("content-type") || "";
+  if (!res.ok || /text\/html/i.test(ct)) throw new Error(`BGF${frozen ? " 냉동" : ""} 피킹지 원본 파일을 불러오지 못했어요 (${url}). 데모 폴더에 이 파일도 같이 올렸는지 확인해주세요.`);
+  return res.arrayBuffer();
+}
+const BGF_TPL = { cold: { cache: null, sync: null }, frozen: { cache: null, sync: null } };
+function getBgfTemplateInfo(frozen = false) {
+  const slot = BGF_TPL[frozen ? "frozen" : "cold"];
+  if (!slot.cache)
+    slot.cache = getBgfPickingTemplateBuffer(frozen)
+      .then((b) => loadEmartTemplate(b))
+      .then((t) => {
+        analyzeEmartTemplate(t, BGF_REGION_RE);
+        t.products = t.products.filter((p) => !BGF_JEJU_RE.test(p.sheet)); // 제주권(AZ공유) 시트는 상품 시트 아님
+        // 피벗 → 공급사: 그 피벗을 보는 상품 시트 B2 공급사 이름 중 가장 많은 것 (없으면 피벗 이름)
+        const votes = {};
+        t.products.forEach((p) => {
+          const v = bgfTitleVendor(p.sheetTitle);
+          if (!v) return;
+          votes[p.pivot] = votes[p.pivot] || {};
+          votes[p.pivot][v] = (votes[p.pivot][v] || 0) + 1;
+        });
+        t.bgfPivotVendor = {};
+        Array.from(new Set(t.products.map((p) => p.pivot))).forEach((pv) => {
+          const best = Object.entries(votes[pv] || {}).sort((a, b) => b[1] - a[1])[0];
+          t.bgfPivotVendor[pv] = best ? best[0] : bgfTitleVendor(pv.replace(/[★☆]/g, "").replace(/피벗.*$/, "").replace(/\(.*$/, ""));
+        });
+        BGF_KEYS = Array.from(new Set([...BGF_KEYS, ...Object.values(t.bgfPivotVendor).filter(Boolean)]));
+        slot.sync = t;
+        return t;
+      })
+      .catch((e) => {
+        slot.cache = null;
+        throw e;
+      });
+  return slot.cache;
+}
+// 파일 하나(공급사 하나)의 공급사: 원본 상품과 맞는 줄의 공급사 중 가장 많은 것 → 기억해 둔 상품코드 → ""
+function bgfVendorOfRows(parsed, tpls, learned) {
+  const cnt = {};
+  parsed.forEach((r) => {
+    for (const t of tpls) {
+      if (!t) continue;
+      const p = matchEmartProduct(t, r.name, r.code);
+      if (p && t.bgfPivotVendor[p.pivot]) {
+        cnt[t.bgfPivotVendor[p.pivot]] = (cnt[t.bgfPivotVendor[p.pivot]] || 0) + 1;
+        return;
+      }
+    }
+    const v = learned && learned[r.productCode || r.code];
+    if (v) cnt[v] = (cnt[v] || 0) + 1;
+  });
+  const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : "";
+}
+// 냉동 파일인지: 상품그룹 칸이 "냉동…"이면 냉동, "냉장…"이면 냉장. 없으면 냉장·냉동 원본 중 상품이 더 많이 맞는 쪽
+function bgfIsFrozenFile(parsed, coldTpl, frozenTpl) {
+  const g = parsed.map((r) => r.group).filter(Boolean);
+  if (g.length) {
+    const f = g.filter((x) => /냉동/.test(x)).length;
+    const c = g.filter((x) => /냉장|상온|일배/.test(x)).length;
+    if (f !== c) return f > c;
+  }
+  const hits = (t) => (t ? parsed.filter((r) => matchEmartProduct(t, r.name, r.code)).length : 0);
+  return hits(frozenTpl) > hits(coldTpl);
+}
+const BGF_PICK_CFG = {
+  label: "BGF",
+  intro: "상품마다 ",
+  allowDangchak: false,
+  zeroLabel: "0으로 고정",
+  dailyLabel: "BGF",
+  brand: "BGF",
+  orderKey: "picking_order_bgf",
+  pickKey: "bgf_pick_settings",
+  codeOf: (label) => String(label).trim(),
+};
+const BGF_FROZEN_PICK_CFG = { ...BGF_PICK_CFG, label: "BGF 냉동", dailyLabel: "BGF냉동", brand: "BGFFROZEN", orderKey: "picking_order_bgffrozen", pickKey: "bgffrozen_pick_settings" };
+async function downloadBgfPickingFile(rows, date, customTpl, activeName, opts = {}, frozen = false) {
+  const buf = customTpl ? customTpl.buffer.slice(0) : await getBgfPickingTemplateBuffer(frozen);
+  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, {
+    ...opts,
+    regionRe: BGF_REGION_RE,
+    regionOrder: BGF_STD_REGIONS,
+    wideLookup: true,
+    pivotForVendor: bgfPivotOfVendor,
+    supKey: bgfSupKey,
+    cloneNewVendor: true,
+    pivotSumFormula: true,
+    ...(frozen ? { pivotA2Auto: true } : {}),
+    keepAlso: (name) => BGF_JEJU_RE.test(name),
+    notProduct: (name) => BGF_JEJU_RE.test(name),
+    jejuZero: BGF_JEJU_REGIONS,
+    jejuShare: { match: BGF_JEJU_RE, regions: BGF_JEJU_REGIONS, region: BGF_JEJU_REGIONS[1], build: true, sheetName: "제주권(AZ공유)", label: (v) => `${v} □` },
+    colorKind: frozen ? "bgffrozen_picking" : "bgf_picking",
+    removeTexts: [],
+  });
+  const filename = `BGF${frozen ? "냉동" : ""}-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  if (opts.verify) {
+    let ok = true;
+    try {
+      ok = (await opts.verify(bytes, report)) !== false;
+    } catch (e) {
+      console.error("2차 검증 실패", e);
+    }
+    if (!ok) {
+      report.held = { buffer: bytes, filename };
+      return report;
+    }
+  }
+  saveXlsxBuffer(bytes, filename);
+  return report;
+}
+const BGF_PV_CFG = {
+  brand: "BGF",
+  label: "BGF",
+  channelKey: "bgf",
+  orderKey: "picking_order_bgf",
+  aliasKey: "bgf_product_alias",
+  infoKey: "product_info_bgf",
+  knownKey: "known_products_bgf",
+  colorKind: "bgf_picking",
+  fileLabel: "BGF 피킹검수 엑셀",
+  sub: "BGF(CU) 발주를 실물 BGF 피킹검수 양식(공급사 피벗·센터·입수·서식) 그대로 정리합니다. 제주·서귀포는 상품 시트에서 0으로 고정되고, 그 수량은 맨 끝 제주권(AZ공유) 시트로 나가요.",
+  emptyText: "BGF 발주가 없습니다. 먼저 주문정보 (BGF)에서 발주파일(ASN)을 업로드해주세요.",
+  pick: BGF_PICK_CFG,
+  stdRegions: BGF_STD_REGIONS,
+  jejuZero: BGF_JEJU_REGIONS,
+  loadInfo: () => getBgfTemplateInfo(false),
+  supKey: (v) => bgfSupKey(v),
+  rowFilter: () => true,
+  download: (rows, date, customTpl, activeName, opts) => downloadBgfPickingFile(rows, date, customTpl, activeName, opts, false),
+};
+const BGF_FROZEN_PV_CFG = {
+  ...BGF_PV_CFG,
+  brand: "BGFFROZEN",
+  label: "BGF 냉동",
+  channelKey: "bgffrozen",
+  orderKey: "picking_order_bgffrozen",
+  aliasKey: "bgffrozen_product_alias",
+  infoKey: "product_info_bgffrozen",
+  knownKey: "known_products_bgffrozen",
+  colorKind: "bgffrozen_picking",
+  fileLabel: "BGF 냉동 피킹검수 엑셀",
+  sub: "BGF(CU) 냉동 발주를 실물 BGF 냉동 피킹검수 양식(공급사 피벗·납품일·제주권(AZ공유) 시트) 그대로 정리합니다. 제주·서귀포는 상품 시트에서 0 고정, 수량은 제주권 시트로 나가요.",
+  emptyText: "BGF 냉동 발주가 없습니다. 먼저 주문정보 (BGF 냉동)에서 발주파일을 업로드해주세요.",
+  pick: BGF_FROZEN_PICK_CFG,
+  loadInfo: () => getBgfTemplateInfo(true),
+  download: (rows, date, customTpl, activeName, opts) => downloadBgfPickingFile(rows, date, customTpl, activeName, opts, true),
+};
+// 거래명세서: CU 명세서(B1 센터 / E 품목 / M 입수 / Q 총수량 / L6 센터명 / G8 주소)
+const INV_LAYOUT_BGF = {
+  blankZero: true,
+  key: "B1",
+  qty: "Q",
+  cols: ["E", "M", "Q", "T", "W", "AA"],
+  get regionOrder() {
+    return BGF_STD_REGIONS;
+  },
+  centerName: "L6",
+  centerAddr: "G8",
+  newCenterName: (short) => short,
+  srcSupplier: "대신",
+  shortOf: (c) => String(c),
+  noCopyExpiry: true, // 복사해 온 대신 상품 소비기한 일수를 다른 공급사 상품에 쓰지 않음 (설정에서 넣은 값만)
+  cloneNoOffset: true, // 대신 1편 강릉(+1일) 같은 날짜 차이를 복사한 공급사에는 쓰지 않음
+  // 원본에 없는 대신 상품: 상품명 끝 숫자(1/2)로 1편·2편 피벗을, "APP)"면 사전예약 피벗을 고름
+  pickPivot: (r, pivots, cur) => {
+    if (!cur) return cur;
+    const base = cur.supplier.replace(/\s*(사전)?예약.*$/, "");
+    const same = pivots.filter((p) => p.supplier.replace(/\s*(사전)?예약.*$/, "") === base);
+    if (/^APP\)/i.test(r.name)) return same.find((p) => /예약/.test(p.pivot)) || cur;
+    const d = (/(\d)\s*$/.exec(r.name) || [])[1];
+    return (d && same.find((p) => new RegExp(`${d}\\s*편`).test(p.pivot) && !/예약/.test(p.pivot))) || cur;
+  },
+};
+// 원본 명세서가 없는 공급사 사업자 정보 기본값 (받은 CU 참조은 명세서 10/19) - 거래명세서 설정에서 바꾸면 그 값이 우선. 없는 공급사는 빈칸 → 설정에서 입력
+const BGF_INV_DEFAULT_INFO = {
+  참조은: { regNo: "130-86-53030", name: "주식회사 참조은에스에프", ceo: "임경숙, 박재현", address: "충청남도 공주시 정안면 정안농공단지길 32-53, 1층", bizType: "제조업", bizItem: "빵, 과자, 떡류제조업" },
+};
+// 입수: 발주파일은 낱개(1) → 피킹 원본의 같은 상품 입수 (상품 정보 관리에서 바꾸면 그게 우선)
+const bgfInvRowsOf = (frozen) => (orders, date) => {
+  const t = BGF_TPL[frozen ? "frozen" : "cold"].sync;
+  if (!t) getBgfTemplateInfo(frozen).catch(() => {});
+  return emartRowsFromOrders(orders.filter((o) => o.createdAt === date)).map((r) => {
+    if (r.box > 1 || !t) return r;
+    const hit = matchEmartProduct(t, r.name, r.code);
+    return hit && hit.pack > 1 ? { ...r, box: hit.pack } : r;
+  });
+};
+const BGF_INV_CFG = {
+  brand: "BGF",
+  label: "BGF",
+  get lay() {
+    return INV_LAYOUT_BGF;
+  },
+  getBuffer: () => fetchInvTemplate(BGF_INVOICE_TEMPLATE_URL, "BGF"),
+  rowsOf: bgfInvRowsOf(false),
+  loadPickTpl: () => getBgfTemplateInfo(false),
+  title: "거래명세서 · BGF",
+  sub: "실물 CU 거래명세서(공급사 피벗 + 센터별 명세서) 그대로 만들어요. 대신은 원본 1편·2편 명세서, 원본이 없는 공급사는 대신 명세서 모양을 복사해서 만들고 사업자 정보는 [거래명세서 설정]에서 넣어요 (참조은은 받은 명세서 정보가 기본으로 들어가요).",
+  filePrefix: "BGF_거래명세서",
+  dangchak: null,
+  defaultInfo: BGF_INV_DEFAULT_INFO,
+  friendlyNew: true,
+  friendlyText: (
+    <>
+      <b>공급사마다 CU 명세서 양식으로 자동으로 만들어요.</b> 그날 발주가 있는 센터 명세서만 나와요.
+    </>
+  ),
+  hideIdleSuppliers: true,
+};
+// BGF 냉동 거래명세서: 냉동 원본 명세서가 아직 없어서 냉장(CU) 명세서 모양을 복사해서 공급사마다 만듦. 날짜 = 납품일(작업일 + 1, 냉동 피킹지 "10/20 납품"과 같음)
+const INV_LAYOUT_BGF_FROZEN = { ...INV_LAYOUT_BGF, dateOffset: 1 };
+const BGF_FROZEN_INV_CFG = {
+  ...BGF_INV_CFG,
+  brand: "BGFFROZEN",
+  label: "BGF 냉동",
+  get lay() {
+    return INV_LAYOUT_BGF_FROZEN;
+  },
+  rowsOf: bgfInvRowsOf(true),
+  loadPickTpl: () => getBgfTemplateInfo(true),
+  title: "거래명세서 · BGF 냉동",
+  sub: "BGF 냉동 발주를 공급사별·센터별 거래명세서로 만들어요 (CU 명세서 모양). 명세서 날짜는 납품일(작업일 다음날)이고, 공급자 사업자 정보는 받은 정보가 있는 공급사(참조은)는 자동으로, 나머지는 [거래명세서 설정]에서 넣어요.",
+  filePrefix: "BGF냉동_거래명세서",
+};
+
 // ---------- 세븐 편수리스트 ----------
 // [양식 등록]: 직원이 쓰는 세븐 편수리스트 엑셀을 한 번 올려두면(서버 설정 seven_pyeonsu_template) 그 양식 그대로 그날 공급사별 SKU 수·수량을 채운다
 //   양식에서 "공급사/거래처/업체/협력사" 칸과 "SKU/품목수/상품수" 칸(+ 있으면 "수량/물량" 칸)이 있는 머리글 줄을 찾아서, 공급사 이름이 맞는 줄에 숫자를 넣음
@@ -12104,10 +12633,14 @@ function SevenPyeonsuButton({ orders, date, authToken, busy, setBusy }) {
 function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, authToken, channelTag, title, sub, kind }) {
   // kind "SEVEN": 세븐일레븐 발주파일(점포상품별 주문정보). 화면·중복 막기·저장은 이마트와 같고, 읽는 법·날짜·상품코드만 다름
   // kind "SEVENFROZEN": 세븐 냉동 (같은 발주파일 형식, 센터가 "…냉동")
+  // kind "BGF" / "BGFFROZEN": BGF(CU) 협력사 ASN 엑셀. 상품코드로 상품, 센터 코드로 센터, 공급사는 상품으로 판별
   const isSevenFrozen = kind === "SEVENFROZEN";
   const isSeven = kind === "SEVEN" || isSevenFrozen;
-  const NO_PREFIX = isSevenFrozen ? "SF" : isSeven ? "SV" : "EM";
-  const chName = isSevenFrozen ? "세븐 냉동" : isSeven ? "세븐일레븐" : channelTag === "EMARTFROZEN" ? "이마트 냉동" : "이마트";
+  const isBgfFrozen = kind === "BGFFROZEN";
+  const isBgf = kind === "BGF" || isBgfFrozen;
+  const NO_PREFIX = isBgfFrozen ? "BF" : isBgf ? "BG" : isSevenFrozen ? "SF" : isSeven ? "SV" : "EM";
+  const chName = isBgfFrozen ? "BGF 냉동" : isBgf ? "BGF" : isSevenFrozen ? "세븐 냉동" : isSeven ? "세븐일레븐" : channelTag === "EMARTFROZEN" ? "이마트 냉동" : "이마트";
+  const bgfLearned = useSetting("bgf_vendor_codes", authToken); // BGF 상품코드 → 공급사 (올릴 때 정한 공급사를 기억)
   // 업체 코드 → 예전 형식 거래처 이름 (새 형식 파일을 예전과 같은 공급사로 묶는 데 씀). 서버 설정에 계속 쌓아 둔다
   const codeMapSaved = useSetting("emart_vendor_codes", authToken);
   const [err, setErr] = useState("");
@@ -12175,6 +12708,9 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
           })
           .catch(() => {});
       else if (isSeven) sevenRules = await getSevenTemplateInfo().then((t) => t.sevenRules).catch(() => SEVEN_DATE_RULES_FALLBACK);
+      // BGF: 냉장·냉동 피킹지 원본 (공급사·냉장/냉동 판별용)
+      const bgfTpls = isBgf ? await Promise.all([getBgfTemplateInfo(false).catch(() => null), getBgfTemplateInfo(true).catch(() => null)]) : [];
+      const bgfLearn = {}; // 이번에 올린 상품코드 → 공급사
       for (const f of Array.from(list)) {
         const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: "array" });
         // 시트가 여러 개여도 발주 머리글이 있는 시트를 찾는다
@@ -12183,7 +12719,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         for (const sn of wb.SheetNames) {
           const r = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: "", raw: true });
           try {
-            parsed = isSeven ? parseSevenOrderRows(r) : parseEmartOrderRows(r, vendorByCode);
+            parsed = isBgf ? parseBgfAsnRows(r) : isSeven ? parseSevenOrderRows(r) : parseEmartOrderRows(r, vendorByCode);
             break;
           } catch (e) {
             if (!firstErr || /피킹검수 파일/.test(firstErr.message)) firstErr = e; // 확인용 피벗 시트보다 발주 시트 오류를 보여줌
@@ -12191,6 +12727,57 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         }
         if (!parsed) throw new Error(`${f.name}: ${firstErr ? firstErr.message : "읽을 수 있는 시트가 없어요."}`);
         otherChannel += parsed.otherChannel || 0;
+        // BGF: 냉장·냉동 확인 → 센터(코드) → 공급사 → 작업 날짜(가장 빠른 납품예정일 하루 전, 올릴 때 확인)
+        if (isBgf) {
+          if (!parsed.length) throw new Error(`${f.name}: 수량이 있는 줄이 없어요.`);
+          const frz = bgfIsFrozenFile(parsed, bgfTpls[0], bgfTpls[1]);
+          if (!isBgfFrozen && frz) throw new Error(`${f.name}: BGF 냉동 발주파일 같아요 (상품그룹 "냉동" 또는 냉동 피킹지 상품). 주문정보 (BGF 냉동)에 올려주세요.`);
+          if (isBgfFrozen && !frz) throw new Error(`${f.name}: BGF 냉장 발주파일 같아요 (상품그룹 "냉장" 또는 냉장 피킹지 상품). 주문정보 (BGF)에 올려주세요.`);
+          const newCodes = new Map();
+          parsed.forEach((r) => {
+            const res = bgfCenterOf(r.centerCode, r.centerName);
+            if (res.how !== "code") newCodes.set(r.centerCode || "(코드 없음)", { name: r.centerName, center: res.center, how: res.how });
+            r.center = res.center;
+          });
+          if (newCodes.size) {
+            const lines = [...newCodes].map(([cd, v]) => `· ${cd} ${v.name} → ${v.how === "name" ? `"${v.center}"(이름으로 연결)` : "연결할 센터 없음 (피킹지에 새 줄로 생겨요)"}`);
+            const go = window.confirm(`[${f.name}]\n코드 표에 없는 BGF 센터 코드가 있어요.\n${lines.join("\n")}\n\n[확인] 이대로 올리기\n[취소] 올리지 않기\n\n새 센터면 코드를 알려주세요 (코드 표에 추가해야 해요).`);
+            if (!go) {
+              setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+              return;
+            }
+          }
+          let vendor = bgfVendorOfRows(parsed, isBgfFrozen ? [bgfTpls[1], bgfTpls[0]] : [bgfTpls[0], bgfTpls[1]], { ...(bgfLearned || {}), ...bgfLearn });
+          if (!vendor) {
+            const names = Array.from(new Set(parsed.map((r) => r.name)));
+            const ans = window.prompt(`[${f.name}]\n피킹지 원본에 없는 상품만 있어서 공급사를 모르겠어요.\n상품: ${names.slice(0, 5).join(", ")}${names.length > 5 ? ` 외 ${names.length - 5}개` : ""}\n\n이 파일의 공급사 이름을 적어주세요 (예: 참조은, 대신). 한 번 적으면 다음부터는 상품코드로 알아서 정해요.\n[취소]를 누르면 올리지 않아요.`, "");
+            if (ans === null || !ans.trim()) {
+              setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+              return;
+            }
+            vendor = bgfSupKey(ans.trim());
+          }
+          parsed.forEach((r) => {
+            r.vendor = vendor;
+            bgfLearn[r.productCode || r.code] = vendor;
+          });
+          const ind = Array.from(new Set(parsed.map((r) => r.inDate).filter(Boolean))).sort();
+          const def = ind.length ? ymdAddDays(ind[0], -1) : todayStr();
+          const ans = window.prompt(
+            `[${f.name}]\nBGF${isBgfFrozen ? " 냉동" : ""} ${vendor} · 상품 ${new Set(parsed.map((r) => r.code)).size}개 · ${parsed.reduce((a, r) => a + r.qty, 0).toLocaleString()}개 · 센터 ${new Set(parsed.map((r) => r.center)).size}곳\n납품예정일 ${ind.join(", ") || "(없음)"}\n\n작업 날짜(피킹지·명세서 날짜): ${def}\n= 가장 빠른 납품예정일 하루 전\n\n맞으면 [확인], 다르면 날짜를 고쳐서 [확인] (예: 2026-10-20). [취소]를 누르면 올리지 않아요.`,
+            def
+          );
+          if (ans === null) {
+            setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+            return;
+          }
+          const d = xlSerialToYmd(ans.trim()) || def;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error(`날짜를 알아보지 못했어요: "${ans}" (예: 2026-10-20)`);
+          parsed.forEach((r) => {
+            r.date = d;
+            r.due = r.inDate || "";
+          });
+        }
         // 세븐: 공급사 파일마다 작업 날짜를 정하고 확인 (피킹지 원본 규칙: 주문일-당일 / 입고일+2 / 입고일_익일 …)
         if (isSeven) {
           if (!parsed.length) throw new Error(`${f.name}: 주문수량이 있는 줄이 없어요.`);
@@ -12274,7 +12861,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         all.forEach((r) => !r.synthetic && r.vendorCode && r.vendor && (learn[r.vendorCode] = r.vendor));
         Object.entries(vendorByCode).forEach(([k, v]) => !learn[k] && (learn[k] = v));
         const before = (codeMapSaved && codeMapSaved.map) || {};
-        if (!isSeven && authToken && Object.keys(learn).some((k) => before[k] !== learn[k])) updateSetting("emart_vendor_codes", authToken, (v) => ({ map: { ...((v && v.map) || {}), ...learn } })).catch(() => {});
+        if (!isSeven && !isBgf && authToken && Object.keys(learn).some((k) => before[k] !== learn[k])) updateSetting("emart_vendor_codes", authToken, (v) => ({ map: { ...((v && v.map) || {}), ...learn } })).catch(() => {});
       }
       // 새 형식(주문번호 없음): 이미 올라온 "발주일+납품처+업체+상품" 줄은 건너뛴다 (같은 파일 다시 올려도 두 번 안 쌓임)
       let dupLines = 0;
@@ -12301,7 +12888,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         all.push(...kept);
       }
       // 같은 날짜에 이미 이마트 발주가 있으면 확인 (냉동은 그대로). 발주번호와 상관없이 같은 줄이면 겹침으로 셈
-      if ((!channelTag || isSeven) && all.length > 0) {
+      if ((!channelTag || isSeven || isBgf) && all.length > 0) {
         const lk = (date, center, vcode, vendor, sku) => `${date}|${center}|${vcode || vendor}|${sku}`;
         const prevKeys = new Set();
         emartOrders.forEach((o) => o.lines.forEach((l) => prevKeys.add(lk(o.createdAt, o.storeCode || o.customer, emartCodeNorm(o.supplierCode), o.supplier, l.sku))));
@@ -12310,12 +12897,13 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         const cand = all.filter((r) => !(r.orderNo && prevNos.has(`${r.orderNo}|${r.date}`)));
         const overlap = cand.filter((r) => prevKeys.has(keyOf(r))).length;
         // 세븐은 공급사마다 파일이 따로 와요 → 같은 날 다른 공급사 발주가 있는 건 정상. 같은 공급사가 이미 있을 때만 물어봐요
-        const candVend = new Set(cand.map((r) => sevenSupKey(r.vendor)));
-        const pool = isSeven ? emartOrders.filter((o) => candVend.has(sevenSupKey(o.supplier))) : emartOrders;
+        const supK = isBgf ? bgfSupKey : sevenSupKey;
+        const candVend = new Set(cand.map((r) => supK(r.vendor)));
+        const pool = isSeven || isBgf ? emartOrders.filter((o) => candVend.has(supK(o.supplier))) : emartOrders;
         const existDates = [...new Set(cand.map((r) => r.date))].filter((d) => pool.some((o) => o.createdAt === d)).sort();
         if (existDates.length || overlap > 0) {
           const exD = existDates.length ? existDates : [...new Set(cand.filter((r) => prevKeys.has(keyOf(r))).map((r) => r.date))].sort();
-          const ans = confirmSameDayUpload(isSeven ? `${chName} ${[...candVend].join("·")}` : chName, exD, pool.filter((o) => exD.includes(o.createdAt)).length, overlap);
+          const ans = confirmSameDayUpload(isSeven || isBgf ? `${chName} ${[...candVend].join("·")}` : chName, exD, pool.filter((o) => exD.includes(o.createdAt)).length, overlap);
           if (ans === "cancel") {
             setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
             return;
@@ -12350,13 +12938,14 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         const seen = new Map();
         all.forEach((r) => {
           const sku = r.code || r.name;
-          if (sku && !seen.has(sku)) seen.set(sku, { sku, name: r.name, brand: isSevenFrozen ? "SEVENFROZEN" : isSeven ? "SEVEN" : "EMART", boxQty: r.box || 0 });
+          if (sku && !seen.has(sku)) seen.set(sku, { sku, name: r.name, brand: isBgfFrozen ? "BGFFROZEN" : isBgf ? "BGF" : isSevenFrozen ? "SEVENFROZEN" : isSeven ? "SEVEN" : "EMART", boxQty: r.box || 0 });
         });
         await onRegisterItems(Array.from(seen.values()));
       }
       if (channelTag) list2.forEach((o) => (o.channel = channelTag)); // 이마트 냉동·세븐: 채널 표시로 이마트 일반과 구분
       setUploadMeta({ files: Array.from(list).map((f) => f.name), page: channelTag || "EMART", notes: [dupLines ? `이미 있던 줄 ${dupLines}개 건너뜀` : "", batchDup ? `같은 파일 겹친 줄 ${batchDup}개 한 번만` : ""].filter(Boolean).join(" · ") || null });
       const res = await onUpload(list2);
+      if (isBgf && Object.keys(bgfLearn).length) updateSetting("bgf_vendor_codes", authToken, (v) => ({ ...(v || {}), ...bgfLearn })).catch(() => {});
       const dates = Array.from(new Set(list2.map((o) => o.createdAt))).sort();
       setMsg(
         `${dates.map(fmtDate).join(", ")} 발주 ${res.createdCount ?? 0}건 등록` +
@@ -12397,7 +12986,13 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 13, color: T.inkSoft }}>
-            {isSeven ? (
+            {isBgf ? (
+              <>
+                BGF 협력사 사이트에서 받은 <b>ASN 엑셀</b>(ASN_날짜_시간.xlsx)을 올리면 {isBgfFrozen ? "BGF 냉동 " : ""}발주가 등록돼요. 공급사마다 파일 하나씩, 여러 개를 한 번에 골라도 돼요.{isBgfFrozen ? " (냉장 파일은 주문정보 (BGF)에)" : " (냉동 파일은 주문정보 (BGF 냉동)에)"}
+                <br />
+                같은 상품은 <b>상품코드</b>가 같을 때만, 센터는 <b>센터 코드</b>로 구분해요 (코드 표에 없는 센터는 이름으로). 수량은 수정수량 기준이에요. 공급사는 피킹지 원본 상품으로 알아서 정하고, 모르면 올릴 때 물어봐요. 작업 날짜는 가장 빠른 납품예정일 하루 전으로 정하고 올릴 때 확인해요.
+              </>
+            ) : isSeven ? (
               <>
                 세븐일레븐 협력사 사이트의 <b>점포상품별 주문정보</b> 파일(.xls)을 올리면 {isSevenFrozen ? "세븐 냉동 " : ""}발주가 등록돼요. 공급사마다 파일 하나씩, 여러 개를 한 번에 골라도 돼요.{isSevenFrozen ? " (센터가 \"…냉동\"인 파일만 받아요. 냉장 파일은 주문정보 (세븐일레븐)에)" : ""}
                 <br />
@@ -12447,7 +13042,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
-                    onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_${isSevenFrozen ? "세븐냉동" : isSeven ? "세븐일레븐" : "이마트"}_${g.date}.xlsx`, setDownloading)}
+                    onClick={() => downloadOrderInfoExcel(g.orders, g.date, `주문정보_${isBgfFrozen ? "BGF냉동" : isBgf ? "BGF" : isSevenFrozen ? "세븐냉동" : isSeven ? "세븐일레븐" : "이마트"}_${g.date}.xlsx`, setDownloading)}
                     disabled={downloading}
                     className="primary-btn"
                     style={{ ...primaryBtnStyle, opacity: downloading ? 0.7 : 1 }}
@@ -12835,6 +13430,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG }) {
           rows: outRows,
           allRows,
           adjusted,
+          jejuZero: pv.jejuZero,
           fullExport: !filterOn,
           isHiddenRow: (r) =>
             isBrandHidden(orderCfg, pv.supKey(r.vendor), r.name)
@@ -13200,6 +13796,7 @@ const PICKING_CHANNELS = [
   { key: "emart", brand: "EMART", label: "이마트" },
   { key: "emfrozen", brand: "EMARTFROZEN", label: "이마트 냉동" },
   { key: "bgf", brand: "BGF", label: "BGF" },
+  { key: "bgffrozen", brand: "BGFFROZEN", label: "BGF 냉동" },
   { key: "seven", brand: "SEVEN", label: "세븐일레븐" },
   { key: "sevenfrozen", brand: "SEVENFROZEN", label: "세븐 냉동" },
 ];
@@ -13209,6 +13806,7 @@ const BRAND_COLOR = {
   GSSUPER: { bg: "#E4F2EE", fg: "#0E4F3F" },
   EMART: { bg: "#FDF1DC", fg: "#8A5A00" },
   BGF: { bg: "#EFE8F7", fg: "#4B2E7A" },
+  BGFFROZEN: { bg: "#E3EEF8", fg: "#1D4F7A" },
   SEVEN: { bg: "#FBE9DF", fg: "#7A331A" },
   SEVENFROZEN: { bg: "#E3EEF8", fg: "#1D4F7A" },
 };
@@ -13700,8 +14298,9 @@ function verifyGsPicking({ orders, date, buffer, sheetLog, products, fullExport 
 }
 
 // ---------- 이마트 일반 피킹지 ----------
-function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, isHiddenRow, fullExport, adjusted }) {
+function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, isHiddenRow, fullExport, adjusted, jejuZero }) {
   const res = pvNewResult();
+  const jz = new Set(jejuZero || []); // BGF: 상품 시트에서 0 고정하고 제주권 시트로 보내는 센터 (피벗은 실제 수량 그대로)
   (adjusted || []).forEach((a) => pvAddFixed(res, a.name, a.center, a.qty, a.reason)); // 피킹지 설정(0으로 고정·지역 빼기)
   const day = emartOrders.filter((o) => o.createdAt === date && !isGsCenterOrder(o));
   pvSourceChecks(day, (o) => emartVendorKey(o.supplier || ""), () => true, res);
@@ -13743,7 +14342,9 @@ function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, i
     }
     let sum = 0;
     new Set([...Object.keys(qty), ...Object.keys(sh.byLabel)]).forEach((center) => {
-      const a = qty[center] || 0;
+      const a0 = qty[center] || 0;
+      const a = jz.has(center) ? 0 : a0;
+      if (jz.has(center) && a0 > 0) pvAddFixed(res, m.name, center, a0, "제주권: 본 시트는 0 고정 → 제주권(AZ공유) 시트로");
       res.stats.rawQty += a;
       res.stats.cells++;
       if (!(center in sh.byLabel)) {
@@ -14946,6 +15547,20 @@ const SHEET_COLOR_KINDS = {
       { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
     ],
   },
+  bgf_picking: {
+    label: "BGF 피킹지",
+    types: [
+      { key: "pivot", label: "피벗 시트", special: true },
+      { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
+    ],
+  },
+  bgffrozen_picking: {
+    label: "BGF 냉동 피킹지",
+    types: [
+      { key: "pivot", label: "피벗 시트", special: true },
+      { key: "product", label: "상품 시트 (공급사 색이 없을 때)" },
+    ],
+  },
   seven_picking: {
     label: "세븐일레븐 피킹지",
     types: [
@@ -15534,20 +16149,20 @@ function SheetColorButton({ kind, suppliers, authToken }) {
   );
 }
 
-function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], authToken }) {
+function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken }) {
   return (
     <BrandTabs
       channel={channel}
       onChannel={onChannel}
       title="피킹지시서 출력"
-      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : c === "bgf" ? <EmartPickingView key="bgf" pv={BGF_PV_CFG} emartOrders={bgfOrders} authToken={authToken} /> : c === "bgffrozen" ? <EmartPickingView key="bgffrozen" pv={BGF_FROZEN_PV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} /> : null)}
       placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
     />
   );
 }
 
 // 거래명세서: GS는 기존 화면, 나머지 브랜드는 공사중 + 거래명세서 설정 (설정은 바로 저장·고정)
-function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], authToken }) {
+function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken }) {
   const tplInfo = useEmartTplInfo();
   const emartDet = useMemo(() => (channel === "emart" ? emartDetected(emartOrders, tplInfo) : []), [channel, emartOrders, tplInfo]);
   return (
@@ -15556,7 +16171,7 @@ function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders =
       onChannel={onChannel}
       title="거래명세서"
       renderReady={(c) =>
-        c === "gs" ? gsView : c === "emart" ? <EmartInvoiceView key="emart" emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <EmartInvoiceView key="gsfrozen" cfg={GS_FROZEN_INV_CFG} emartOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <EmartInvoiceView key="emfrozen" cfg={EM_FROZEN_INV_CFG} emartOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartInvoiceView key="seven" cfg={SEVEN_INV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartInvoiceView key="sevenfrozen" cfg={SEVEN_FROZEN_INV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : null
+        c === "gs" ? gsView : c === "emart" ? <EmartInvoiceView key="emart" emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <EmartInvoiceView key="gsfrozen" cfg={GS_FROZEN_INV_CFG} emartOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <EmartInvoiceView key="emfrozen" cfg={EM_FROZEN_INV_CFG} emartOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartInvoiceView key="seven" cfg={SEVEN_INV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartInvoiceView key="sevenfrozen" cfg={SEVEN_FROZEN_INV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : c === "bgf" ? <EmartInvoiceView key="bgf" cfg={BGF_INV_CFG} emartOrders={bgfOrders} authToken={authToken} /> : c === "bgffrozen" ? <EmartInvoiceView key="bgffrozen" cfg={BGF_FROZEN_INV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} /> : null
       }
       placeholderAction={(ch) => <BrandInvoiceSettingsButton ch={ch} authToken={authToken} detected={ch.brand === "EMART" ? emartDet : []} />}
     />
@@ -15564,17 +16179,45 @@ function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders =
 }
 
 /* ----- XIII. 상품 정보 관리: 브랜드 필터 ----- */
-function ProductInfoCenter({ orders, items, emartOrders, sevenOrders = [], sevenFrozenOrders = [], authToken, productInfo, onSaved }) {
+function ProductInfoCenter({ orders, items, emartOrders, sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken, productInfo, onSaved }) {
   const [channel, setChannel] = useState("gs");
   const tplInfo = useEmartTplInfo();
   const [sevenTplC, setSevenTpl] = useState(SEVEN_TPL_SYNC);
   const [sevenFrzTpl, setSevenFrzTpl] = useState(SEVEN_FROZEN_TPL_SYNC);
+  const [bgfTplC, setBgfTpl] = useState(BGF_TPL.cold.sync);
+  const [bgfFrzTpl, setBgfFrzTpl] = useState(BGF_TPL.frozen.sync);
   useEffect(() => {
     if (channel === "seven" && !sevenTplC) getSevenTemplateInfo().then(setSevenTpl).catch(() => {});
     if (channel === "sevenfrozen" && !sevenFrzTpl) getSevenFrozenTemplateInfo().then(setSevenFrzTpl).catch(() => {});
+    if (channel === "bgf" && !bgfTplC) getBgfTemplateInfo(false).then(setBgfTpl).catch(() => {});
+    if (channel === "bgffrozen" && !bgfFrzTpl) getBgfTemplateInfo(true).then(setBgfFrzTpl).catch(() => {});
   }, [channel]); // eslint-disable-line
   const rowsFor = (brand) => {
     const map = new Map();
+    if (brand === "BGF" || brand === "BGFFROZEN") {
+      // BGF(냉동) 발주에 나온 상품 (상품코드 = 바코드) + BGF(냉동) 피킹지 원본 상품 전부
+      const frz = brand === "BGFFROZEN";
+      const t = frz ? bgfFrzTpl : bgfTplC;
+      const usedSheets = new Set();
+      [...(frz ? bgfFrozenOrders : bgfOrders)]
+        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+        .forEach((o) =>
+          o.lines.forEach((l) => {
+            const name = String(l.name || "").trim();
+            if (!name) return;
+            const tp = t ? matchEmartProduct(t, name, l.sku) : null;
+            if (tp) usedSheets.add(tp.sheet);
+            map.set(name, { name, sku: l.sku !== name ? l.sku : "", supplier: bgfSupKey(o.supplier), basePack: (tp && tp.pack) || Number(l.packQty) || 0, lastDate: o.createdAt, tplTitle: tp ? emartNorm(tp.title) : "" });
+          })
+        );
+      if (t)
+        t.products.forEach((tp) => {
+          if (usedSheets.has(tp.sheet)) return;
+          const name = String(tp.title || tp.sheet).replace(/\s*\n\s*/g, "").trim();
+          if (map.has(name)) return;
+          map.set(name, { name, sku: "", supplier: (t.bgfPivotVendor || {})[tp.pivot] || "", basePack: tp.pack || 0, lastDate: "", tplTitle: emartNorm(tp.title) });
+        });
+    }
     if (brand === "SEVEN" || brand === "SEVENFROZEN") {
       // 세븐(냉동) 발주에 나온 상품 (상품코드 = 상품코드-판매코드) + 세븐(냉동) 피킹지 원본 상품 전부
       const frz = brand === "SEVENFROZEN";
