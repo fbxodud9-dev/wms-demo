@@ -11447,6 +11447,36 @@ function sevenZoneOf(c) {
   return "기타";
 }
 const SEVEN_STD_REGIONS = ["광주B저온센터", "광주냉장", "대구냉장", "부산냉장", "세종냉장센터", "수도권냉장", "수원저온센터", "안성저온센터", "양산냉장", "양주저온", "오포저온", "원주저온", "인천저온", "제주냉장센터", "칠곡저온", "해인기흥저온센터"];
+// 발주파일 점포(센터)코드 → 피킹지 센터 줄 이름 (2026-10-20 은성·삼진 실제 발주파일 기준). 센터 이름 글자가 바뀌어도 코드로 같은 센터
+// 수도권냉장은 아직 발주파일에 나온 적이 없어 코드 모름 → 이름으로 연결
+const SEVEN_CENTER_BY_CODE = {
+  20003: "오포저온",
+  20005: "양주저온",
+  20009: "대구냉장",
+  20011: "양산냉장",
+  20012: "광주냉장",
+  20031: "제주냉장센터",
+  20043: "부산냉장",
+  20045: "인천저온",
+  20046: "해인기흥저온센터",
+  20059: "수원저온센터",
+  20063: "원주저온",
+  20066: "세종냉장센터",
+  20070: "칠곡저온",
+  20077: "안성저온센터",
+  20112: "광주B저온센터",
+};
+// 세븐 냉장 센터 정하기: 코드 표 → 없으면 이름(띄어쓰기·"센터" 무시)으로 피킹지 센터 찾기. how: "code" | "name" | "none"
+function sevenColdCenterOf(code, rawName) {
+  const k = String(code == null ? "" : code).trim().replace(/\.0+$/, "");
+  if (SEVEN_CENTER_BY_CODE[k]) return { center: SEVEN_CENTER_BY_CODE[k], how: "code" };
+  const raw = sevenCenterName(rawName);
+  if (SEVEN_STD_REGIONS.includes(raw)) return { center: raw, how: "name" };
+  const n = (x) => String(x || "").replace(/\s/g, "").replace(/센터/g, "");
+  const kn = n(raw);
+  const hit = SEVEN_STD_REGIONS.find((r) => n(r) === kn) || SEVEN_STD_REGIONS.find((r) => kn && n(r).length >= 3 && (kn.startsWith(n(r)) || n(r).startsWith(kn)));
+  return hit ? { center: hit, how: "name" } : { center: raw, how: "none" };
+}
 // 원본 피벗 이름에서 못 읽을 때 쓰는 날짜 규칙 (2026-10-15 원본 기준)
 const SEVEN_DATE_RULES_FALLBACK = [
   { key: "은성", base: "order", off: 0, text: "주문일-당일" },
@@ -12169,6 +12199,23 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
           if (!isSevenFrozen && frzRows === parsed.length) throw new Error(`${f.name}: 세븐 냉동 발주파일이에요 (센터가 전부 냉동). 주문정보 (세븐 냉동)에 올려주세요.`);
           if (isSevenFrozen && frzRows === 0) throw new Error(`${f.name}: 냉동 센터가 하나도 없는 파일이에요 (세븐 냉장 발주파일 같아요). 주문정보 (세븐일레븐)에 올려주세요.`);
           if (isSevenFrozen) parsed.forEach((r) => (r.center = sevenFrozenCenterOf(r.center, sevenRegions || SEVEN_FROZEN_STD_REGIONS)));
+          else {
+            // 세븐 냉장: 점포(센터)코드로 센터를 정함. 코드 표에 없는 코드는 이름으로 찾고, 그래도 없으면 알려줌
+            const newCodes = new Map(); // 코드 → { name, center, how }
+            parsed.forEach((r) => {
+              const res = sevenColdCenterOf(r.centerCode, r.center);
+              if (res.how !== "code") newCodes.set(r.centerCode || "(코드 없음)", { name: r.center, center: res.center, how: res.how });
+              r.center = res.center;
+            });
+            if (newCodes.size) {
+              const lines = [...newCodes].map(([cd, v]) => `· ${cd} ${v.name} → ${v.how === "name" ? `"${v.center}"(이름으로 연결)` : "연결할 센터 없음 (피킹지에 새 줄로 생겨요)"}`);
+              const go = window.confirm(`[${f.name}]\n코드 표에 없는 세븐 점포(센터)코드가 있어요.\n${lines.join("\n")}\n\n[확인] 이대로 올리기\n[취소] 올리지 않기\n\n새 센터면 코드를 알려주세요 (코드 표에 추가해야 해요).`);
+              if (!go) {
+                setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
+                return;
+              }
+            }
+          }
           const wd = sevenWorkDateOf(parsed, sevenRules);
           const od = Array.from(new Set(parsed.map((r) => r.orderDate).filter(Boolean))).sort();
           const ind = Array.from(new Set(parsed.map((r) => r.inDate).filter(Boolean))).sort();
