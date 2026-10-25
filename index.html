@@ -8640,8 +8640,135 @@ function setCellXml(sheet, ref, value, opts = {}) {
 
 // 피벗 시트 값 영역을 비우고 새로 쓴다 (서식이 있던 칸은 서식 유지)
 // popts.sumFormula: 총합계(오른쪽 열·맨 아래 줄)를 숫자 대신 SUM 수식으로 (세븐 냉장 2026-10-25: 빈 칸에 수량을 넣어도 총합계가 그대로였음)
+// 피벗 원본 모양 기억 (popts.keepLayout, BGF 2026-10-26): 총합계 오른쪽 "1편/2편" 같은 칸, 줄·열 서식, 열 너비
+const pivotPartOf = (h) => {
+  const m = /(\d)$/.exec(String(h || "").replace(/\s+/g, ""));
+  return m ? m[1] : null;
+};
+function pivotLayoutSnapshot(pv, tMax0) {
+  // 원본 총합계 열 = 2번째 줄 "총합계" 자리 (새 상품 시트가 이미 붙어 있어도 원본 기준)
+  let T0 = tMax0 + 1;
+  pv.cells.forEach((x, ref) => {
+    const p = splitRef(ref);
+    if (p && p.r === 2 && p.c > 1 && typeof x.v === "string" && x.v.trim() === "총합계" && p.c < T0) T0 = p.c;
+  });
+  const tMax = T0 - 1;
+  const style = new Map();
+  let lastVal = T0, tplTr = 0, lastA = 2;
+  pv.cells.forEach((x, ref) => {
+    const p = splitRef(ref);
+    if (!p) return;
+    const s = x.el.getAttribute("s");
+    if (s != null) style.set(p.c + "," + p.r, s);
+    const has = (x.v != null && x.v !== "") || !!x.f;
+    if (has && p.c > lastVal && p.c <= T0 + 30) lastVal = p.c;
+    if (p.c === 1 && has && p.r > lastA) lastA = p.r;
+    if (p.c === 1 && typeof x.v === "string" && x.v.trim() === "총합계") tplTr = p.r;
+  });
+  if (!tplTr) tplTr = lastA + 1;
+  const hdr = {};
+  for (let c = 2; c <= lastVal; c++) {
+    const h = pv.cells.get(numToCol(c) + "2");
+    hdr[c] = h && h.v != null ? String(h.v).trim() : "";
+  }
+  const tail = [];
+  pv.cells.forEach((x, ref) => {
+    const p = splitRef(ref);
+    if (p && p.c > T0 && p.c <= lastVal && ((x.v != null && x.v !== "") || x.f)) tail.push({ c: p.c, r: p.r, v: x.v, f: x.f });
+  });
+  return { tMax, T0, lastVal, tplTr, style, hdr, tail };
+}
+function applyPivotLayout(pv, L, columns, nReg, maxK) {
+  const delta = maxK - L.tMax;
+  const tr = 3 + nReg;
+  const newHdr = {};
+  columns.forEach((c) => (newHdr[c.k] = c.header));
+  const srcColOf = (c) => {
+    if (c <= L.tMax) return c;
+    if (c <= maxK) {
+      // 새 상품 열: 같은 편(이름 끝 숫자) 원본 상품 열 서식
+      const d = pivotPartOf(newHdr[c]);
+      if (d) for (let k = L.tMax; k >= 2; k--) if (pivotPartOf(L.hdr[k]) === d) return k;
+      return L.tMax;
+    }
+    if (c === maxK + 1) return L.T0;
+    return c - delta;
+  };
+  const srcRowOf = (r) => (r <= 2 ? r : r < tr ? Math.min(r, L.tplTr - 1) : r === tr ? L.tplTr : null);
+  if (delta === 0 && tr === L.tplTr) return;
+  const lastC = L.lastVal + delta, lastR = Math.max(tr, L.tplTr);
+  for (let r = 1; r <= lastR; r++) {
+    const sr = srcRowOf(r);
+    if (delta === 0 && sr === r) continue;
+    for (let c = 1; c <= lastC; c++) {
+      const s = sr == null ? null : L.style.get(srcColOf(c) + "," + sr);
+      const el = setCellXml(pv, numToCol(c) + r, null);
+      if (s == null) el.removeAttribute("s");
+      else el.setAttribute("s", s);
+    }
+  }
+  // 열 너비도 같이 밀기
+  const colsEl = delta > 0 && pv.doc.getElementsByTagName("cols")[0];
+  if (colsEl) {
+    const defs = Array.from(colsEl.getElementsByTagName("col"));
+    const defOf = (c) => defs.find((x) => Number(x.getAttribute("min")) <= c && c <= Number(x.getAttribute("max")));
+    const out = [];
+    for (let c = 1; c <= lastC; c++) {
+      const d = defOf(srcColOf(c));
+      if (!d) continue;
+      const n = d.cloneNode(false);
+      n.setAttribute("min", String(c));
+      n.setAttribute("max", String(c));
+      out.push(n);
+    }
+    defs.forEach((d) => {
+      const mx0 = Number(d.getAttribute("max"));
+      if (mx0 <= L.lastVal) return;
+      const mn = Math.max(Number(d.getAttribute("min")), L.lastVal + 1) + delta, mx = Math.min(16384, mx0 + delta);
+      if (mn > mx) return;
+      const n = d.cloneNode(false);
+      n.setAttribute("min", String(mn));
+      n.setAttribute("max", String(mx));
+      out.push(n);
+    });
+    defs.forEach((d) => colsEl.removeChild(d));
+    out.forEach((n) => colsEl.appendChild(n));
+  }
+}
+// 총합계 오른쪽 칸 다시 쓰기: 머리글은 그대로, "1편/2편" 칸은 그 편 상품 열(새 상품 포함) 합계 수식
+function writePivotTail(pv, L, columns, regions, maxK) {
+  const delta = maxK - L.tMax;
+  const tr = 3 + regions.length;
+  const hdrAll = { ...L.hdr };
+  for (let k = L.tMax + 1; k <= L.lastVal; k++) delete hdrAll[k];
+  columns.forEach((c) => (hdrAll[c.k] = c.header));
+  const qtyOf = {};
+  columns.forEach((c) => (qtyOf[c.k] = c.qty));
+  const tailCols = new Set();
+  L.tail.forEach((x) => {
+    tailCols.add(x.c);
+    if (x.r <= 2 && !x.f) setCellXml(pv, numToCol(x.c + delta) + x.r, x.v);
+  });
+  tailCols.forEach((oc) => {
+    const m = /(\d)\s*편/.exec(L.hdr[oc] || "");
+    if (!m) return;
+    const ks = [];
+    for (let k = 2; k <= maxK; k++) if (pivotPartOf(hdrAll[k]) === m[1]) ks.push(k);
+    if (!ks.length) return;
+    const C = numToCol(oc + delta);
+    let g = 0;
+    regions.forEach((reg, i) => {
+      const r = 3 + i;
+      const v = ks.reduce((a, k) => a + ((qtyOf[k] && qtyOf[k][reg]) || 0), 0);
+      g += v;
+      setFormulaXml(pv, C + r, `SUM(${ks.map((k) => numToCol(k) + r).join(",")})`, v);
+    });
+    if (regions.length) setFormulaXml(pv, C + tr, `SUM(${C}3:${C}${tr - 1})`, g);
+  });
+}
 function rewritePivot(pv, date, columns, regions, templateMaxK, popts = {}) {
   const sheetData = pv.doc.getElementsByTagName("sheetData")[0];
+  const layout = popts.keepLayout && pv.cells ? pivotLayoutSnapshot(pv, Math.max(1, templateMaxK || 1)) : null;
   // 기존 값 지우기 (셀 서식은 남기고 값만)
   Array.from(sheetData.getElementsByTagName("c")).forEach((c) => {
     while (c.firstChild) c.removeChild(c.firstChild);
@@ -8653,6 +8780,12 @@ function rewritePivot(pv, date, columns, regions, templateMaxK, popts = {}) {
   setCellXml(pv, "A2", "행 레이블");
   // 총합계 열은 그 공급사 상품 열들 바로 뒤 (발주 없는 날도 같은 자리)
   const maxK = Math.max(1, templateMaxK || 1, ...columns.map((x) => x.k));
+  if (layout) {
+    applyPivotLayout(pv, layout, columns, regions.length, maxK);
+    setCellXml(pv, "A1", `${m}/${d}`);
+    setCellXml(pv, "B1", "열 레이블");
+    setCellXml(pv, "A2", "행 레이블");
+  }
   columns.forEach((col) => setCellXml(pv, numToCol(col.k) + "2", col.header));
   const totalCol = numToCol(maxK + 1);
   const lastCol = numToCol(maxK);
@@ -8685,6 +8818,7 @@ function rewritePivot(pv, date, columns, regions, templateMaxK, popts = {}) {
   });
   if (useSum) setFormulaXml(pv, totalCol + tr, `SUM(B${tr}:${lastCol}${tr})`, g);
   else setCellXml(pv, totalCol + tr, g);
+  if (layout) writePivotTail(pv, layout, columns, regions, maxK);
 }
 // 수식 + 계산된 값(엑셀이 다시 계산하기 전에도, 2차 검증이 읽을 때도 맞는 숫자가 보이게)
 function setFormulaXml(sheet, ref, formula, value) {
@@ -8964,7 +9098,16 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const regs = new Set();
     tpl.products.filter((p) => p.pivot === pn).forEach((p) => p.regions.forEach((r) => regs.add(r)));
     cols.forEach((c) => Object.keys(c.qty).forEach((r) => regs.add(r)));
-    const ordered = [...stdOrder.filter((r) => regs.has(r)), ...[...regs].filter((r) => !stdOrder.includes(r))];
+    let ordered = [...stdOrder.filter((r) => regs.has(r)), ...[...regs].filter((r) => !stdOrder.includes(r))];
+    // BGF: 원본 피벗에 없던 센터는 그날 발주가 있을 때만 줄 추가 (상품 시트는 IFERROR → 0)
+    if (opts.pivotKeepLayout && pv.cells) {
+      const tplRegs = new Set();
+      pv.cells.forEach((x, ref) => {
+        const p = splitRef(ref);
+        if (p && p.c === 1 && p.r >= 3 && typeof x.v === "string") tplRegs.add(x.v.trim());
+      });
+      ordered = ordered.filter((r) => tplRegs.has(r) || cols.some((c) => (c.qty[r] || 0) > 0));
+    }
     // 원본 피벗의 "발주일(A1) → 납품일(A2)" 간격을 그대로 (예: 10/13 → 10/16 납품 = 3일). 이상하면 1일
     let a2Auto = null;
     if (opts.pivotA2Auto) {
@@ -8994,7 +9137,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
       if (best) a2Auto = best[0];
     }
-    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)), { sumFormula: !!opts.pivotSumFormula });
+    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)), { sumFormula: !!opts.pivotSumFormula, keepLayout: !!opts.pivotKeepLayout });
     if (a2Auto) setCellXml(pv, "A2", a2Auto);
     else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
@@ -12303,7 +12446,7 @@ function SevenPyeonsuButton({ orders, date, authToken, busy, setBusy }) {
 // 발주파일: BGF 협력사 ASN 엑셀 (시트 "DATA 1"). 머리글 2줄: 번호 | 센터 코드 | 센터명 | 상품 코드 | 상품명 | 납품원가 | 납품예정일자 | … | 총수량 | 수정수량 | … | 상품그룹(냉장1·냉장2·냉동…) | …
 //   공급사 이름이 파일에 없음 → 피킹지 원본 상품(피벗)으로 공급사를 찾고, 처음 보는 상품은 같은 상품명 머리말(도) 등)의 공급사, 그래도 없으면 물어봐서 기억(bgf_vendor_codes)
 //   같은 상품 = 상품코드(바코드)가 같을 때만. 수량 = 수정수량(없으면 총수량). 상품그룹 냉장1 = 1편, 냉장2 = 2편 (일별 집계)
-//   작업 날짜 = 가장 이른 납품예정일 - 1일 (올릴 때 확인)
+//   작업 날짜 = 가장 이른 납품예정일 - 1일 (자동)
 // 피킹지: 실물 BGF 피킹검수 원본 그대로 (냉장 bgf_picking_template.xlsx / 냉동 bgf_frozen_picking_template.xlsx)
 //   냉동 "제주권(AZ공유)": 그 시트에 있는 상품(과 그 공급사 새 상품)은 GS 당착처럼 상품 시트의 제주·서귀포는 0 고정, 수량은 제주권 시트로
 // 거래명세서: 실물 대신 명세서(1편·2편·사전예약) 원본 + 참조은 등 다른 공급사는 대신 모양 복사 (사업자 정보 기본값/설정)
@@ -12522,6 +12665,7 @@ async function downloadBgfPickingFile(frozen, rows, date, customTpl, activeName,
     supKey: bgfSupKey,
     cloneNewVendor: true,
     pivotSumFormula: true, // 피벗 총합계 = SUM 수식 (빈 칸에 수량을 넣어도 총합계 반영)
+    pivotKeepLayout: true, // 원본 피벗 모양 유지: 대신 "1편/2편" 합계 칸, 새 상품·새 센터 줄 서식 (2026-10-26)
     notProduct: (name) => BGF_JEJU_SHEET_RE.test(name),
     ...(frozen
       ? {
@@ -12777,7 +12921,7 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
         }
         if (!parsed) throw new Error(`${f.name}: ${firstErr ? firstErr.message : "읽을 수 있는 시트가 없어요."}`);
         otherChannel += parsed.otherChannel || 0;
-        // BGF: 공급사 찾기 → 작업 날짜(가장 이른 납품예정일 - 1일) 확인
+        // BGF: 공급사 찾기 → 작업 날짜(가장 이른 납품예정일 - 1일) 자동
         if (isBgf) {
           if (!parsed.length) throw new Error(`${f.name}: 발주 수량이 있는 줄이 없어요.`);
           // 냉장·냉동 파일 섞임 방지 (상품그룹 "냉동…" = 냉동)
@@ -12810,25 +12954,8 @@ function EmartOrderPage({ emartOrders, onUpload, onDeleteDate, onRegisterItems, 
           Object.assign(bgfLearned.byPrefix, lr.byPrefix);
           const ind = Array.from(new Set(parsed.map((r) => r.inDate).filter(Boolean))).sort();
           const wdate = ind.length ? ymdAddDays(ind[0], -1) : todayStr();
-          const vends = Array.from(new Set(parsed.map((r) => r.vendor)));
-          const groups = Array.from(new Set(parsed.map((r) => r.group).filter(Boolean)));
-          const ans = window.prompt(
-            `[${f.name}]
-${vends.join(", ")} · 상품 ${new Set(parsed.map((r) => r.code)).size}개 · ${parsed.reduce((a, r) => a + r.qty, 0).toLocaleString()}개${groups.length ? ` · ${groups.join("/")}` : ""}
-납품예정일 ${ind.join(", ")}
-
-작업 날짜(피킹지·명세서 날짜): ${wdate}
-= 가장 이른 납품예정일 하루 전
-
-맞으면 [확인], 다르면 날짜를 고쳐서 [확인] (예: 2026-10-20). [취소]를 누르면 올리지 않아요.`,
-            wdate
-          );
-          if (ans === null) {
-            setMsg("업로드를 취소했어요. 아무것도 저장하지 않았어요.");
-            return;
-          }
-          const d = xlSerialToYmd(ans.trim()) || wdate;
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error(`날짜를 알아보지 못했어요: "${ans}" (예: 2026-10-20)`);
+          // 작업 날짜 = 가장 이른 납품예정일 하루 전 (확인창 없이 바로 올림, 2026-10-26)
+          const d = wdate;
           parsed.forEach((r) => {
             r.date = d;
             r.due = r.inDate || "";
@@ -13047,7 +13174,7 @@ ${vends.join(", ")} · 상품 ${new Set(parsed.map((r) => r.code)).size}개 · $
               <>
                 BGF(CU) 협력사 사이트의 <b>ASN 발주 엑셀</b>을 올리면 {isBgfFrozen ? "BGF 냉동 " : ""}발주가 등록돼요. 공급사마다 파일 하나씩, 여러 개를 한 번에 골라도 돼요.{isBgfFrozen ? " (상품그룹이 냉동인 파일만 받아요)" : " (냉장 파일만 받아요. 냉동은 위 [냉동 발주]에)"}
                 <br />
-                같은 상품은 <b>상품코드(바코드)가 같을 때만</b> 한 상품으로 봐요. 파일에 공급사 이름이 없어서 피킹지 원본 상품으로 공급사를 찾고, 처음 보는 상품은 한 번만 물어봐요. 작업 날짜는 가장 이른 납품예정일 하루 전으로 정하고 올릴 때 확인해요. 상품은 상품마스터에 BGF 상품으로 자동 등록돼요.
+                같은 상품은 <b>상품코드(바코드)가 같을 때만</b> 한 상품으로 봐요. 파일에 공급사 이름이 없어서 피킹지 원본 상품으로 공급사를 찾고, 처음 보는 상품은 한 번만 물어봐요. 작업 날짜는 가장 이른 납품예정일 하루 전으로 자동으로 정해져요. 상품은 상품마스터에 BGF 상품으로 자동 등록돼요.
               </>
             ) : isSeven ? (
               <>
@@ -13854,9 +13981,9 @@ const PICKING_CHANNELS = [
   { key: "gssuper", brand: "GSSUPER", label: "GS슈퍼" },
   { key: "emart", brand: "EMART", label: "이마트" },
   { key: "emfrozen", brand: "EMARTFROZEN", label: "이마트 냉동" },
-  { key: "bgf", brand: "BGF", label: "BGF" },
   { key: "seven", brand: "SEVEN", label: "세븐일레븐" },
   { key: "sevenfrozen", brand: "SEVENFROZEN", label: "세븐 냉동" },
+  { key: "bgf", brand: "BGF", label: "BGF" },
   { key: "bgffrozen", brand: "BGFFROZEN", label: "BGF 냉동" },
 ];
 const BRAND_LABEL = Object.fromEntries(PICKING_CHANNELS.map((c) => [c.brand, c.label]));
