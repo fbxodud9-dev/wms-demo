@@ -10610,7 +10610,7 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial, lay = INV_
     else if (typeof ex === "number" && Number.isFinite(ex)) {
       if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(\$?B\$?13\+)\d+/, `$1${ex}`), C.AA.s);
       else setCellXml(ws, "AA" + r, emInvDot(dateSerial + ex));
-    } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) {
+    } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f) && !lay.noCopyExpiry) {
       // 소비기한 = 명세서 날짜(B13) + 일수. 줄을 내려도 B13은 그대로 (예전엔 =B20+3처럼 밀려서 날짜가 안 나왔음 - 2026-10-15 스윗밸런스 신제품)
       // 일수는 같은 공급사 다른 상품과 같은 값 (설정에서 정하면 위쪽 값이 우선)
       emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(^|[^A-Z$])(\$?B\$?)\d+(\+\d+)/, (m, a, b, c) => `${a}${b}13${c}`), C.AA.s);
@@ -10741,9 +10741,12 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (!tpl.lastSheetOfPivot[p.pivot]) tpl.lastSheetOfPivot[p.pivot] = p.sheets.map((sh) => sh.name).sort((a, b) => order.indexOf(a) - order.indexOf(b)).pop();
         const short = lay.shortOf(c);
         const nm = safeEmartSheetName(`${short}(${x.supplier})`, usedNames);
-        const donor = donorOf.get(c);
+        // 같은 센터 시트가 다른 공급사에 있으면 그 센터명·주소. 없으면 lay.donorCenterOf (세븐 냉동: 같은 지역 냉장 센터 주소를 임시로)
+        const exact = donorOf.get(c);
+        const altC = !exact && lay.donorCenterOf ? lay.donorCenterOf(c, Array.from(donorOf.keys())) : null;
+        const donor = exact || (altC && donorOf.get(altC)) || null;
         const from = { L6: txt(sh0.name, lay.centerName), G8: txt(sh0.name, lay.centerAddr) };
-        const to = { L6: (donor && txt(donor, lay.centerName)) || lay.newCenterName(short), G8: (donor && txt(donor, lay.centerAddr)) || "" };
+        const to = { L6: (exact && txt(exact, lay.centerName)) || lay.newCenterName(short), G8: (donor && txt(donor, lay.centerAddr)) || "" };
         const mut = (sheet) => {
           const tmp = { doc: sheet.doc };
           setCellXml(tmp, lay.key, c);
@@ -10758,7 +10761,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         await cloneEmartSheet(tpl, srcWs.name, nm, mut);
         p.sheets.push({ ...sh0, name: nm, center: c });
         report.createdCenters = report.createdCenters || [];
-        report.createdCenters.push({ supplier: x.supplier, center: c, sheet: nm, noDonor: !donor });
+        report.createdCenters.push({ supplier: x.supplier, center: c, sheet: nm, noDonor: !donor, borrowedFrom: !exact && donor ? altC : null });
       }
     }
   }
@@ -11104,9 +11107,9 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
   }, [settingsSaved, cfg.defaultInfo]);
   const [rowsTick, setRowsTick] = useState(0); // 세븐: 피킹 원본(입수)을 다 읽으면 다시 계산
   useEffect(() => {
-    if (cfg.brand !== "SEVEN") return;
+    if (cfg.brand !== "SEVEN" && cfg.brand !== "SEVENFROZEN") return;
     let alive = true;
-    getSevenTemplateInfo()
+    (cfg.brand === "SEVENFROZEN" ? getSevenFrozenTemplateInfo() : getSevenTemplateInfo())
       .then(() => alive && setRowsTick((t) => t + 1))
       .catch(() => {});
     return () => {
@@ -11164,8 +11167,12 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
     try {
       const rep = await downloadEmartInvoiceFile(rowsOverride || rows, date, settings, only, cfgOverride || cfg);
       const made = (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
+      const cc = rep.createdCenters || [];
+      const brw = cc.filter((m) => m.borrowedFrom);
+      const noAddr = cc.filter((m) => m.noDonor);
+      const addrNote = (brw.length ? ` · ⚠ 주소 확인: ${brw.map((m) => `${m.center}←${m.borrowedFrom} 주소`).join(", ")}` : "") + (noAddr.length ? ` · ⚠ 주소 빈칸(직접 적어주세요): ${[...new Set(noAddr.map((m) => m.center))].join(", ")}` : "");
       const miss = rep.missingCenters.length ? ` · 템플릿에 시트가 없는 센터: ${rep.missingCenters.map((m) => `${m.supplier} ${m.center}`).join(", ")}` : "";
-      setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${made}${miss}`);
+      setMsg(`다운로드했어요 (시트 ${rep.sheetCount}개)${made}${miss}${addrNote}`);
       logUi("download_invoice", `${(cfgOverride || cfg).label} ${date}${key === "dk" ? " 당착" : ""}${only ? " " + only.join(", ") : ""}`, { channel: cfg.brand, date, suppliers: only || "전체", sheets: rep.sheetCount, dangchak: key === "dk" });
     } catch (e) {
       setMsg(e.message);
@@ -11764,6 +11771,46 @@ const SEVEN_INV_CFG = {
   defaultInfo: SEVEN_INV_DEFAULT_INFO,
 };
 // 세븐 발주 → 줄 (피킹지·명세서·집계 공통): 센터 = "수원저온센터" 같은 원본 센터 이름
+// 세븐 냉동 거래명세서: 냉동 원본 명세서가 아직 없어서 세븐 냉장 명세서(은성파머스 블록)를 복사해서 공급사마다 새로 만든다
+//   받는 센터 = 냉동 센터 이름, 주소 = 같은 지역 냉장 센터 주소를 임시로 (안성냉동 → 안성저온센터 주소). 출력 전 확인 필요
+//   공급자 사업자 정보는 [거래명세서 설정]에서 직원이 직접 넣음. 명세서 날짜 = 납품일(작업일 + 1, 피킹지 "10/20 납품"과 같음)
+const sevenCenterBase = (c) => String(c || "").replace(/\s/g, "").replace(/(저온센터|냉장센터|냉동센터|저온|냉장|냉동|센터)$/, "");
+const INV_LAYOUT_SEVEN_FROZEN = {
+  ...INV_LAYOUT_SEVEN,
+  get regionOrder() {
+    return SEVEN_FROZEN_STD_REGIONS;
+  },
+  dateOffset: 1,
+  noCopyExpiry: true, // 복사해 온 은성(샐러드) 소비기한 "+4일"을 냉동 상품에 그대로 쓰지 않음 → 설정에서 넣은 값만 (없으면 빈칸)
+  newCenterName: (short) => short,
+  donorCenterOf: (c, known) => {
+    const b = sevenCenterBase(c);
+    return (b && known.find((k) => sevenCenterBase(k) === b)) || null;
+  },
+};
+const SEVEN_FROZEN_INV_CFG = {
+  ...SEVEN_INV_CFG,
+  brand: "SEVENFROZEN",
+  label: "세븐 냉동",
+  get lay() {
+    return INV_LAYOUT_SEVEN_FROZEN;
+  },
+  defaultInfo: {},
+  dangchak: null,
+  rowsOf: (orders, date) => {
+    const t = SEVEN_FROZEN_TPL_SYNC;
+    if (!t) getSevenFrozenTemplateInfo().catch(() => {});
+    return emartRowsFromOrders(orders.filter((o) => o.createdAt === date)).map((r) => {
+      if (r.box > 1 || !t) return r;
+      const n = emartNorm(r.name);
+      const hit = t.products.find((p) => p.pack > 1 && (p.keys || []).includes(n));
+      return hit ? { ...r, box: hit.pack } : r;
+    });
+  },
+  title: "거래명세서 · 세븐 냉동",
+  sub: "세븐 냉동 명세서 원본이 아직 없어서 세븐 냉장 명세서 모양을 복사해서 공급사마다 만들어요. 받는 센터 주소는 같은 지역 냉장 센터 주소를 임시로 넣으니 출력 전에 확인해주세요. 공급자 사업자 정보는 [거래명세서 설정]에서 넣어요. 명세서 날짜는 납품일(작업일 다음날).",
+  filePrefix: "세븐냉동_거래명세서",
+};
 function sevenRowsFromOrders(orders) {
   return emartRowsFromOrders(orders);
 }
@@ -15365,7 +15412,7 @@ function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders =
       onChannel={onChannel}
       title="거래명세서"
       renderReady={(c) =>
-        c === "gs" ? gsView : c === "emart" ? <EmartInvoiceView key="emart" emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <EmartInvoiceView key="gsfrozen" cfg={GS_FROZEN_INV_CFG} emartOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <EmartInvoiceView key="emfrozen" cfg={EM_FROZEN_INV_CFG} emartOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartInvoiceView key="seven" cfg={SEVEN_INV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : null
+        c === "gs" ? gsView : c === "emart" ? <EmartInvoiceView key="emart" emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <EmartInvoiceView key="gsfrozen" cfg={GS_FROZEN_INV_CFG} emartOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <EmartInvoiceView key="emfrozen" cfg={EM_FROZEN_INV_CFG} emartOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartInvoiceView key="seven" cfg={SEVEN_INV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartInvoiceView key="sevenfrozen" cfg={SEVEN_FROZEN_INV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : null
       }
       placeholderAction={(ch) => <BrandInvoiceSettingsButton ch={ch} authToken={authToken} detected={ch.brand === "EMART" ? emartDet : []} />}
     />
