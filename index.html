@@ -8789,7 +8789,8 @@ function rewritePivot(pv, date, columns, regions, templateMaxK, popts = {}) {
   columns.forEach((col) => setCellXml(pv, numToCol(col.k) + "2", col.header));
   const totalCol = numToCol(maxK + 1);
   const lastCol = numToCol(maxK);
-  const useSum = !!popts.sumFormula && regions.length > 0;
+  // 총합계는 항상 SUM 수식 (2026-10-26 고정 규칙: 피킹지·거래명세서 피벗 전부, 빈 칸에 수량을 넣어도 총합계 반영)
+  const useSum = popts.sumFormula !== false && regions.length > 0;
   setCellXml(pv, totalCol + "2", "총합계");
   const colTotals = {};
   regions.forEach((reg, i) => {
@@ -9137,7 +9138,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
       if (best) a2Auto = best[0];
     }
-    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)), { sumFormula: !!opts.pivotSumFormula, keepLayout: !!opts.pivotKeepLayout });
+    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)), { sumFormula: true, keepLayout: !!opts.pivotKeepLayout });
     if (a2Auto) setCellXml(pv, "A2", a2Auto);
     else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
@@ -19099,6 +19100,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
 function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
   const label = invPartLabel(part);
   const ws = workbook.addWorksheet(safeSheetName(`${label}발주량`, usedNames));
+  const colL = (c) => ws.getColumn(c).letter;
   const [, m, d] = date.split("-").map(Number);
   const hdrFont = { name: "맑은 고딕", size: 10, bold: true };
   const bodyFont = { name: "맑은 고딕", size: 10 };
@@ -19133,7 +19135,9 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
       colTotals[i] += q;
       if (q > 0) ws.getCell(r, 2 + i).value = q;
     });
-    if (rowTotal > 0) ws.getCell(r, totalCol).value = rowTotal;
+    // 총합계는 SUM 수식 (2026-10-26 고정 규칙)
+    if (data.items.length) ws.getCell(r, totalCol).value = { formula: `SUM(${colL(2)}${r}:${colL(totalCol - 1)}${r})`, result: rowTotal };
+    ws.getCell(r, totalCol).numFmt = '0;-0;""';
     for (let c = 1; c <= totalCol; c++) {
       const cell = ws.getCell(r, c);
       cell.font = bodyFont;
@@ -19144,9 +19148,9 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
   });
   ws.getCell(r, 1).value = "총합계";
   data.items.forEach((it, i) => {
-    ws.getCell(r, 2 + i).value = colTotals[i];
+    ws.getCell(r, 2 + i).value = r > 3 ? { formula: `SUM(${colL(2 + i)}3:${colL(2 + i)}${r - 1})`, result: colTotals[i] } : colTotals[i];
   });
-  ws.getCell(r, totalCol).value = colTotals.reduce((a, b) => a + b, 0);
+  ws.getCell(r, totalCol).value = r > 3 ? { formula: `SUM(${colL(totalCol)}3:${colL(totalCol)}${r - 1})`, result: colTotals.reduce((a, b) => a + b, 0) } : colTotals.reduce((a, b) => a + b, 0);
   for (let c = 1; c <= totalCol; c++) {
     const cell = ws.getCell(r, c);
     cell.font = hdrFont;
