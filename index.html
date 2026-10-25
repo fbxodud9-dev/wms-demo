@@ -8517,7 +8517,8 @@ function setCellXml(sheet, ref, value, opts = {}) {
 }
 
 // 피벗 시트 값 영역을 비우고 새로 쓴다 (서식이 있던 칸은 서식 유지)
-function rewritePivot(pv, date, columns, regions, templateMaxK) {
+// popts.sumFormula: 총합계(오른쪽 열·맨 아래 줄)를 숫자 대신 SUM 수식으로 (세븐 냉장 2026-10-25: 빈 칸에 수량을 넣어도 총합계가 그대로였음)
+function rewritePivot(pv, date, columns, regions, templateMaxK, popts = {}) {
   const sheetData = pv.doc.getElementsByTagName("sheetData")[0];
   // 기존 값 지우기 (셀 서식은 남기고 값만)
   Array.from(sheetData.getElementsByTagName("c")).forEach((c) => {
@@ -8532,6 +8533,8 @@ function rewritePivot(pv, date, columns, regions, templateMaxK) {
   const maxK = Math.max(1, templateMaxK || 1, ...columns.map((x) => x.k));
   columns.forEach((col) => setCellXml(pv, numToCol(col.k) + "2", col.header));
   const totalCol = numToCol(maxK + 1);
+  const lastCol = numToCol(maxK);
+  const useSum = !!popts.sumFormula && regions.length > 0;
   setCellXml(pv, totalCol + "2", "총합계");
   const colTotals = {};
   regions.forEach((reg, i) => {
@@ -8546,18 +8549,28 @@ function rewritePivot(pv, date, columns, regions, templateMaxK) {
         colTotals[col.k] = (colTotals[col.k] || 0) + q;
       }
     });
-    setCellXml(pv, totalCol + r, rowT);
+    if (useSum) setFormulaXml(pv, totalCol + r, `SUM(B${r}:${lastCol}${r})`, rowT);
+    else setCellXml(pv, totalCol + r, rowT);
   });
   const tr = 3 + regions.length;
   setCellXml(pv, "A" + tr, "총합계");
   let g = 0;
   columns.forEach((col) => {
-    if (colTotals[col.k]) {
-      setCellXml(pv, numToCol(col.k) + tr, colTotals[col.k]);
-      g += colTotals[col.k];
-    }
+    const L = numToCol(col.k);
+    if (useSum) setFormulaXml(pv, L + tr, `SUM(${L}3:${L}${tr - 1})`, colTotals[col.k] || 0);
+    else if (colTotals[col.k]) setCellXml(pv, L + tr, colTotals[col.k]);
+    g += colTotals[col.k] || 0;
   });
-  setCellXml(pv, totalCol + tr, g);
+  if (useSum) setFormulaXml(pv, totalCol + tr, `SUM(B${tr}:${lastCol}${tr})`, g);
+  else setCellXml(pv, totalCol + tr, g);
+}
+// 수식 + 계산된 값(엑셀이 다시 계산하기 전에도, 2차 검증이 읽을 때도 맞는 숫자가 보이게)
+function setFormulaXml(sheet, ref, formula, value) {
+  const c = setCellXml(sheet, ref, value);
+  const f = sheet.doc.createElementNS(XL_NS, "f");
+  f.textContent = formula;
+  c.insertBefore(f, c.firstChild);
+  return c;
 }
 
 // ---------- 새 상품: 같은 공급사의 첫 상품 시트를 복제 ----------
@@ -8858,7 +8871,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
       if (best) a2Auto = best[0];
     }
-    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)));
+    rewritePivot(pv, date, cols, ordered, Math.max(...tpl.products.filter((p) => p.pivot === pn).map((p) => p.k)), { sumFormula: !!opts.pivotSumFormula });
     if (a2Auto) setCellXml(pv, "A2", a2Auto);
     else if (opts.pivotA2) setCellXml(pv, "A2", opts.pivotA2);
   });
@@ -11658,6 +11671,7 @@ async function downloadSevenPickingFile(rows, date, customTpl, activeName, opts 
     pivotForVendor: sevenPivotOfVendor,
     supKey: sevenSupKey,
     cloneNewVendor: true,
+    pivotSumFormula: true, // 피벗 총합계 = SUM 수식 (빈 칸에 수량 추가해도 총합계 반영)
     colorKind: "seven_picking",
     removeTexts: [],
   });
