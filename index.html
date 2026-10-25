@@ -396,6 +396,16 @@ function Pencil(props) {
     </IconBase>
   );
 }
+function Snowflake(props) {
+  return (
+    <IconBase {...props}>
+      <line x1="12" y1="2" x2="12" y2="22" />
+      <line x1="3.3" y1="7" x2="20.7" y2="17" />
+      <line x1="3.3" y1="17" x2="20.7" y2="7" />
+      <path d="M9.5 3.5 12 6l2.5-2.5M9.5 20.5 12 18l2.5 2.5" />
+    </IconBase>
+  );
+}
 function ClipboardList(props) {
   return (
     <IconBase {...props}>
@@ -3438,55 +3448,53 @@ function WMSApp() {
     setCourses((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
+  // 사이드바: 하는 일 순서대로 (발주 받기 → 피킹·출고 → 명세서·집계 → 재고 → 기준정보 → 계정). 브랜드별 주문정보는 한 메뉴 안에서 일반·냉동 전환
   const navGroups = [
     { label: "개요", items: [{ key: "dashboard", label: "대시보드", icon: LayoutDashboard }] },
     {
-      label: "재고",
+      label: "주문정보 (발주 올리기)",
       items: [
-        { key: "inventory", label: "재고현황", icon: Boxes },
-        { key: "3d", label: "3D 로케이션", icon: Box3dIcon },
-        { key: "inbound", label: "입고등록", icon: ArrowDownToLine },
-        { key: "outbound", label: "출고등록", icon: ArrowUpFromLine },
-        { key: "history", label: "입출고이력", icon: History },
+        { key: "orderinfo", match: ["orderinfo", "orderinfo-gsfrozen"], label: "GS", tag: "일반·냉동", icon: ClipboardList },
+        { key: "orderinfo-emart", match: ["orderinfo-emart", "orderinfo-emfrozen"], label: "이마트24", tag: "일반·냉동", icon: ClipboardList },
+        { key: "orderinfo-seven", match: ["orderinfo-seven", "orderinfo-sevenfrozen"], label: "세븐일레븐", tag: "일반·냉동", icon: ClipboardList },
+        { key: "orderinfo-bgf", match: ["orderinfo-bgf", "orderinfo-bgffrozen"], label: "BGF", tag: "일반·냉동", icon: ClipboardList },
       ],
     },
     {
-      label: "주문정보",
+      label: "피킹 · 출고",
       items: [
-        { key: "orderinfo", label: "I. 주문정보 (GS)", icon: ClipboardList },
-        { key: "orderinfo-gsfrozen", label: "주문정보 (GS 냉동)", icon: ClipboardList },
-        { key: "orderinfo-bgf", label: "주문정보 (BGF)", icon: ClipboardList },
-        { key: "orderinfo-seven", label: "주문정보 (세븐일레븐)", icon: ClipboardList },
-        { key: "orderinfo-sevenfrozen", label: "주문정보 (세븐 냉동)", icon: ClipboardList },
-        { key: "orderinfo-emart", label: "주문정보 (E.MART)", icon: ClipboardList },
-        { key: "orderinfo-emfrozen", label: "주문정보 (이마트 냉동)", icon: ClipboardList },
-      ],
-    },
-    {
-      label: "보충 · 피킹",
-      items: [
-        { key: "replenish", label: "IV. 보충지시", icon: Thermometer },
         { key: "pickinginspection", label: "피킹지시서 출력", icon: Grid3x3 },
         { key: "pickingedit", label: "피킹지 수정", icon: Pencil },
+        { key: "replenish", label: "보충지시", icon: Thermometer },
+        { key: "shipping", label: "출고처리", icon: Truck, badgeKey: "ship" },
       ],
     },
     {
-      label: "출고",
+      label: "명세서 · 집계",
       items: [
-        { key: "shipping", label: "VII. 출고처리", icon: Truck, badgeKey: "ship" },
         { key: "invoice", label: "거래명세서", icon: FileText },
         { key: "gsdaily", label: "일별 발주 집계", icon: ListChecks },
       ],
     },
     {
-      label: "VIII~XIII  기준정보",
+      label: "재고",
       items: [
-        { key: "masdatacheck", label: "VIII. 기준정보체크", icon: ShieldCheck },
-        { key: "vehiclemap", label: "IX. 차량/매장 매핑", icon: MapPinned },
-        { key: "productmaster", label: "X. 상품마스터", icon: Tag },
-        { key: "cell", label: "XI. 창고CELL", icon: Grid3x3 },
-        { key: "course", label: "XII. 배송코스차수", icon: Route },
-        { key: "productinfo", label: "XIII. 상품 정보 관리", icon: Pencil },
+        { key: "inventory", label: "재고현황", icon: Boxes },
+        { key: "inbound", label: "입고등록", icon: ArrowDownToLine },
+        { key: "outbound", label: "출고등록", icon: ArrowUpFromLine },
+        { key: "history", label: "입출고이력", icon: History },
+        { key: "3d", label: "3D 로케이션", icon: Box3dIcon },
+      ],
+    },
+    {
+      label: "기준정보",
+      items: [
+        { key: "productmaster", label: "상품마스터", icon: Tag },
+        { key: "productinfo", label: "상품 정보 관리", icon: Pencil },
+        { key: "masdatacheck", label: "기준정보체크", icon: ShieldCheck },
+        { key: "vehiclemap", label: "차량/매장 매핑", icon: MapPinned },
+        { key: "cell", label: "창고CELL", icon: Grid3x3 },
+        { key: "course", label: "배송코스차수", icon: Route },
       ],
     },
     {
@@ -3618,7 +3626,7 @@ function WMSApp() {
             <div className="navgroup-label">{g.label}</div>
             {g.items.map((n) => {
               const Icon = n.icon;
-              const active = tab === n.key;
+              const active = n.match ? n.match.includes(tab) : tab === n.key;
               const count = n.badgeKey ? badgeCount[n.badgeKey] : n.key === "dashboard" ? lowStock.length : 0;
               return (
                 <button
@@ -3644,6 +3652,9 @@ function WMSApp() {
                 >
                   <Icon size={15} strokeWidth={2.2} />
                   <span className="navlabel">{n.label}</span>
+                  {n.tag && (
+                    <span className="navlabel" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: active ? T.steel : "#8E969E", border: `1px solid ${active ? "rgba(43,50,57,0.35)" : "#4A535C"}`, borderRadius: 999, padding: "0 6px", lineHeight: "16px", whiteSpace: "nowrap" }}>{n.tag}</span>
+                  )}
                   {count > 0 && (
                     <span
                       style={{
@@ -3702,6 +3713,7 @@ function WMSApp() {
             onClose={closePastView}
           />
         )}
+        {ORDER_FAMILY_OF[tab] && <OrderFamilySwitch tab={tab} onGo={setTab} />}
         {tab === "dashboard" && <Dashboard items={itemsView} tx={tx} lowStock={lowStock} totalQty={totalQty} todayTx={todayTx} goTo={setTab} orders={orders} emartOrders={emartOrders} frozenOrders={frozenOrders} emFrozenOrders={emFrozenOrders} sevenOrders={sevenOrders} sevenFrozenOrders={sevenFrozenOrders} authToken={authToken} />}
         {tab === "inventory" && <Inventory items={itemsView} />}
         {tab === "3d" && <ThreeDView items={itemsView} />}
@@ -3725,6 +3737,7 @@ function WMSApp() {
           />
         )}
         {tab === "orderinfo-bgf" && <ComingSoon title="주문정보 (BGF)" />}
+        {tab === "orderinfo-bgffrozen" && <ComingSoon title="주문정보 (BGF 냉동)" />}
         {tab === "orderinfo-seven" && (
           <EmartOrderPage
             kind="SEVEN"
@@ -3871,7 +3884,7 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -3892,15 +3905,20 @@ const fmtNum = (n) => Number(n || 0).toLocaleString();
 // GS 자동 집계: "일별 발주 집계"와 완전히 같은 계산 (피킹지 총수량 + 당착 수량, 집계 설정의 제외·편·냉장 규칙 적용)
 //   1편 = 일별 집계 1편수량, 2편 = 2편수량, 냉장/당착 = 냉장 → 세 칸 합 = 일별 집계 일일물동량
 function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
-  const auto = { gs_1: 0, gs_cold: 0, gs_2: 0 };
+  const auto = { gs_1: 0, gs_cold: 0, gs_2: 0, gs_super: 0, gsSuperHas: false };
   // 발주 원본이 남아 있으면 지금 계산, 지워진 지난 날짜(14일 경과)는 일별 집계에 저장된 스냅샷 - 일별 집계 화면과 같은 규칙
   const hasOrders = orders.some((o) => o.createdAt === date);
   const base = hasOrders || !storedSnap ? computeGsDailySnapshot(orders, date, rules) : storedSnap;
   // 일별 집계 화면에서 직접 고친 값도 반영
   const day = applyDailyEdits({ [date]: base }, editsGs && editsGs[date] ? { [date]: editsGs[date] } : null)[date];
   day.products.forEach((p) => {
-    if (gsDailySheetOf(p.name) === "GS슈퍼") return; // GS슈퍼 상품은 GS 물동량에서 제외
     const c = classifyDaily(rules, date, p);
+    if (gsDailySheetOf(p.name) === "GS슈퍼") {
+      // GS슈퍼 상품은 GS 물동량에서 빼고 대시보드 "GS슈퍼" 칸으로 (일별 집계 GS슈퍼 시트와 같은 숫자)
+      auto.gsSuperHas = true;
+      if (!c.excluded) auto.gs_super += p.qty;
+      return;
+    }
     if (c.excluded) return;
     const k = c.cold ? "gs_cold" : c.part === 2 ? "gs_2" : "gs_1";
     auto[k] += p.qty;
@@ -3965,7 +3983,8 @@ function computeVolumeDay(auto, saved) {
     const s = saved ? saved[key] : undefined;
     const entered = s !== undefined && s !== null && s !== "";
     // 세븐은 그날 세븐 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (세븐 연동 전 날짜 입력값 보존)
-    const isAuto = VOLUME_AUTO_KEYS.includes(key) && !(key === "seven_frozen" ? !auto.sevenFrozenHas : /^seven_/.test(key) && !auto.sevenHas);
+    // 세븐·세븐냉동·GS슈퍼는 그날 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (연동 전 날짜 입력값 보존)
+    const isAuto = VOLUME_AUTO_KEYS.includes(key) && !(key === "seven_frozen" ? !auto.sevenFrozenHas : key === "gs_super" ? !auto.gsSuperHas : /^seven_/.test(key) && !auto.sevenHas);
     // GS 1편·냉장·2편, 이마트 1편·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
     if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
     else rows[key] = { value: entered ? Number(s) : 0, entered, fromOrders: false, autoValue: null };
@@ -4468,6 +4487,59 @@ function EmptyRow({ text }) {
 // ---------- 지난 날짜 불러오기 (2026-10-22) ----------
 // 화면은 처음에 채널마다 최근 발주일 3개만 받는다. 그보다 예전 날짜는 여기서 골라서 그날만 받아 합친다 (서버에는 14일치 그대로)
 // GS 묶음과 따로 담는 채널 (서버 GROUP_SQL·날짜 삭제와 같은 목록)
+// 주문정보: 브랜드마다 한 메뉴 (위쪽 전환 버튼으로 일반 ↔ 냉동 발주 올리기)
+const ORDER_FAMILIES = [
+  { brand: "GS", normal: "orderinfo", frozen: "orderinfo-gsfrozen" },
+  { brand: "이마트24", normal: "orderinfo-emart", frozen: "orderinfo-emfrozen" },
+  { brand: "세븐일레븐", normal: "orderinfo-seven", frozen: "orderinfo-sevenfrozen" },
+  { brand: "BGF", normal: "orderinfo-bgf", frozen: "orderinfo-bgffrozen" },
+];
+const ORDER_FAMILY_OF = Object.fromEntries(ORDER_FAMILIES.flatMap((f) => [[f.normal, f], [f.frozen, f]]));
+function OrderFamilySwitch({ tab, onGo }) {
+  const f = ORDER_FAMILY_OF[tab];
+  if (!f) return null;
+  const isFrozen = tab === f.frozen;
+  const seg = (key, label, icon, on) => (
+    <button
+      key={key}
+      onClick={() => !on && onGo(key)}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 16px",
+        borderRadius: 8,
+        border: "none",
+        cursor: on ? "default" : "pointer",
+        background: on ? (key === f.frozen ? "#1D4F7A" : T.steel) : "transparent",
+        color: on ? "#fff" : T.inkSoft,
+        fontWeight: on ? 700 : 600,
+        fontSize: 13,
+        fontFamily: "inherit",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+      <div style={{ display: "inline-flex", gap: 4, padding: 4, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 11 }}>
+        {seg(f.normal, `${f.brand} 일반 발주`, <ClipboardList size={14} />, !isFrozen)}
+        {seg(f.frozen, `${f.brand} 냉동 발주`, <Snowflake size={14} />, isFrozen)}
+      </div>
+      <button
+        onClick={() => onGo(isFrozen ? f.normal : f.frozen)}
+        className="ghost-btn"
+        style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${isFrozen ? T.border : "#9CC0DE"}`, background: isFrozen ? T.surface : "#EAF2FA", color: isFrozen ? T.ink : "#1D4F7A", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+      >
+        {isFrozen ? <ClipboardList size={14} /> : <Snowflake size={14} />}
+        {isFrozen ? `${f.brand} 일반 발주로 돌아가기` : `${f.brand} 냉동 업로드 바로가기 →`}
+      </button>
+    </div>
+  );
+}
 const SEPARATE_CHANNELS = ["EMART", "GSFROZEN", "EMARTFROZEN", "SEVEN", "SEVENFROZEN"];
 const PAST_DATE_TABS = new Set(["orderinfo", "orderinfo-gsfrozen", "orderinfo-emfrozen", "orderinfo-emart", "orderinfo-seven", "orderinfo-sevenfrozen", "pickingedit", "pickinginspection", "invoice", "shipping"]);
 // 지금 화면이 어느 묶음 발주를 보는지 (📅 막대에 그 묶음의 최근 이틀·지난 날짜만 보이게)
@@ -11166,7 +11238,7 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
     setMsg("");
     try {
       const rep = await downloadEmartInvoiceFile(rowsOverride || rows, date, settings, only, cfgOverride || cfg);
-      const made = (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
+      const made = cfg.friendlyNew ? "" : (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
       const cc = rep.createdCenters || [];
       const brw = cc.filter((m) => m.borrowedFrom);
       const noAddr = cc.filter((m) => m.noDonor);
@@ -11188,11 +11260,11 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
         title={cfg.title}
         sub={cfg.sub}
         action={
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="no-print" onClick={() => setSetOpen(true)} style={settingBtnStyle} title={`${cfg.label} 공급사 사업자 정보·발행 센터·상품(입수·소비기한) 설정`}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button className="no-print" onClick={() => setSetOpen(true)} style={{ ...settingBtnStyle, whiteSpace: "nowrap" }} title={`${cfg.label} 공급사 사업자 정보·발행 센터·상품(입수·소비기한) 설정`}>
               <SettingsGear size={15} /> 거래명세서 설정
             </button>
-            <button onClick={() => run("all", null)} disabled={!!busy || !active.length} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !active.length ? 0.55 : 1 }}>
+            <button onClick={() => run("all", null)} disabled={!!busy || !active.length} className="primary-btn" style={{ ...primaryBtnStyle, whiteSpace: "nowrap", opacity: busy || !active.length ? 0.55 : 1 }}>
               <Download size={15} /> {busy === "all" ? "만드는 중..." : "전체 엑셀 다운로드"}
             </button>
             {dkRows.length > 0 && (
@@ -11221,7 +11293,16 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
         <span style={{ fontSize: 12.5, color: T.inkSoft }}>{plan ? `명세서 나갈 공급사 ${active.length}곳` : tplErr || "템플릿 불러오는 중..."}</span>
         {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("다운로드") ? T.teal : T.danger }}>{msg}</span>}
       </div>
-      {plan && plan.added.length > 0 && (
+      {plan && cfg.friendlyNew && plan.list.some((x) => x.total > 0) && (
+        <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#9BC2E6", background: "#F2F8FD", fontSize: 12.5, lineHeight: 1.7 }}>
+          <b>공급사마다 세븐 명세서 양식으로 자동으로 만들어요.</b> 그날 발주가 있는 냉동 센터 명세서만 나와요.
+          <div style={{ color: T.danger, fontWeight: 700 }}>
+            공급자 사업자 정보(등록번호·상호·대표자·주소 등)는 [거래명세서 설정]에서 공급사마다 한 번만 넣어주세요: {plan.list.filter((x) => x.total > 0).map((x) => x.supplier).join(", ")}
+          </div>
+          <div style={{ color: T.inkSoft, marginTop: 2 }}>받는 센터 주소는 같은 지역 센터 주소로 채워져요. 다운로드 후 안내되는 센터 주소만 한 번 확인해주세요. 입수·소비기한은 [거래명세서 설정 → 상품]에서 정할 수 있어요.</div>
+        </div>
+      )}
+      {plan && !cfg.friendlyNew && plan.added.length > 0 && (
         <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#9BC2E6", background: "#F2F8FD", fontSize: 12.5, lineHeight: 1.6 }}>
           <b>명세서 원본 파일에 없던 상품 {plan.added.length}개는 자동으로 줄을 추가해서 넣어요</b> (같은 공급사 명세서 맨 아래 상품 줄에 추가, 빈 줄이 모자라면 줄을 늘려요).
           {" "}입수는 발주파일 값, 소비기한은 [거래명세서 설정 → 상품]에서 넣어주세요.
@@ -11245,7 +11326,7 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
             </tr>
           </thead>
           <tbody>
-            {(plan ? plan.list : []).map((x) => {
+            {(plan ? plan.list : []).filter((x) => !cfg.hideIdleSuppliers || x.total > 0 || x.selectedMode).map((x) => {
               const on = x.total > 0 || x.selectedMode;
               return (
                 <tr key={x.pivot.pivot} style={{ opacity: on ? 1 : 0.45, borderBottom: `1px solid ${T.border}` }}>
@@ -11808,7 +11889,9 @@ const SEVEN_FROZEN_INV_CFG = {
     });
   },
   title: "거래명세서 · 세븐 냉동",
-  sub: "세븐 냉동 명세서 원본이 아직 없어서 세븐 냉장 명세서 모양을 복사해서 공급사마다 만들어요. 받는 센터 주소는 같은 지역 냉장 센터 주소를 임시로 넣으니 출력 전에 확인해주세요. 공급자 사업자 정보는 [거래명세서 설정]에서 넣어요. 명세서 날짜는 납품일(작업일 다음날).",
+  sub: "세븐일레븐 냉동 발주를 공급사별·센터별 거래명세서로 만들어요. 명세서 날짜는 납품일(작업일 다음날)이고, 공급자 사업자 정보는 [거래명세서 설정]에서 넣어요.",
+  friendlyNew: true,
+  hideIdleSuppliers: true,
   filePrefix: "세븐냉동_거래명세서",
 };
 function sevenRowsFromOrders(orders) {
