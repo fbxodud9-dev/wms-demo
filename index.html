@@ -497,7 +497,7 @@ const FONT_IMPORT =
   "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');";
 
 const CATEGORIES = ["가전", "생활용품", "문구용품", "식품", "포장자재"];
-const TEMP_ZONES = ["상온", "냉장", "냉동"];
+const TEMP_ZONES = ["냉장", "냉동"]; // 2026-10-26: 상온 없앰, 기본은 냉장 (냉동만 따로 바꿔서 분류)
 const WORK_TYPES = ["피킹", "세트", "낱개출고"];
 
 const seedItems = () => [
@@ -1803,7 +1803,7 @@ function mapItemFromApi(i) {
     unit: i.unit,
     qty: i.qty,
     safety: i.safety,
-    tempZone: i.temp_zone,
+    tempZone: i.temp_zone === "냉동" ? "냉동" : "냉장", // 상온·빈값은 냉장으로 봄 (기본 냉장)
     workType: i.work_type,
     unitQty: i.unit_qty,
     boxQty: i.box_qty,
@@ -3053,7 +3053,7 @@ function WMSApp() {
               unit: payload.unit,
               qty: 0,
               safety: payload.safety || 10,
-              temp_zone: payload.tempZone || "상온",
+              temp_zone: payload.tempZone || "냉장",
               work_type: payload.workType || "피킹",
               unit_qty: 1,
               box_qty: 1,
@@ -3408,7 +3408,7 @@ function WMSApp() {
       try {
         await apiFetch("/items", authToken, {
           method: "POST",
-          body: { sku, name, category: null, location: "미배정", unit: "EA", qty: 0, safety: 0, temp_zone: "상온", work_type: "피킹", unit_qty: 1, box_qty: 1, cbm: 0 },
+          body: { sku, name, category: null, location: "미배정", unit: "EA", qty: 0, safety: 0, temp_zone: "냉장", work_type: "피킹", unit_qty: 1, box_qty: 1, cbm: 0 },
         });
       } catch (e) {
         // 이미 있으면 이름만 갱신되고 넘어감
@@ -3431,7 +3431,7 @@ function WMSApp() {
             unit: fields.unit || "EA",
             qty: fields.qty || 0,
             safety: fields.safety || 0,
-            temp_zone: fields.tempZone || "상온",
+            temp_zone: fields.tempZone || "냉장",
             work_type: fields.workType || "피킹",
             unit_qty: fields.unitQty || 1,
             box_qty: fields.boxQty || 1,
@@ -22436,10 +22436,20 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
   const [createForm, setCreateForm] = useState({ sku: "", name: "", category: "", tempZone: TEMP_ZONES[0], workType: WORK_TYPES[0], location: "", unit: "EA", unitQty: 1, boxQty: 1, cbm: 0, qty: 0, safety: 0, brands: "GS" });
   const [createErr, setCreateErr] = useState("");
   const [brandFilter, setBrandFilter] = useState("all");
+  const [tempFilter, setTempFilter] = useState("all"); // 온도구역: 전체 / 냉장 / 냉동 (2026-10-26, 상온 없음)
 
   const selected = items.find((i) => i.sku === selectedSku) || null;
   const brandCount = (b) => items.filter((i) => itemBrandsOf(i).includes(b)).length;
-  const filtered = items.filter((i) => (brandFilter === "all" || itemBrandsOf(i).includes(brandFilter)) && (!query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase())));
+  const inBrand = items.filter((i) => brandFilter === "all" || itemBrandsOf(i).includes(brandFilter));
+  const TEMP_ORDER = ["냉장", "냉동"];
+  const tempOf = (i) => (i.tempZone === "냉동" ? "냉동" : "냉장");
+  const tempCount = (t) => inBrand.filter((i) => tempOf(i) === t).length;
+  // 전체로 볼 때도 냉장 → 냉동 순으로 모아서 (같은 구역 안에서는 원래 순서: 방금 등록·수정한 상품이 위)
+  const filtered = inBrand
+    .filter((i) => (tempFilter === "all" || tempOf(i) === tempFilter) && (!query || i.name.includes(query) || i.sku.toLowerCase().includes(query.toLowerCase())))
+    .map((i, idx) => ({ i, idx }))
+    .sort((a, b) => TEMP_ORDER.indexOf(tempOf(a.i)) - TEMP_ORDER.indexOf(tempOf(b.i)) || a.idx - b.idx)
+    .map((x) => x.i);
   const shownItems = filtered.slice(0, 500);
   // 브랜드 체크 (쉼표 문자열 <-> 체크박스)
   const BrandChecks = ({ value, onChange }) => {
@@ -22505,6 +22515,22 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
           </button>
         ))}
       </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.inkSoft, marginRight: 4 }}>온도구역</span>
+        {[
+          { key: "all", label: "전체", n: inBrand.length, bg: T.steel },
+          { key: "냉장", label: "냉장", n: tempCount("냉장"), bg: "#2F6FB0" },
+          { key: "냉동", label: "냉동", n: tempCount("냉동"), bg: "#4B4FA8" },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTempFilter(t.key)}
+            style={{ padding: "6px 14px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: tempFilter === t.key ? 700 : 500, border: `1.5px solid ${tempFilter === t.key ? t.bg : T.border}`, background: tempFilter === t.key ? t.bg : T.surface, color: tempFilter === t.key ? "#fff" : T.inkSoft }}
+          >
+            {t.label} <span style={{ fontSize: 11.5, opacity: 0.8 }}>{t.n}</span>
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "2 1 420px" }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -22533,12 +22559,20 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
                 {filtered.length === 0 ? (
                   <tr>
                     <td colSpan={7}>
-                      <EmptyRow text={brandFilter === "all" ? "등록된 품목이 없습니다." : `${BRAND_LABEL[brandFilter]} 품목이 없어요. ${BRAND_LABEL[brandFilter]} 발주파일을 올리면 자동으로 등록돼요.`} />
+                      <EmptyRow text={tempFilter !== "all" && inBrand.length ? `${tempFilter} 품목이 없어요.` : brandFilter === "all" ? "등록된 품목이 없습니다." : `${BRAND_LABEL[brandFilter]} 품목이 없어요. ${BRAND_LABEL[brandFilter]} 발주파일을 올리면 자동으로 등록돼요.`} />
                     </td>
                   </tr>
                 ) : (
-                  shownItems.map((i) => (
-                    <tr key={i.id || i.sku} className="rowhover">
+                  shownItems.map((i, ix) => (
+                    <React.Fragment key={i.id || i.sku}>
+                    {tempFilter === "all" && (ix === 0 || tempOf(shownItems[ix - 1]) !== tempOf(i)) && (
+                      <tr>
+                        <td colSpan={7} style={{ background: "#F3F1EC", fontWeight: 700, fontSize: 12.5, color: T.ink, padding: "7px 12px" }}>
+                          {tempOf(i)} <span style={{ fontWeight: 500, color: T.inkSoft }}>{filtered.filter((x) => tempOf(x) === tempOf(i)).length}개</span>
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="rowhover">
                       <td style={{ fontFamily: "'JetBrains Mono', monospace", color: T.inkSoft }}>{i.sku}</td>
                       <td style={{ fontWeight: 600, minWidth: 200 }}>
                         {i.name}
@@ -22573,6 +22607,7 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
                         </div>
                       </td>
                     </tr>
+                    </React.Fragment>
                   ))
                 )}
               </tbody>
