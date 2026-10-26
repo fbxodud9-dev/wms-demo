@@ -22482,8 +22482,18 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
   const [tempFilter, setTempFilter] = useState("all"); // 온도구역: 전체 / 냉장 / 냉동 (2026-10-26, 상온 없음)
 
   const selected = items.find((i) => i.sku === selectedSku) || null;
-  const brandCount = (b) => items.filter((i) => itemBrandsOf(i).includes(b)).length;
-  const inBrand = items.filter((i) => brandFilter === "all" || itemBrandsOf(i).includes(brandFilter));
+  // 브랜드 탭은 일반·냉동을 한 칸으로 (GS = GS + GS 냉동 …). 냉장/냉동은 아래 온도구역으로 나눠 봄 (2026-10-26)
+  const PM_TABS = [
+    { brand: "GS", label: "GS", members: ["GS", "GSFROZEN"] },
+    { brand: "GSSUPER", label: "GS슈퍼", members: ["GSSUPER"] },
+    { brand: "EMART", label: "이마트", members: ["EMART", "EMARTFROZEN"] },
+    { brand: "SEVEN", label: "세븐일레븐", members: ["SEVEN", "SEVENFROZEN"] },
+    { brand: "BGF", label: "BGF", members: ["BGF", "BGFFROZEN"] },
+  ];
+  const membersOf = (b) => (PM_TABS.find((t) => t.brand === b) || { members: [b] }).members;
+  const inTab = (i, b) => b === "all" || membersOf(b).some((m) => itemBrandsOf(i).includes(m));
+  const brandCount = (b) => items.filter((i) => inTab(i, b)).length;
+  const inBrand = items.filter((i) => inTab(i, brandFilter));
   const TEMP_ORDER = ["냉장", "냉동"];
   const tempOf = (i) => (i.tempZone === "냉동" ? "냉동" : "냉장");
   const tempCount = (t) => inBrand.filter((i) => tempOf(i) === t).length;
@@ -22548,7 +22558,7 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
     <div>
       <PageHeader title="X. 상품마스터" sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요." />
       <div style={{ display: "flex", gap: 6, marginBottom: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
-        {[{ brand: "all", label: "전체" }, ...PICKING_CHANNELS].map((c) => (
+        {[{ brand: "all", label: "전체" }, ...PM_TABS].map((c) => (
           <button
             key={c.brand}
             onClick={() => setBrandFilter(c.brand)}
