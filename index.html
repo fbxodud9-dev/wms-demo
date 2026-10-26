@@ -1803,7 +1803,8 @@ function mapItemFromApi(i) {
     unit: i.unit,
     qty: i.qty,
     safety: i.safety,
-    tempZone: i.temp_zone === "냉동" ? "냉동" : "냉장", // 상온·빈값은 냉장으로 봄 (기본 냉장)
+    // 온도구역: 냉동/냉장으로 저장된 값은 그대로. 상온·빈값(발주 자동 등록 기본값)은 냉동 채널 브랜드가 붙은 상품이면 냉동, 아니면 냉장
+    tempZone: i.temp_zone === "냉동" || i.temp_zone === "냉장" ? i.temp_zone : String(i.brands || "GS").split(",").filter(Boolean).some((b) => /FROZEN$/.test(b.trim())) ? "냉동" : "냉장",
     workType: i.work_type,
     unitQty: i.unit_qty,
     boxQty: i.box_qty,
@@ -3175,6 +3176,46 @@ function WMSApp() {
     },
     [authToken]
   );
+
+  // 채널별로 올라온 발주 상품에 그 채널 브랜드가 빠져 있으면 상품마스터에 붙여줌 (2026-10-26: GS 냉동 상품이 전부 GS로만 등록돼 있었음)
+  // 화면에 불러온 발주(최근 2일 + 지난 기록) 기준, 세션마다 한 번씩. 권한이 없으면 조용히 넘어감
+  const brandFixDoneRef = useRef(new Set());
+  useEffect(() => {
+    if (!authToken || !items.length) return;
+    const chans = [
+      ["GSFROZEN", frozenOrders],
+      ["EMART", emartOrders],
+      ["EMARTFROZEN", emFrozenOrders],
+      ["SEVEN", sevenOrders],
+      ["SEVENFROZEN", sevenFrozenOrders],
+      ["BGF", bgfOrders],
+      ["BGFFROZEN", bgfFrozenOrders],
+    ];
+    const bySku = new Map(items.map((i) => [i.sku, i]));
+    const fix = [];
+    chans.forEach(([brand, list]) =>
+      (list || []).forEach((o) =>
+        (o.lines || []).forEach((l) => {
+          const sku = String(l.sku || "").trim();
+          const k = brand + "|" + sku;
+          if (!sku || brandFixDoneRef.current.has(k)) return;
+          brandFixDoneRef.current.add(k);
+          const it = bySku.get(sku);
+          if (!it || !itemBrandsOf(it).includes(brand)) fix.push({ sku, name: (it && it.name) || l.name || sku, brand });
+        })
+      )
+    );
+    if (!fix.length) return;
+    (async () => {
+      try {
+        for (let i = 0; i < fix.length; i += 400) await apiFetch("/orders/bulk-register-items", authToken, { method: "POST", body: { items: fix.slice(i, i + 400) } });
+        const r = await apiFetch("/items", authToken);
+        if (r && Array.isArray(r.items)) setItems(r.items.map(mapItemFromApi));
+      } catch (e) {
+        // 권한 없음 등: 무시 (다음에 권한 있는 사람이 열면 맞춰짐)
+      }
+    })();
+  }, [authToken, items, frozenOrders, emartOrders, emFrozenOrders, sevenOrders, sevenFrozenOrders, bgfOrders, bgfFrozenOrders]); // eslint-disable-line
 
   const updateChangedQty = useCallback(
     async (orderId, sku, value) => {
@@ -5719,8 +5760,10 @@ function resolveNamePackOverride(name) {
         // 이미 다른 브랜드(예: 이마트)로만 등록된 품목이 GS 발주에 나오면 GS 브랜드도 붙인다
         const gsSkus = new Set();
         allNewOrders.forEach((o) => o.lines.forEach((l) => gsSkus.add(l.sku)));
-        const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes("GS")).map((i) => ({ sku: i.sku, name: i.name, brand: "GS" }));
-        await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: "GS" })), ...addGs]);
+        // GS 냉동 화면(channelTag GSFROZEN)에서 올린 상품은 GS 냉동 브랜드로 (2026-10-26: 전부 GS로 들어가던 문제)
+        const myBrand = channelTag === "GSFROZEN" ? "GSFROZEN" : "GS";
+        const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes(myBrand)).map((i) => ({ sku: i.sku, name: i.name, brand: myBrand }));
+        await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: myBrand })), ...addGs]);
       } else {
         for (const [sku, name] of unmatchedList) {
           if (onRegisterItem) await onRegisterItem(sku, name);
