@@ -11080,7 +11080,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   const keep = new Set();
   const report = { suppliers: [], added: plan.added, missingCenters: [], newSuppliers: [] };
   const supSettings = (settings && settings.suppliers) || {};
-  const want = (x) => !x.hidden && (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier));
+  const want = (x) => !x.hidden && (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier) || (x.pivot && x.pivot.pivot && onlySuppliers.includes("pivot:" + x.pivot.pivot)));
 
   // 새 공급사: 다른 공급사 블록(피벗 + 센터 12장)을 복사해서 만든다
   const usedNames = new Set(tpl.sheets.map((s) => s.name.toLowerCase()));
@@ -11299,6 +11299,24 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     report.suppliers.push({ supplier: x.supplier, total: x.total, sheets: kept });
   });
   if (keep.size === 0) throw new Error(`이 날짜에 거래명세서로 나갈 ${chLabel} 발주가 없어요.`);
+  // 남기는 시트 수식이 지우려는 피벗을 보고 있으면(BGF 대신 2편 시트의 APP 줄 → 사전예약 피벗) 그 피벗도 남김.
+  // 그날 발주가 없는 피벗은 빈 피벗으로 (원본 예전 숫자가 남지 않게, 엑셀 "외부 링크" 경고 안 뜨게) 2026-10-26
+  {
+    const refd = (f, nm) => f.includes(`'${nm.replace(/'/g, "''")}'!`) || f.includes(`${nm}!`);
+    let more = true;
+    while (more) {
+      more = false;
+      for (const pv of tpl.sheets) {
+        if (keep.has(pv.name)) continue;
+        const used = tpl.sheets.some((sh) => keep.has(sh.name) && sh.cells && Array.from(sh.cells.values()).some((c) => c.f && refd(c.f, pv.name)));
+        if (!used) continue;
+        const a2 = pv.cells && pv.cells.get("A2");
+        if (/피벗/.test(pv.name) || (a2 && String(a2.v || "").trim() === "행 레이블")) rewritePivot(pv, date, [], [], 1);
+        keep.add(pv.name);
+        more = true;
+      }
+    }
+  }
 
   // 3) 수식 결과값 다시 계산해서 넣기 (엑셀을 안 열고 미리보기해도 숫자가 보이게)
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
@@ -11410,14 +11428,14 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   const bytes = await tpl.zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   return { bytes, report };
 }
-async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers, cfg = EM_INV_CFG) {
+async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers, cfg = EM_INV_CFG, fileLabel) {
   const buf = await cfg.getBuffer();
   const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers, cfg.lay, cfg.label);
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const one = onlySuppliers && onlySuppliers.length === 1 ? `_${onlySuppliers[0].replace(/[\\/:*?"<>|]/g, "")}` : "";
+  const one = fileLabel ? `_${String(fileLabel).replace(/[\\/:*?"<>|]/g, "")}` : onlySuppliers && onlySuppliers.length === 1 ? `_${onlySuppliers[0].replace(/[\\/:*?"<>|]/g, "")}` : "";
   a.download = `${cfg.filePrefix}${one}_${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   document.body.appendChild(a);
   a.click();
@@ -11578,11 +11596,11 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
     });
     return list;
   }, [inv, plan]);
-  const run = async (key, only, rowsOverride, cfgOverride) => {
+  const run = async (key, only, rowsOverride, cfgOverride, fileLabel) => {
     setBusy(key);
     setMsg("");
     try {
-      const rep = await downloadEmartInvoiceFile(rowsOverride || rows, date, settings, only, cfgOverride || cfg);
+      const rep = await downloadEmartInvoiceFile(rowsOverride || rows, date, settings, only, cfgOverride || cfg, fileLabel);
       const made = cfg.friendlyNew ? "" : (rep.createdCenters || []).length ? ` · 템플릿에 없던 센터 명세서를 새로 만들었어요: ${rep.createdCenters.map((m) => `${m.supplier} ${cfg.lay.shortOf(m.center)}`).join(", ")}` : "";
       const cc = rep.createdCenters || [];
       const brw = cc.filter((m) => m.borrowedFrom);
@@ -11694,8 +11712,17 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
                   <td style={{ padding: "8px 12px", fontSize: 11.5, color: T.inkSoft }}>{x.settings && Object.keys(x.settings).length ? "설정 있음" : ""}</td>
                   <td style={{ padding: "6px 12px", textAlign: "right" }}>
                     {on && (
-                      <button disabled={!!busy} onClick={() => run(x.supplier, [x.supplier])} style={{ ...smallBtnStyle, padding: "5px 10px", fontSize: 12, whiteSpace: "nowrap" }}>
-                        <Download size={13} /> {busy === x.supplier ? "만드는 중..." : "이 공급사만"}
+                      <button disabled={!!busy} onClick={() => {
+                          // 같은 공급사 피벗이 여럿(BGF 대신 1편·2편·사전예약)이면 그 편만: 1편 → 1편, 2편·사전예약 → 2편+사전예약 (2편 시트에 APP 줄이 있음)
+                          const sib = plan.list.filter((y) => y.supplier === x.supplier && y.pivot && y.pivot.pivot);
+                          if (sib.length < 2 || !x.pivot.pivot) return run(x.supplier, [x.supplier]);
+                          const isRes = (pn) => /사전예약|APP예약/.test(pn);
+                          const part = (/(\d)편/.exec(x.pivot.pivot) || [])[1];
+                          const two = isRes(x.pivot.pivot) || part === "2";
+                          const pick = sib.filter((y) => y.pivot.pivot === x.pivot.pivot || (two && (isRes(y.pivot.pivot) || (/(\d)편/.exec(y.pivot.pivot) || [])[1] === "2")));
+                          run(x.pivot.pivot, pick.map((y) => "pivot:" + y.pivot.pivot), null, null, x.supplier + (two ? "2편" : part ? `${part}편` : ""));
+                        }} style={{ ...smallBtnStyle, padding: "5px 10px", fontSize: 12, whiteSpace: "nowrap" }}>
+                        <Download size={13} /> {busy === x.supplier || busy === x.pivot.pivot ? "만드는 중..." : "이 공급사만"}
                       </button>
                     )}
                   </td>
