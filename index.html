@@ -11022,17 +11022,20 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial, lay = INV_
     }
     // 박스·낱개 등 같은 줄 계산 칸 (이마트 T·W / GS 냉동 V)
     lay.cols.filter((col) => !["E", "M", "AA", lay.qty].includes(col)).forEach((col) => C[col] && C[col].f && emInvSetFormula(ws, col + r, shiftFormula(C[col].f, dr, 0), C[col].s));
+    let aaEl = null;
     const ex = expiryOf(p);
-    if (typeof ex === "string" && ex) setCellXml(ws, "AA" + r, ex);
+    if (typeof ex === "string" && ex) aaEl = setCellXml(ws, "AA" + r, ex);
     else if (typeof ex === "number" && Number.isFinite(ex)) {
-      if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(\$?B\$?13\+)\d+/, `$1${ex}`), C.AA.s);
-      else setCellXml(ws, "AA" + r, emInvDot(dateSerial + ex));
+      if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f)) aaEl = emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(\$?B\$?13\+)\d+/, `$1${ex}`), C.AA.s);
+      else aaEl = setCellXml(ws, "AA" + r, emInvDot(dateSerial + ex));
     } else if (C.AA.f && /\$?B\$?13\+\d+/.test(C.AA.f) && !lay.noCopyExpiry) {
       // 소비기한 = 명세서 날짜(B13) + 일수. 줄을 내려도 B13은 그대로 (예전엔 =B20+3처럼 밀려서 날짜가 안 나왔음 - 2026-10-15 스윗밸런스 신제품)
       // 일수는 같은 공급사 다른 상품과 같은 값 (설정에서 정하면 위쪽 값이 우선)
-      emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(^|[^A-Z$])(\$?B\$?)\d+(\+\d+)/, (m, a, b, c) => `${a}${b}13${c}`), C.AA.s);
+      aaEl = emInvSetFormula(ws, "AA" + r, C.AA.f.replace(/(^|[^A-Z$])(\$?B\$?)\d+(\+\d+)/, (m, a, b, c) => `${a}${b}13${c}`), C.AA.s);
     }
-    else emInvSetFormula(ws, "AA" + r, '""', C.AA.s); // 소비기한 미설정: 빈칸 (아래쪽 보관용에 0이 안 나오게)
+    else aaEl = emInvSetFormula(ws, "AA" + r, '""', C.AA.s); // 소비기한 미설정: 빈칸 (아래쪽 보관용에 0이 안 나오게)
+    // 비고(소비기한) 칸 서식은 첫 상품 줄과 같게: 원래 빈 줄이던 칸은 숫자 서식이라 날짜가 46326처럼 보였음 (2026-10-26 BGF 대신 2편)
+    if (aaEl && C.AA && C.AA.s != null) aaEl.setAttribute("s", C.AA.s);
   });
   readSheetCells(ws, tpl.sst);
   // 아래쪽 공급자 보관용: 위쪽 상품 줄 수만큼 자리를 만들고, 위쪽과 같은 순서로 =E13 같은 수식을 다시 건다
@@ -11080,6 +11083,36 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   const keep = new Set();
   const report = { suppliers: [], added: plan.added, missingCenters: [], newSuppliers: [] };
   const supSettings = (settings && settings.suppliers) || {};
+  // 입수 보충: 상품 정보 관리 → 그날 발주 입수 → 명세서 원본의 같은 이름 다른 편 상품(…2 ↔ …1) 입수 (2026-10-26 BGF 딥핑치즈맵닭강정)
+  const invBaseOf = (n) => emartNorm(String(n || "").replace(/\s*\d+\s*$/, ""));
+  const invBoxByName = new Map();
+  (orderRows || []).forEach((r) => Number(r.box) > 1 && !invBoxByName.has(emartNorm(r.name)) && invBoxByName.set(emartNorm(r.name), Number(r.box)));
+  let invPackByBase = null;
+  const invPackFallback = (name) => {
+    if (!name) return 0;
+    const chInfo = lay.infoMap || (lay.infoKey && SETTING_CACHE[lay.infoKey]) || {};
+    const ci = chInfo[name] || chInfo[String(name).replace(/\s*\n\s*/g, "").trim()];
+    if (ci && Number(ci.packQty) > 0) return Number(ci.packQty);
+    const ov = packQtyOverrideOf(name);
+    if (ov) return ov;
+    const b = invBoxByName.get(emartNorm(name));
+    if (b) return b;
+    if (!invPackByBase) {
+      invPackByBase = new Map();
+      const add = (n, v) => v > 1 && !invPackByBase.has(invBaseOf(n)) && invPackByBase.set(invBaseOf(n), v);
+      invBoxByName.forEach((v, n) => add(n, v));
+      inv.pivots.forEach((pp) =>
+        (pp.sheets || []).forEach((ss) => {
+          const w = tpl.sheets.find((t) => t.name === ss.name);
+          (ss.rows || []).forEach((row) => {
+            const mc = w && w.cells && w.cells.get("M" + row.r);
+            add(row.name, mc ? Number(mc.v) : 0);
+          });
+        })
+      );
+    }
+    return invPackByBase.get(invBaseOf(name)) || 0;
+  };
   const want = (x) => !x.hidden && (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier) || (x.pivot && x.pivot.pivot && onlySuppliers.includes("pivot:" + x.pivot.pivot)));
 
   // 새 공급사: 다른 공급사 블록(피벗 + 센터 12장)을 복사해서 만든다
@@ -11243,6 +11276,13 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const o = ps[prod.name] || ps[row.name] || {};
         if (o.displayName) setCellXml(ws, "E" + row.r, o.displayName);
         if (o.packQty > 0) setCellXml(ws, "M" + row.r, Number(o.packQty));
+        else {
+          // 원본 명세서에 입수가 비어 있는 줄(대신 1편 딥핑치즈맵닭강정1 등): 상품 정보 관리 → 발주 입수 → 다른 편 같은 상품 입수
+          const mc = ws.cells.get("M" + row.r);
+          const blank = !mc || (!mc.f && (mc.v == null || mc.v === "" || Number(mc.v) === 0));
+          const fb = blank ? invPackFallback(prod.name) || invPackFallback(row.name) : 0;
+          if (fb > 0) setCellXml(ws, "M" + row.r, fb);
+        }
         // 소비기한: 설정값(일수 = 명세서 날짜 + 일수 / "26.11.08" 같은 글자 = 그 날짜 고정) > 원본 파일 값 그대로
         const aa = row.aa;
         const ov = o.expiryDays;
@@ -11272,7 +11312,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const caps = sh.caps || emInvCaptureCaps(ws, lay);
         const prods = x.added.map((a) => {
           const o = ps[a.name] || {};
-          return { name: o.displayName || a.name, k: a.k, pack: Number(o.packQty) > 0 ? Number(o.packQty) : a.box || 0, raw: a, o };
+          const pack = Number(o.packQty) > 0 ? Number(o.packQty) : invPackFallback(a.name) || a.box || 0;
+          return { name: o.displayName || a.name, k: a.k, pack, raw: a, o };
         });
         const expiryOf = (pr) => {
           const ov = pr.o.expiryDays;
@@ -11430,7 +11471,10 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
 }
 async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers, cfg = EM_INV_CFG, fileLabel) {
   const buf = await cfg.getBuffer();
-  const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers, cfg.lay, cfg.label);
+  // 상품 정보 관리(채널별) 입수를 명세서에도 쓰기: 원본·발주파일에 입수가 없는 새 상품 (BGF 딥핑치즈맵닭강정 등)
+  let lay = cfg.lay;
+  if (lay && lay.infoKey) lay = { ...lay, infoMap: (await settingNow(lay.infoKey)) || {} };
+  const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers, lay, cfg.label);
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -12224,6 +12268,7 @@ const SEVEN_FROZEN_PV_CFG = {
 };
 // 세븐 거래명세서: 실물 은성파머스 명세서(피벗 + 센터별 명세서)를 원본으로. 원본에 없는 공급사(삼진 등)는 은성 블록을 복사해 만들고 사업자 정보는 설정(기본값 아래)
 const INV_LAYOUT_SEVEN = {
+  infoKey: "product_info_seven",
   blankZero: true,
   key: "B1",
   qty: "Q",
@@ -12271,6 +12316,7 @@ const SEVEN_INV_CFG = {
 //   공급자 사업자 정보는 [거래명세서 설정]에서 직원이 직접 넣음. 명세서 날짜 = 납품일(작업일 + 1, 피킹지 "10/20 납품"과 같음)
 const sevenCenterBase = (c) => String(c || "").replace(/\s/g, "").replace(/(저온센터|냉장센터|냉동센터|저온|냉장|냉동|센터)$/, "");
 const INV_LAYOUT_SEVEN_FROZEN = {
+  infoKey: "product_info_sevenfrozen",
   ...INV_LAYOUT_SEVEN,
   get regionOrder() {
     return SEVEN_FROZEN_STD_REGIONS;
@@ -12760,6 +12806,7 @@ const BGF_FROZEN_PV_CFG = {
 };
 // 거래명세서: 실물 대신 명세서(1편·2편·사전예약 피벗 + 센터별 명세서). 원본에 없는 공급사(참조은 등)는 대신 1편 블록을 복사
 const INV_LAYOUT_BGF = {
+  infoKey: "product_info_bgf", // 상품 정보 관리 입수 (원본 명세서·발주파일에 입수가 없는 상품)
   key: "B1",
   qty: "Q",
   cols: ["E", "M", "Q", "T", "W", "AA"],
@@ -12819,7 +12866,7 @@ const BGF_FROZEN_INV_CFG = {
   brand: "BGFFROZEN",
   label: "BGF 냉동",
   get lay() {
-    return { ...INV_LAYOUT_BGF, noCopyExpiry: true };
+    return { ...INV_LAYOUT_BGF, noCopyExpiry: true, infoKey: "product_info_bgffrozen" };
   },
   rowsOf: bgfInvRowsOf(true),
   defaultInfo: BGF_INV_DEFAULT_INFO,
