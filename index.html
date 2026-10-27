@@ -1734,7 +1734,7 @@ function canDo(perm) {
 // 화면이 알아서 저장하는 설정(배운 업체코드·상품 연결·확인한 신제품)은 설정 권한 없이도 저장
 //  - 일별 집계 월별 자동 기록(daily_emart_202610 등)도 화면이 알아서 저장
 //  - 일별 집계 손 수정(daily_edits_)은 '수량·상품 수정' 권한
-const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|seven_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart|seven|sevenfrozen|bgf|bgffrozen)_\d{6}$|sevenfrozen_product_alias$|bgf_product_alias$|bgffrozen_product_alias$|bgf_vendor_codes$)/;
+const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|seven_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart|seven|sevenfrozen|bgf|bgffrozen|emdeli)_\d{6}$|emdeli_raw_\d{8}$|sevenfrozen_product_alias$|bgf_product_alias$|bgffrozen_product_alias$|bgf_vendor_codes$)/;
 const settingPermOf = (key) => (QUIET_SETTING_RE.test(key) ? null : /^daily_edits_/.test(key) ? "edit" : "settings");
 const NO_SETTINGS_PERM_MSG = "설정을 바꿀 권한이 없어요. 관리자에게 '설정 변경' 권한을 요청해주세요.";
 const noPermMsgOf = (perm) => (perm === "edit" ? "수정 권한이 없어요. 관리자에게 '수량·상품 수정' 권한을 요청해주세요." : NO_SETTINGS_PERM_MSG);
@@ -3523,7 +3523,7 @@ function WMSApp() {
       label: "주문정보 (발주 올리기)",
       items: [
         { key: "orderinfo", match: ["orderinfo", "orderinfo-gsfrozen"], label: "GS", tag: "일반·냉동", icon: ClipboardList },
-        { key: "orderinfo-emart", match: ["orderinfo-emart", "orderinfo-emfrozen"], label: "이마트24", tag: "일반·냉동", icon: ClipboardList },
+        { key: "orderinfo-emart", match: ["orderinfo-emart", "orderinfo-emfrozen", "orderinfo-emdeli"], label: "이마트24", tag: "일반·냉동·델리", icon: ClipboardList },
         { key: "orderinfo-seven", match: ["orderinfo-seven", "orderinfo-sevenfrozen"], label: "세븐일레븐", tag: "일반·냉동", icon: ClipboardList },
         { key: "orderinfo-bgf", match: ["orderinfo-bgf", "orderinfo-bgffrozen"], label: "BGF", tag: "일반·냉동", icon: ClipboardList },
       ],
@@ -3874,6 +3874,7 @@ function WMSApp() {
             onDeleteDate={(d) => deleteOrdersByDate(d, "GSFROZEN")}
           />
         )}
+        {tab === "orderinfo-emdeli" && <EmartDeliPage authToken={authToken} />}
         {tab === "orderinfo-emfrozen" && (
           <EmartOrderPage
             channelTag="EMARTFROZEN"
@@ -3980,7 +3981,7 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -4065,6 +4066,14 @@ function computeBgfAuto(list, frozenList, date, rules, frRules, edits, editsFr, 
   const b = one(frozenList, savedFr, (n) => detectPartByName(n), frRules, editsFr);
   return { cu_1: a.r ? a.r.p1 : 0, cu_2: a.r ? a.r.p2 : 0, bgfHas: a.has, bgf_frozen: b.r ? b.r.total : 0, bgfFrozenHas: b.has };
 }
+// 이마트 델리 자동 집계: "일별 발주 집계 > 이마트델리" 시트 일일물동량 (발주 업로드가 없는 날은 직접 입력값)
+function computeDeliAuto(date, rules, edits, savedMonth) {
+  const stored = packEmartMonth(savedMonth)[date];
+  if (!stored) return { emart_deli: 0, deliHas: false };
+  const t = buildBrandDailyTable(date.slice(0, 7), { [date]: stored }, () => 1, edits && edits[date] ? { [date]: edits[date] } : null, rules);
+  const r = t.rows.find((x) => x.date === date);
+  return { emart_deli: r ? r.total : 0, deliHas: true };
+}
 // GS 냉동 자동 집계: "일별 발주 집계 > GS 냉동" 시트의 일일물동량 (집계 설정·직접 고친 칸 반영)
 function computeFrozenAuto(frozenOrders, date, rules, editsFr, savedMonth) {
   const hasOrders = frozenOrders.some((o) => o.createdAt === date);
@@ -4093,7 +4102,7 @@ function computeVolumeDay(auto, saved) {
     const entered = s !== undefined && s !== null && s !== "";
     // 세븐은 그날 세븐 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (세븐 연동 전 날짜 입력값 보존)
     // 세븐·세븐냉동·GS슈퍼는 그날 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (연동 전 날짜 입력값 보존)
-    const hasOf = { seven_frozen: "sevenFrozenHas", gs_super: "gsSuperHas", cu_1: "bgfHas", cu_2: "bgfHas", bgf_frozen: "bgfFrozenHas", seven_1: "sevenHas", seven_2: "sevenHas" };
+    const hasOf = { seven_frozen: "sevenFrozenHas", gs_super: "gsSuperHas", cu_1: "bgfHas", cu_2: "bgfHas", bgf_frozen: "bgfFrozenHas", seven_1: "sevenHas", seven_2: "sevenHas", emart_deli: "deliHas" };
     const isAuto = VOLUME_AUTO_KEYS.includes(key) && !(hasOf[key] && !auto[hasOf[key]]);
     // GS 1편·냉장·2편, 이마트 1편·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
     if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
@@ -4435,12 +4444,18 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   const bgSavedPrev = useSetting(bgfDailyKey(prevDate.slice(0, 7)), authToken);
   const bfSavedBase = useSetting(bgfFrozenDailyKey(baseDate.slice(0, 7)), authToken);
   const bfSavedPrev = useSetting(bgfFrozenDailyKey(prevDate.slice(0, 7)), authToken);
+  const dlRulesSaved = useSetting("emdeli_daily_rules", authToken);
+  const dlRules = useMemo(() => normalizeDailyRules(dlRulesSaved), [dlRulesSaved]);
+  const dlSavedBase = useSetting(emdeliDailyKey(baseDate.slice(0, 7)), authToken);
+  const dlSavedPrev = useSetting(emdeliDailyKey(prevDate.slice(0, 7)), authToken);
+  const dlSavedOf = (date) => (date.slice(0, 7) === baseDate.slice(0, 7) ? dlSavedBase : date.slice(0, 7) === prevDate.slice(0, 7) ? dlSavedPrev : SETTING_CACHE[emdeliDailyKey(date.slice(0, 7))]);
   const [bgfTplTick, setBgfTplTick] = useState(0);
   useEffect(() => {
     getBgfTemplateInfo(false).then(() => setBgfTplTick((t) => t + 1)).catch(() => {}); // 1편/2편 구분
   }, []);
   const autoOf = (date, edits, emSaved, frSaved, efSaved, svSaved, sfSaved, bgSaved, bfSaved) => ({
     ...computeBgfAuto(bgfOrders, bgfFrozenOrders, date, bgRules, bfRules, edits && edits["BGF"], edits && edits["BGF냉동"], bgSaved, bfSaved),
+    ...computeDeliAuto(date, dlRules, edits && edits["이마트델리"], dlSavedOf(date)),
     ...computeSevenAuto(sevenOrders, date, svRules, edits && edits["세븐일레븐"], svSaved),
     ...computeSevenFrozenAuto(sevenFrozenOrders, date, sfRules, edits && edits["세븐냉동"], sfSaved),
     ...computeEmFrozenAuto(emFrozenOrders, date, efRules, edits && edits["이마트냉동"], efSaved),
@@ -4613,15 +4628,16 @@ function EmptyRow({ text }) {
 // 주문정보: 브랜드마다 한 메뉴 (위쪽 전환 버튼으로 일반 ↔ 냉동 발주 올리기)
 const ORDER_FAMILIES = [
   { brand: "GS", normal: "orderinfo", frozen: "orderinfo-gsfrozen" },
-  { brand: "이마트24", normal: "orderinfo-emart", frozen: "orderinfo-emfrozen" },
+  { brand: "이마트24", normal: "orderinfo-emart", frozen: "orderinfo-emfrozen", extra: [{ key: "orderinfo-emdeli", label: "이마트 델리" }] },
   { brand: "세븐일레븐", normal: "orderinfo-seven", frozen: "orderinfo-sevenfrozen" },
   { brand: "BGF", normal: "orderinfo-bgf", frozen: "orderinfo-bgffrozen" },
 ];
-const ORDER_FAMILY_OF = Object.fromEntries(ORDER_FAMILIES.flatMap((f) => [[f.normal, f], [f.frozen, f]]));
+const ORDER_FAMILY_OF = Object.fromEntries(ORDER_FAMILIES.flatMap((f) => [[f.normal, f], [f.frozen, f], ...(f.extra || []).map((x) => [x.key, f])]));
 function OrderFamilySwitch({ tab, onGo }) {
   const f = ORDER_FAMILY_OF[tab];
   if (!f) return null;
   const isFrozen = tab === f.frozen;
+  const isExtra = (f.extra || []).some((x) => x.key === tab);
   const seg = (key, label, icon, on) => (
     <button
       key={key}
@@ -4649,8 +4665,9 @@ function OrderFamilySwitch({ tab, onGo }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
       <div style={{ display: "inline-flex", gap: 4, padding: 4, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 11 }}>
-        {seg(f.normal, `${f.brand} 일반 발주`, <ClipboardList size={14} />, !isFrozen)}
+        {seg(f.normal, `${f.brand} 일반 발주`, <ClipboardList size={14} />, !isFrozen && !isExtra)}
         {seg(f.frozen, `${f.brand} 냉동 발주`, <Snowflake size={14} />, isFrozen)}
+        {(f.extra || []).map((x) => seg(x.key, x.label, <ClipboardList size={14} />, tab === x.key))}
       </div>
       <button
         onClick={() => onGo(isFrozen ? f.normal : f.frozen)}
@@ -6349,6 +6366,7 @@ const DAILY_CHANNELS = {
   세븐일레븐: { label: "세븐일레븐", region: "seven", rulesKey: "seven_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: sevenPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   세븐냉동: { label: "세븐냉동", region: "sevenfrozen", rulesKey: "sevenfrozen_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: detectPartByName(p.name), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   BGF: { label: "BGF", region: "bgf", rulesKey: "bgf_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: bgfPartOf(p.name, p.supplier), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
+  이마트델리: { label: "이마트델리", region: "emdeli", rulesKey: "emdeli_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: 1, cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
   BGF냉동: { label: "BGF냉동", region: "bgf", rulesKey: "bgffrozen_daily_rules", showTemp: false, filter: () => true, base: (p) => ({ part: detectPartByName(p.name), cold: false, supplier: p.supplier || "미지정" }), supplierOf: (p) => p.supplier || "미지정" },
 };
 const dailyChannelOfSheet = (sheet) => (sheet === "GS재고" ? "GS" : DAILY_CHANNELS[sheet] ? sheet : "GS");
@@ -6833,6 +6851,7 @@ const DAILY_SHEETS = [
   { name: "이마트냉동", head: "이마트냉동", cold: false },
   { name: "세븐냉동", head: "세븐냉동", cold: false },
   { name: "BGF냉동", head: "bgf냉동", cold: false },
+  { name: "이마트델리", head: "이마트델리", cold: false },
 ];
 
 async function downloadGsDailyExcel(table, setBusy) {
@@ -7008,6 +7027,8 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   const bgRules = useMemo(() => normalizeDailyRules(bgRulesSaved), [bgRulesSaved]);
   const bfRulesSaved = useSetting(DAILY_CHANNELS["BGF냉동"].rulesKey, authToken);
   const bfRules = useMemo(() => normalizeDailyRules(bfRulesSaved), [bfRulesSaved]);
+  const dlRulesSaved = useSetting(DAILY_CHANNELS["이마트델리"].rulesKey, authToken);
+  const dlRules = useMemo(() => normalizeDailyRules(dlRulesSaved), [dlRulesSaved]);
   useEffect(() => {
     getBgfTemplateInfo(false).catch(() => {}); // 1편/2편 구분에 씀
   }, []);
@@ -7086,6 +7107,9 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
     Array.from(new Set(bgfFrozenOrders.map((o) => o.createdAt))).filter((x) => x && x.startsWith(month)).forEach((x) => (d[x] = computeBgfDailySnapshot(bgfFrozenOrders, x, bfRules)));
     return d;
   }, [bfSaved, bgfFrozenOrders, month, bfRules]);
+  // 이마트 델리: 발주(주문) 저장 없이 업로드한 날 상품별 수량만 저장해 둔 집계 그대로
+  const dlSaved = useSetting(emdeliDailyKey(month), authToken);
+  const dlDays = useMemo(() => packEmartMonth(dlSaved), [dlSaved]);
   const editsSaved = useSetting(dailyEditsKey(month), authToken);
   const [editing, setEditing] = useState(null); // { date, idx }
   const [editVal, setEditVal] = useState("");
@@ -7102,11 +7126,12 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
     t.sheets["세븐냉동"] = buildBrandDailyTable(month, sfDays, (name) => detectPartByName(name), ed["세븐냉동"], sfRules);
     t.sheets["BGF"] = buildBrandDailyTable(month, bgDays, bgfPartOf, ed["BGF"], bgRules);
     t.sheets["BGF냉동"] = buildBrandDailyTable(month, bfDays, (name) => detectPartByName(name), ed["BGF냉동"], bfRules);
+    t.sheets["이마트델리"] = buildBrandDailyTable(month, dlDays, () => 1, ed["이마트델리"], dlRules);
     return t;
-  }, [month, days, emDays, frDays, efDays, svDays, sfDays, bgDays, bfDays, rules, emRules, frRules, efRules, svRules, sfRules, bgRules, bfRules, editsSaved]);
+  }, [month, days, emDays, frDays, efDays, svDays, sfDays, bgDays, bfDays, dlDays, rules, emRules, frRules, efRules, svRules, sfRules, bgRules, bfRules, dlRules, editsSaved]);
   const sh = table.sheets[sheet];
-  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트" || sheet === "GS냉동" || sheet === "이마트냉동" || sheet === "세븐일레븐" || sheet === "세븐냉동" || sheet === "BGF" || sheet === "BGF냉동";
-  const editKeyOf = sheet === "이마트" ? "이마트" : sheet === "GS냉동" ? "GS냉동" : sheet === "이마트냉동" ? "이마트냉동" : sheet === "세븐일레븐" ? "세븐일레븐" : sheet === "세븐냉동" ? "세븐냉동" : sheet === "BGF" ? "BGF" : sheet === "BGF냉동" ? "BGF냉동" : "GS";
+  const editable = sheet === "GS" || sheet === "GS재고" || sheet === "GS슈퍼" || sheet === "이마트" || sheet === "GS냉동" || sheet === "이마트냉동" || sheet === "세븐일레븐" || sheet === "세븐냉동" || sheet === "BGF" || sheet === "BGF냉동" || sheet === "이마트델리";
+  const editKeyOf = sheet === "이마트" ? "이마트" : sheet === "GS냉동" ? "GS냉동" : sheet === "이마트냉동" ? "이마트냉동" : sheet === "세븐일레븐" ? "세븐일레븐" : sheet === "세븐냉동" ? "세븐냉동" : sheet === "BGF" ? "BGF" : sheet === "BGF냉동" ? "BGF냉동" : sheet === "이마트델리" ? "이마트델리" : "GS";
   const editCount = useMemo(() => {
     const ed = editsSaved || {};
     return Object.values(ed).reduce((a, byDate) => a + Object.values(byDate || {}).reduce((b, m) => b + Object.keys(m || {}).length, 0), 0);
@@ -7166,11 +7191,11 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   const chKey = dailyChannelOfSheet(sheet);
   const ch = DAILY_CHANNELS[chKey];
   const chDays = useMemo(() => {
-    const src = chKey === "이마트" ? emDays : chKey === "GS냉동" ? frDays : chKey === "이마트냉동" ? efDays : chKey === "세븐일레븐" ? svDays : chKey === "세븐냉동" ? sfDays : chKey === "BGF" ? bgDays : chKey === "BGF냉동" ? bfDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
+    const src = chKey === "이마트" ? emDays : chKey === "GS냉동" ? frDays : chKey === "이마트냉동" ? efDays : chKey === "세븐일레븐" ? svDays : chKey === "세븐냉동" ? sfDays : chKey === "BGF" ? bgDays : chKey === "BGF냉동" ? bfDays : chKey === "이마트델리" ? dlDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
     return Object.fromEntries(Object.entries(src).map(([d, v]) => [d, { ...v, products: ((v && v.products) || []).filter(ch.filter) }]));
-  }, [chKey, days, emDays, frDays, efDays, svDays, sfDays, bgDays, bfDays]);
-  const chRulesSaved = chKey === "이마트" ? emRulesSaved : chKey === "GS냉동" ? frRulesSaved : chKey === "이마트냉동" ? efRulesSaved : chKey === "세븐일레븐" ? svRulesSaved : chKey === "세븐냉동" ? sfRulesSaved : chKey === "BGF" ? bgRulesSaved : chKey === "BGF냉동" ? bfRulesSaved : chKey === "GS" || chKey === "GS슈퍼" ? rulesSaved : SETTING_CACHE[ch.rulesKey] || null;
-  const chRules = chKey === "이마트" ? emRules : chKey === "GS냉동" ? frRules : chKey === "이마트냉동" ? efRules : chKey === "세븐일레븐" ? svRules : chKey === "세븐냉동" ? sfRules : chKey === "BGF" ? bgRules : chKey === "BGF냉동" ? bfRules : chKey === "GS" || chKey === "GS슈퍼" ? rules : normalizeDailyRules(chRulesSaved);
+  }, [chKey, days, emDays, frDays, efDays, svDays, sfDays, bgDays, bfDays, dlDays]);
+  const chRulesSaved = chKey === "이마트" ? emRulesSaved : chKey === "GS냉동" ? frRulesSaved : chKey === "이마트냉동" ? efRulesSaved : chKey === "세븐일레븐" ? svRulesSaved : chKey === "세븐냉동" ? sfRulesSaved : chKey === "BGF" ? bgRulesSaved : chKey === "BGF냉동" ? bfRulesSaved : chKey === "이마트델리" ? dlRulesSaved : chKey === "GS" || chKey === "GS슈퍼" ? rulesSaved : SETTING_CACHE[ch.rulesKey] || null;
+  const chRules = chKey === "이마트" ? emRules : chKey === "GS냉동" ? frRules : chKey === "이마트냉동" ? efRules : chKey === "세븐일레븐" ? svRules : chKey === "세븐냉동" ? sfRules : chKey === "BGF" ? bgRules : chKey === "BGF냉동" ? bfRules : chKey === "이마트델리" ? dlRules : chKey === "GS" || chKey === "GS슈퍼" ? rules : normalizeDailyRules(chRulesSaved);
   const newCount = useMemo(() => dailyNewProducts(chDays, chRulesSaved, ch).length, [chDays, chRulesSaved, chKey]);
   const hasCold = sheet === "GS" || sheet === "GS재고";
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
@@ -7195,7 +7220,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
           </div>
         }
       />
-      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={chKey === "이마트" ? emartOrders : chKey === "GS냉동" ? frozenOrders : chKey === "이마트냉동" ? emFrozenOrders : chKey === "세븐일레븐" ? sevenOrders : chKey === "세븐냉동" ? sevenFrozenOrders : chKey === "BGF" ? bgfOrders : chKey === "BGF냉동" ? bgfFrozenOrders : orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
+      {settingOpen && <DailySettingsModal key={chKey} ch={ch} orders={chKey === "이마트" ? emartOrders : chKey === "GS냉동" ? frozenOrders : chKey === "이마트냉동" ? emFrozenOrders : chKey === "세븐일레븐" ? sevenOrders : chKey === "세븐냉동" ? sevenFrozenOrders : chKey === "BGF" ? bgfOrders : chKey === "BGF냉동" ? bgfFrozenOrders : chKey === "이마트델리" ? [] : orders} days={chDays} rulesSaved={chRulesSaved} rules={chRules} authToken={authToken} onClose={() => setSettingOpen(false)} />}
       <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <select style={inputStyle} value={month} onChange={(e) => setMonth(e.target.value)}>
           {monthOptions.map((m) => (
@@ -7204,13 +7229,13 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
             </option>
           ))}
         </select>
-        {["GS", "GS재고", "GS냉동", "GS슈퍼", "이마트", "이마트냉동", "세븐일레븐", "세븐냉동", "BGF", "BGF냉동"].map((s) => (
+        {["GS", "GS재고", "GS냉동", "GS슈퍼", "이마트", "이마트냉동", "이마트델리", "세븐일레븐", "세븐냉동", "BGF", "BGF냉동"].map((s) => (
           <button
             key={s}
             onClick={() => setSheet(s)}
             style={{ ...smallBtnStyle, padding: "8px 14px", background: sheet === s ? T.steel : T.surface, color: sheet === s ? "#fff" : T.ink, borderColor: sheet === s ? T.steel : T.border }}
           >
-            {s === "GS" ? "GS (일반)" : s === "GS재고" ? "GS재고 (DC)" : s === "GS냉동" ? "GS 냉동" : s === "이마트냉동" ? "이마트 냉동" : s === "세븐냉동" ? "세븐 냉동" : s === "BGF냉동" ? "BGF 냉동" : s}
+            {s === "GS" ? "GS (일반)" : s === "GS재고" ? "GS재고 (DC)" : s === "GS냉동" ? "GS 냉동" : s === "이마트냉동" ? "이마트 냉동" : s === "세븐냉동" ? "세븐 냉동" : s === "BGF냉동" ? "BGF 냉동" : s === "이마트델리" ? "이마트 델리" : s}
           </button>
         ))}
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
@@ -7829,7 +7854,7 @@ function DailySettingsModal({ ch = DAILY_CHANNELS.GS, orders = [], days, rulesSa
           <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${T.border}` }}>
             {[
               ["products", `상품별 설정`],
-              ...(true ? [["regions", `지역 제외${rules.some((r) => r.scope === "region") ? ` (${rules.filter((r) => r.scope === "region").length})` : ""}`]] : []),
+              ...(DAILY_REGION_SOURCES[ch.region] ? [["regions", `지역 제외${rules.some((r) => r.scope === "region") ? ` (${rules.filter((r) => r.scope === "region").length})` : ""}`]] : []),
               ["deleted", `🗑 집계 안 하는 목록 (${rules.filter((r) => r.action === "exclude").length}) · 복구`],
               ["rules", `적용 중인 설정 (${rules.length})`],
             ].map(([k, label]) => (
@@ -12994,6 +13019,205 @@ function computeBgfDailySnapshot(list, date, rules) {
     m.set(r.name, x);
   });
   return { products: Array.from(m.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) };
+}
+
+/* ---------- 이마트 델리 (2026-10-27): 피킹지·명세서 없이 일별 발주 집계·대시보드에만 ----------
+   발주파일(키친델리CAT 발주내역) → 업로드한 날 기준으로 상품별 수량만 저장
+   - emdeli_raw_YYYYMMDD: 그날 올린 줄 (문서번호|점포코드|상품코드 → 상품·수량) = 같은 파일을 또 올려도 두 번 안 쌓임
+   - daily_emdeli_YYYYMM: 일별 발주 집계용 상품별 합계 (다른 채널과 같은 모양) */
+const emdeliDailyKey = (month) => `daily_emdeli_${month.replace("-", "")}`;
+const emdeliRawKey = (date) => `emdeli_raw_${date.replace(/-/g, "")}`;
+function parseEmartDeliRows(rows) {
+  const norm = (v) => String(v == null ? "" : v).replace(/\s+/g, "");
+  const hi = rows.findIndex((r) => Array.isArray(r) && r.some((c) => norm(c) === "상품명") && r.some((c) => norm(c) === "수량"));
+  if (hi < 0) return null;
+  const h = rows[hi].map(norm);
+  const col = (n) => h.indexOf(n);
+  const c = { name: col("상품명"), qty: col("수량"), code: col("상품코드"), doc: col("문서번호"), store: col("점포코드"), vendor: col("업체명"), od: col("발주일자") };
+  const out = [];
+  rows.slice(hi + 1).forEach((r, i) => {
+    if (!Array.isArray(r)) return;
+    const name = String(r[c.name] == null ? "" : r[c.name]).trim();
+    const qty = Number(String(r[c.qty] == null ? "" : r[c.qty]).replace(/,/g, "")) || 0;
+    if (!name || qty <= 0) return;
+    const code = c.code >= 0 ? String(r[c.code] == null ? "" : r[c.code]).trim() : "";
+    const doc = c.doc >= 0 ? String(r[c.doc] == null ? "" : r[c.doc]).trim() : "";
+    const store = c.store >= 0 ? String(r[c.store] == null ? "" : r[c.store]).trim() : "";
+    const vendor = (c.vendor >= 0 ? String(r[c.vendor] == null ? "" : r[c.vendor]) : "").replace(/\(주\)|㈜|주식회사/g, "").trim() || "이마트델리";
+    out.push({ key: doc || store || code ? `${doc}|${store}|${code || name}` : `row${hi + 1 + i}`, name, qty, vendor, orderDate: c.od >= 0 ? String(r[c.od] || "") : "" });
+  });
+  return out;
+}
+function EmartDeliPage({ authToken }) {
+  const today = localDateStr();
+  const month = today.slice(0, 7);
+  const prevMonth = shiftDateStr(`${month}-01`, -1).slice(0, 7);
+  const cur = useSetting(emdeliDailyKey(month), authToken);
+  const prev = useSetting(emdeliDailyKey(prevMonth), authToken);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [open, setOpen] = useState(null);
+  const fileRef = useRef(null);
+  const list = useMemo(() => {
+    const out = [];
+    [cur, prev].forEach((v) =>
+      Object.entries((v && v.days) || {}).forEach(([d, items]) => {
+        if (!items || !items.length) return;
+        const meta = ((v && v.meta) || {})[d] || {};
+        out.push({ date: d, items: items.map(([name, si, qty]) => ({ name, supplier: (v.sups || [])[si] || "", qty })), total: items.reduce((a, x) => a + (Number(x[2]) || 0), 0), meta });
+      })
+    );
+    return out.sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [cur, prev]);
+  const writeDaily = async (date, lines, metaPatch) => {
+    const m = new Map();
+    Object.values(lines).forEach(([name, qty, vendor]) => {
+      const x = m.get(name) || { name, supplier: vendor || "이마트델리", qty: 0 };
+      x.qty += Number(qty) || 0;
+      m.set(name, x);
+    });
+    const products = Array.from(m.values()).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return updateSetting(emdeliDailyKey(date.slice(0, 7)), authToken, (v) => {
+      const sups = [...(v.sups || [])];
+      const days = { ...(v.days || {}) };
+      const meta = { ...(v.meta || {}) };
+      if (products.length) {
+        days[date] = products.map((p) => {
+          let i = sups.indexOf(p.supplier);
+          if (i === -1) i = sups.push(p.supplier) - 1;
+          return [p.name, i, p.qty];
+        });
+        meta[date] = { ...(meta[date] || {}), ...metaPatch };
+      } else {
+        delete days[date];
+        delete meta[date];
+      }
+      return { sups, days, meta };
+    });
+  };
+  const onFiles = async (files) => {
+    if (!files || !files.length) return;
+    if (!canDo("upload")) return setMsg("발주 업로드 권한이 없어요. 관리자에게 '업로드' 권한을 요청해주세요.");
+    setBusy(true);
+    setMsg("");
+    try {
+      const all = [];
+      const names = [];
+      for (const f of Array.from(files)) {
+        const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: "array" });
+        let got = null;
+        for (const sn of wb.SheetNames) {
+          got = parseEmartDeliRows(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: false, defval: "" }));
+          if (got) break;
+        }
+        if (!got) throw new Error(`${f.name}: 이마트 델리 발주파일 형식이 아니에요 (상품명·수량 칸을 못 찾았어요).`);
+        all.push(...got);
+        names.push(f.name);
+      }
+      if (!all.length) throw new Error("수량이 있는 줄이 없어요.");
+      const date = localDateStr(); // 업로드한 날 기준 (파일 안 발주일자는 날마다 달라서 안 씀)
+      const rawKey = emdeliRawKey(date);
+      let added = 0, dup = 0;
+      let merged = null;
+      const r = await updateSetting(rawKey, authToken, (v) => {
+        const lines = { ...((v && v.lines) || {}) };
+        all.forEach((x) => {
+          if (lines[x.key]) return dup++;
+          lines[x.key] = [x.name, x.qty, x.vendor];
+          added++;
+        });
+        merged = lines;
+        return { lines, files: [...((v && v.files) || []), ...names.map((n) => ({ name: n, at: new Date().toISOString(), by: (CURRENT_USER && (CURRENT_USER.name || CURRENT_USER.username)) || "" }))] };
+      });
+      if (!r.ok) throw new Error(r.error || "저장하지 못했어요.");
+      const tot = Object.values(merged).reduce((a, x) => a + (Number(x[1]) || 0), 0);
+      const w = await writeDaily(date, merged, { by: (CURRENT_USER && (CURRENT_USER.name || CURRENT_USER.username)) || "", files: names.join(", ") });
+      if (!w.ok) throw new Error(w.error || "일별 집계에 저장하지 못했어요.");
+      logUi("upload_emdeli", `이마트 델리 ${date}`, { files: names, lines: added, dup, total: tot });
+      setMsg(`${fmtDate(date)} 이마트 델리 발주 ${added.toLocaleString()}줄 등록${dup ? ` · 이미 올라와 있던 ${dup.toLocaleString()}줄은 건너뜀` : ""} · 그날 총량 ${tot.toLocaleString()}개. 일별 발주 집계 > 이마트 델리, 대시보드에 바로 반영돼요.`);
+      setOpen(date);
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  const delDate = async (date) => {
+    if (!canDo("delete")) return setMsg("삭제 권한이 없어요.");
+    if (!window.confirm(`${fmtDate(date)} 이마트 델리 발주를 지울까요?\n(일별 발주 집계·대시보드에서도 빠져요)`)) return;
+    setBusy(true);
+    await updateSetting(emdeliRawKey(date), authToken, () => ({ lines: {}, files: [] }));
+    await writeDaily(date, {}, {});
+    logUi("delete_emdeli", `이마트 델리 ${date}`, {});
+    setBusy(false);
+    setMsg(`${fmtDate(date)} 이마트 델리 발주를 지웠어요.`);
+  };
+  return (
+    <div>
+      <PageHeader title="주문정보 (이마트 델리)" sub="이마트 델리(키친델리) 발주파일을 올리면 올린 날짜로 상품별 수량이 일별 발주 집계·대시보드(이마트델리 WET)에 들어가요. 피킹지·거래명세서는 만들지 않아요." />
+      <div style={{ ...cardStyle, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 12, lineHeight: 1.6 }}>
+          파일 안 발주일자는 날마다 달라도 <b>올린 날짜</b> 기준으로 쌓여요. 같은 파일을 또 올려도 같은 줄(문서번호·점포·상품)은 한 번만 들어가요. 여러 파일을 한 번에 골라도 돼요.
+        </div>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple style={{ display: "none" }} onChange={(e) => onFiles(e.target.files)} />
+        <button disabled={busy} onClick={() => fileRef.current && fileRef.current.click()} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
+          <Upload size={15} /> {busy ? "올리는 중..." : "발주파일 업로드"}
+        </button>
+        {msg && <div style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: /없어요|아니에요|못했어요|권한/.test(msg) ? T.danger : T.tealDeep }}>{msg}</div>}
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>날짜별 발주 현황</div>
+      {list.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: "center", color: T.inkSoft, fontSize: 13 }}>등록된 발주가 없습니다.</div>
+      ) : (
+        list.map((g) => (
+          <div key={g.date} style={{ ...cardStyle, padding: "14px 18px", marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 15 }}>{fmtDate(g.date)}</div>
+                <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                  상품 {g.items.length}개 · 총수량 {g.total.toLocaleString()}개{g.meta.by ? ` · 올린 사람 ${g.meta.by}` : ""}
+                </div>
+              </div>
+              <button onClick={() => setOpen(open === g.date ? null : g.date)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "7px 12px" }}>
+                {open === g.date ? "닫기" : "상품별 보기"}
+              </button>
+              {canDo("delete") && (
+                <button disabled={busy} onClick={() => delDate(g.date)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "7px 12px", color: T.danger, borderColor: T.danger + "55" }}>
+                  <Trash2 size={13} /> 이 날짜 삭제
+                </button>
+              )}
+            </div>
+            {open === g.date && (
+              <table style={{ width: "100%", marginTop: 12, fontSize: 13, borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#F7F6F2" }}>
+                    <th style={{ textAlign: "left", padding: "6px 10px" }}>상품명</th>
+                    <th style={{ textAlign: "left", padding: "6px 10px" }}>업체</th>
+                    <th style={{ textAlign: "right", padding: "6px 10px" }}>수량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {g.items.map((x) => (
+                    <tr key={x.name} style={{ borderTop: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px" }}>{x.name}</td>
+                      <td style={{ padding: "6px 10px", color: T.inkSoft }}>{x.supplier}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{Number(x.qty).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${T.border}`, fontWeight: 700 }}>
+                    <td style={{ padding: "6px 10px" }}>합계</td>
+                    <td />
+                    <td style={{ padding: "6px 10px", textAlign: "right" }}>{g.total.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
 }
 
 /* ---------- 주문정보 (E.MART): GS 주문정보와 같은 화면 ---------- */
