@@ -6851,7 +6851,7 @@ const DAILY_SHEETS = [
   { name: "이마트냉동", head: "이마트냉동", cold: false },
   { name: "세븐냉동", head: "세븐냉동", cold: false },
   { name: "BGF냉동", head: "bgf냉동", cold: false },
-  { name: "이마트델리", head: "이마트델리", cold: false },
+  { name: "이마트델리", head: "이마트델리", cold: false, noParts: true }, // 편 구분 없음: 일일물동량 + 상품 수량만
 ];
 
 async function downloadGsDailyExcel(table, setBusy) {
@@ -6886,7 +6886,7 @@ async function downloadGsDailyExcel(table, setBusy) {
         ws.getCell(a).fill = a.endsWith("3") ? green : gray;
         ws.getCell(a).border = box;
       });
-      const heads = [`일일물동량\n${meta.head}`, "1편수량", "2편수량", meta.cold ? "냉장" : meta.dkHead || "", "발주일자", "요일", "센터\n입고일자", "요일"];
+      const heads = [`일일물동량\n${meta.head}`, meta.noParts ? "" : "1편수량", meta.noParts ? "" : "2편수량", meta.cold ? "냉장" : meta.dkHead || "", "발주일자", "요일", "센터\n입고일자", "요일"];
       heads.forEach((h, i) => {
         const c = ws.getCell(4, 2 + i);
         c.value = h;
@@ -6896,6 +6896,7 @@ async function downloadGsDailyExcel(table, setBusy) {
         c.fill = i < 4 ? orange : gray;
         c.border = box;
       });
+      if (meta.noParts) [3, 4].forEach((c) => (ws.getColumn(c).hidden = true)); // 이마트 델리: 1편·2편 칸 숨김
       // 공급사 머리글(3행, 같은 공급사 상품 열을 병합) + 상품명(5행)
       let start = 0;
       sh.columns.forEach((col, i) => {
@@ -6950,8 +6951,8 @@ async function downloadGsDailyExcel(table, setBusy) {
         const cC = { formula: partFormula(r, rr, "1", "C"), result: r.p1 };
         const cD = show2 ? { formula: partFormula(r, rr, "2", "D"), result: r.p2 } : null;
         const cE = meta.cold ? { formula: partFormula(r, rr, "c", "E"), result: r.cold } : meta.dkRe ? dkCell(r, rr) : null;
-        const cB = { formula: meta.cold ? `C${rr}+${show2 ? `D${rr}+` : ""}E${rr}` : `C${rr}+D${rr}`, result: r.total };
-        [cB, cC, cD, cE].forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
+        const cB = { formula: meta.noParts ? (nCol ? `SUM(${firstL}${rr}:${lastL}${rr})` : "0") : meta.cold ? `C${rr}+${show2 ? `D${rr}+` : ""}E${rr}` : `C${rr}+D${rr}`, result: r.total };
+        [cB, meta.noParts ? null : cC, meta.noParts ? null : cD, cE].forEach((v, i) => (ws.getCell(rr, 2 + i).value = v));
         ws.getCell(rr, 6).value = invDate(r.date);
         ws.getCell(rr, 7).value = gsWeekday(r.date);
         ws.getCell(rr, 8).value = invDate(r.inDate);
@@ -6973,7 +6974,7 @@ async function downloadGsDailyExcel(table, setBusy) {
       ws.getCell(tr, 6).value = "합계";
       const colSum = (c, result) => ({ formula: `SUM(${ws.getColumn(c).letter}6:${ws.getColumn(c).letter}${tr - 1})`, result });
       const dkTotal = dkIdx.reduce((a, i) => a + (Number(sh.totals.cells[i]) || 0), 0);
-      [sh.totals.total, sh.totals.p1, show2 ? sh.totals.p2 : null, meta.cold ? sh.totals.cold : meta.dkRe ? dkTotal : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v === null ? null : colSum(2 + i, v)));
+      [sh.totals.total, meta.noParts ? null : sh.totals.p1, show2 && !meta.noParts ? sh.totals.p2 : null, meta.cold ? sh.totals.cold : meta.dkRe ? dkTotal : null].forEach((v, i) => (ws.getCell(tr, 2 + i).value = v === null ? null : colSum(2 + i, v)));
       sh.totals.cells.forEach((v, i) => (ws.getCell(tr, 10 + i).value = colSum(10 + i, v)));
       for (let c = 2; c < 10 + sh.columns.length; c++) {
         const cell = ws.getCell(tr, c);
@@ -7201,7 +7202,8 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   const monthOptions = Array.from(new Set([defaultMonth, month, ...months, ...orderDates.map((x) => x.slice(0, 7))])).sort().reverse();
   const nf = (v) => (v ? v.toLocaleString() : "-");
   const th = { position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 };
-  const summaryHead = hasCold ? ["일일물동량", "1편수량", "2편수량", "냉장"] : ["일일물동량", "1편수량", "2편수량"];
+  const noParts = sheet === "이마트델리"; // 이마트 델리: 편 구분 없음 → 일일물동량 + 상품 수량만
+  const summaryHead = hasCold ? ["일일물동량", "1편수량", "2편수량", "냉장"] : noParts ? ["일일물동량"] : ["일일물동량", "1편수량", "2편수량"];
 
   return (
     <div>
@@ -7327,8 +7329,8 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
                   {r.date.slice(5).replace("-", "/")} ({gsWeekday(r.date)})
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700 }}>{nf(r.total)}</td>
-                <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>
-                <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>
+                {!noParts && <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>}
+                {!noParts && <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>}
                 {hasCold && <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>}
                 {colIdx.map((i) => {
                   const v = r.cells[i];
@@ -7388,8 +7390,8 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
             <tr style={{ background: "#EEF6E8", fontWeight: 700 }}>
               <td style={{ position: "sticky", left: 0, background: "#EEF6E8" }}>합계</td>
               <td style={{ textAlign: "right" }}>{nf(sh.totals.total)}</td>
-              <td style={{ textAlign: "right" }}>{nf(sh.totals.p1)}</td>
-              <td style={{ textAlign: "right" }}>{nf(sh.totals.p2)}</td>
+              {!noParts && <td style={{ textAlign: "right" }}>{nf(sh.totals.p1)}</td>}
+              {!noParts && <td style={{ textAlign: "right" }}>{nf(sh.totals.p2)}</td>}
               {hasCold && <td style={{ textAlign: "right" }}>{nf(sh.totals.cold)}</td>}
               {colIdx.map((i) => (
                 <td key={i} style={{ textAlign: "right" }}>
