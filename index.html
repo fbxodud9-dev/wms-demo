@@ -11034,7 +11034,7 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial, lay = INV_
   readSheetCells(ws, tpl.sst);
   const isEmptyRow = (r) => {
     const e = ws.cells.get("E" + r);
-    return !e || (!e.f && (e.v == null || String(e.v).trim() === ""));
+    return !e || (!e.f && (e.v == null || String(e.v).trim() === "")) || (e.f && e.f.trim() === '""'); // 비운 줄(="")도 빈 줄로 (새 상품이 바로 아래에 붙게)
   };
   let endRow = caps.totalRow - 1;
   let spares = [];
@@ -11298,6 +11298,48 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (lay.blankZero && !Object.values(x.byK[row.k] || {}).some((v) => v > 0)) return true; // 세븐: 그날 발주 없는 상품 줄은 비움
         return (x.hiddenProducts || []).some((n) => n === row.name || (prod && n === prod.name));
       });
+      // 빈칸 없게 (2026-10-27 세븐 은성 요청): 발주 있는 상품 줄을 위로 모으고, 비울 줄은 맨 아래로
+      if (hidRows.length && lay.blankZero) {
+        const allRows = [...sh.rows].sort((a, b) => a.r - b.r);
+        const vis = allRows.filter((row) => !hidRows.includes(row));
+        if (vis.some((row, i) => row.r !== allRows[i].r)) {
+          emInvUnshare(ws, tpl.sst);
+          const snap = new Map(); // 원래 줄 칸 내용
+          allRows.forEach((row) => {
+            const o = {};
+            ["E", "M", "AA"].forEach((col) => {
+              const c = ws.cells.get(col + row.r);
+              o[col] = c ? { v: c.v, f: c.f } : null;
+            });
+            snap.set(row, o);
+          });
+          const slots = allRows.map((row) => row.r);
+          const qtyF = new Map(allRows.map((row) => [row.r, (ws.cells.get(lay.qty + row.r) || {}).f || null]));
+          const order = [...vis, ...hidRows.slice().sort((a, b) => a.r - b.r)];
+          order.forEach((row, i) => {
+            const t = slots[i];
+            const o = snap.get(row);
+            ["E", "M", "AA"].forEach((col) => {
+              const c = ws.cells.get(col + t);
+              const fEl = c && c.el.getElementsByTagName("f")[0];
+              if (fEl) c.el.removeChild(fEl);
+              const src = o[col];
+              if (src && src.f) emInvSetFormula(ws, col + t, src.f, c ? c.el.getAttribute("s") : null);
+              else setCellXml(ws, col + t, src ? src.v : null);
+            });
+            const qf = qtyF.get(t);
+            if (qf) {
+              const c = ws.cells.get(lay.qty + t);
+              const fEl = c && c.el.getElementsByTagName("f")[0];
+              if (fEl) c.el.removeChild(fEl);
+              emInvSetFormula(ws, lay.qty + t, qf.replace(/(VLOOKUP\([^,]+,[^,]+,)\d+(,)/, `$1${row.k}$2`), c ? c.el.getAttribute("s") : null);
+            }
+            row.r = t;
+            if (o.AA) row.aa = o.AA;
+          });
+          readSheetCells(ws, tpl.sst);
+        }
+      }
       if (hidRows.length) {
         emInvUnshare(ws, tpl.sst);
         hidRows.forEach((row) =>
@@ -11365,6 +11407,21 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
           return Number(ov);
         };
         emInvAddProducts(tpl, ws, caps, prods, expiryOf, sheetSerial, x.isNew && lay.noCopyExpiryNew ? { ...lay, noCopyExpiry: true } : lay); // 복사해 만든 공급사는 다른 공급사 소비기한을 따라가지 않음
+      }
+      // 수기 입력 시트 (세븐 대구냉장B동): 상품 줄은 A동과 같게 나오고 총수량 칸만 비움 → 직원이 A·B 나눠서 적음 (2026-10-27)
+      if (lay.manualQtyOf) {
+        const l6 = ws.cells.get(lay.centerName || "L6");
+        if (lay.manualQtyOf(l6 && typeof l6.v === "string" ? l6.v : "", sh.name)) {
+          emInvUnshare(ws, tpl.sst);
+          for (let r = 13; r <= 60; r++) {
+            const q = ws.cells.get(lay.qty + r);
+            if (!q || !q.f || !/VLOOKUP\(/.test(q.f)) continue;
+            const fEl = q.el.getElementsByTagName("f")[0];
+            if (fEl) q.el.removeChild(fEl);
+            setCellXml(ws, lay.qty + r, null);
+          }
+          readSheetCells(ws, tpl.sst);
+        }
       }
       // 공급자 사업자 정보 (설정에서 바꾼 경우만)
       const info = s.info || {};
@@ -12313,6 +12370,7 @@ const SEVEN_FROZEN_PV_CFG = {
 const INV_LAYOUT_SEVEN = {
   infoKey: "product_info_seven",
   blankZero: true,
+  manualQtyOf: (l6) => /B동/.test(l6), // 대구냉장B동: 총수량은 직원이 A·B 나눠서 수기 입력
   key: "B1",
   qty: "Q",
   cols: ["E", "M", "Q", "T", "W", "AA"],
@@ -12571,8 +12629,8 @@ const BGF_PICKING_TEMPLATE_URL = "bgf_picking_template.xlsx";
 const BGF_FROZEN_PICKING_TEMPLATE_URL = "bgf_frozen_picking_template.xlsx";
 const BGF_INVOICE_TEMPLATE_URL = "bgf_invoice_template.xlsx";
 // 센터 줄 (A열): BGF로지스○○ / 씨제이○○ / 하이로지스 / 극동로지스 / 동부로지스 / 아신 / 화인로지텍 / 엑소후레쉬양산 / 김해물류 (합계 줄 제외)
-const BGF_REGION_RE = /^(?!.*합계)(?!총)(BGF로지스|씨제이|하이로지스|극동로지스|동부로지스|아신|화인로지텍|엑소후레쉬|김해물류)/;
-const BGF_STD_REGIONS = ["BGF로지스강릉", "BGF로지스검단", "BGF로지스광주", "BGF로지스나주", "BGF로지스대구", "BGF로지스부산", "BGF로지스서귀포", "BGF로지스서인천1", "BGF로지스서인천2", "BGF로지스아산", "BGF로지스안성", "BGF로지스양주", "BGF로지스제주", "BGF로지스진주", "BGF로지스진천", "BGF로지스화성", "극동로지스", "김해물류", "동부로지스", "씨제이경산", "씨제이군포", "씨제이김제", "씨제이오산", "아신", "엑소후레쉬양산", "하이로지스", "화인로지텍"];
+const BGF_REGION_RE = /^(?!.*합계)(?!총)(BGF로지스|씨제이|하이로지스|극동로지스|동부로지스|아신|화인로지텍|엑소후레쉬|김해물류)/; // 2026-10-27: 김해물류 자리 → BGF로지스기장 (새 센터)
+const BGF_STD_REGIONS = ["BGF로지스강릉", "BGF로지스검단", "BGF로지스광주", "BGF로지스기장", "BGF로지스나주", "BGF로지스대구", "BGF로지스부산", "BGF로지스서귀포", "BGF로지스서인천1", "BGF로지스서인천2", "BGF로지스아산", "BGF로지스안성", "BGF로지스양주", "BGF로지스제주", "BGF로지스진주", "BGF로지스진천", "BGF로지스화성", "극동로지스", "동부로지스", "씨제이경산", "씨제이군포", "씨제이김제", "씨제이오산", "아신", "엑소후레쉬양산", "하이로지스", "화인로지텍"];
 const BGF_JEJU = ["BGF로지스서귀포", "BGF로지스제주"];
 // ASN 센터 코드 → 피킹지 센터 줄 이름 (2026-10-20 대신·참조은 실제 ASN). 센터 이름 글자가 바뀌어도 코드로 같은 센터. 김해물류는 아직 코드 모름 → 이름으로
 const BGF_CENTER_BY_CODE = { 904: "BGF로지스양주", 905: "BGF로지스제주", 906: "하이로지스", 907: "BGF로지스대구", 908: "BGF로지스화성", 909: "동부로지스", 912: "극동로지스", 916: "아신", 920: "화인로지텍", 921: "BGF로지스안성", 924: "BGF로지스나주", 925: "BGF로지스진주", 929: "BGF로지스강릉", 931: "엑소후레쉬양산", 934: "BGF로지스서귀포", 942: "씨제이경산", 944: "BGF로지스진천", 945: "BGF로지스광주", 946: "BGF로지스아산", 947: "씨제이군포", 951: "씨제이오산", 952: "BGF로지스검단", 954: "씨제이김제", 957: "BGF로지스서인천1", 958: "BGF로지스서인천2", 959: "BGF로지스부산" };
@@ -12590,7 +12648,7 @@ const BGF_ZONE_LIST = ["수도권", "경남", "경북", "호남", "제주", "기
 function bgfZoneOf(c) {
   const n = String(c || "");
   if (/서귀포|제주/.test(n)) return "제주";
-  if (/양산|극동|김해|부산|진주/.test(n)) return "경남";
+  if (/양산|극동|김해|기장|부산|진주/.test(n)) return "경남";
   if (/경산|대구/.test(n)) return "경북";
   if (/나주|하이로지스|김제/.test(n)) return "호남";
   if (/BGF로지스|씨제이|아신|화인|동부/.test(n)) return "수도권";
