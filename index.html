@@ -11183,6 +11183,26 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     }
     return invPackByBase.get(invBaseOf(name)) || 0;
   };
+  // 납품예정일자 (공급사·센터별로 가장 많은 날 → 공급사 전체 → 그날 전체)
+  const invDueOf = (() => {
+    const cnt = new Map();
+    const add = (k, d) => {
+      const m = cnt.get(k) || {};
+      m[d] = (m[d] || 0) + 1;
+      cnt.set(k, m);
+    };
+    (orderRows || []).forEach((r) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(r.due || ""))) return;
+      add(`${r.vendor}|${r.center}`, r.due);
+      add(`${r.vendor}|`, r.due);
+      add("|", r.due);
+    });
+    const best = (k) => {
+      const m = cnt.get(k);
+      return m ? Object.entries(m).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0] : null;
+    };
+    return (sup, center) => best(`${sup}|${center}`) || best(`${sup}|`) || best("|");
+  })();
   const want = (x) => !x.hidden && (x.total > 0 || x.selectedMode) && (!onlySuppliers || onlySuppliers.includes(x.supplier) || (x.pivot && x.pivot.pivot && onlySuppliers.includes("pivot:" + x.pivot.pivot)));
 
   // 새 공급사: 다른 공급사 블록(피벗 + 센터 12장)을 복사해서 만든다
@@ -11317,7 +11337,9 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       keep.add(sh.name);
       kept++;
       const ws = byName.get(sh.name);
-      const sheetSerial = dateSerial + (lay.dateOffset || 0) + (sh.b13Offset || 0); // 냉동은 납품일(발주일 + 1)
+      // lay.dateFromDue: 명세서 날짜 = 그 공급사·센터 발주의 납품예정일자 (BGF 냉동). 없으면 작업일
+      const dueOf = lay.dateFromDue ? invDueOf(x.supplier, sh.center) : null;
+      const sheetSerial = dueOf ? xlSerialOf(dueOf) : dateSerial + (lay.dateOffset || 0) + (sh.b13Offset || 0); // 냉동은 납품일(발주일 + 1)
       setCellXml(ws, "B13", sheetSerial);
       // 발행 안 함으로 뺀 상품 줄: 위(공급받는자 보관용) 줄을 비우면 아래 보관용 줄도 따라서 비워짐
       const hidRows = sh.rows.filter((row) => {
@@ -11920,7 +11942,7 @@ function emartRowsFromOrders(orders) {
   orders.forEach((o) =>
     o.lines.forEach((l) => {
       const qty = Number(l.changedQty ?? l.qty) || 0;
-      if (qty > 0) rows.push({ orderNo: o.orderNo, vendor: o.supplier || "", supplierCode: o.supplierCode || "", center: o.storeCode || o.customer, name: l.name, code: l.sku, box: Number(l.packQty) || 0, qty, date: o.createdAt });
+      if (qty > 0) rows.push({ orderNo: o.orderNo, vendor: o.supplier || "", supplierCode: o.supplierCode || "", center: o.storeCode || o.customer, name: l.name, code: l.sku, box: Number(l.packQty) || 0, qty, date: o.createdAt, due: o.deliveryDate || "" });
     })
   );
   return rows;
@@ -12994,7 +13016,7 @@ const BGF_FROZEN_INV_CFG = {
   brand: "BGFFROZEN",
   label: "BGF 냉동",
   get lay() {
-    return { ...INV_LAYOUT_BGF, noCopyExpiry: true, infoKey: "product_info_bgffrozen" };
+    return { ...INV_LAYOUT_BGF, noCopyExpiry: true, infoKey: "product_info_bgffrozen", dateFromDue: true }; // 냉동 명세서 날짜 = 납품예정일자 (2026-10-27)
   },
   rowsOf: bgfInvRowsOf(true),
   defaultInfo: BGF_INV_DEFAULT_INFO,
