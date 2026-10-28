@@ -1315,6 +1315,49 @@ function isProductInactiveOn(name, date) {
   return ranges.some((r) => (!r.from || date >= r.from) && (!r.to || date <= r.to));
 }
 // 저장 직전 서버 최신값을 받아 이 상품 항목만 바꿔 저장 (다른 직원이 그사이 바꾼 다른 상품은 유지)
+// 여러 상품을 한 번에 (공급사 전체 삭제·복구)
+async function saveProductInfoBulk(authToken, fallback, names, updater) {
+  let latest = fallback || {};
+  try {
+    const res = await apiFetch("/settings/product_info", authToken);
+    if (res && res.value && typeof res.value === "object") latest = res.value;
+  } catch (e) {
+    /* 서버를 못 읽으면 화면 값 기준 */
+  }
+  const next = { ...latest };
+  names.forEach((name) => {
+    const entry = updater({ ...(latest[name] || {}) });
+    if (entry && Object.keys(entry).length) next[name] = entry;
+    else delete next[name];
+  });
+  try {
+    await apiFetch("/settings/product_info", authToken, { method: "PUT", body: { value: next } });
+    return { value: next, ok: true };
+  } catch (e) {
+    try {
+      localStorage.setItem("wms-product-info", JSON.stringify(next));
+    } catch (e2) {
+      /* 무시 */
+    }
+    return { value: next, ok: false, error: e.message };
+  }
+}
+// 공급사 전체 삭제(단종)·복구에 쓰는 변경
+const supDeleteEntry = (sup) => (e) => (openInactiveRange(e, true), delete e.paused, (e.discontinued = true), (e.delSup = sup), e);
+const supRestoreEntry = (e) => (closeInactiveRange(e), delete e.discontinued, delete e.delSup, e);
+// 공급사 삭제 버튼 (상품 정보 관리 - 공급사를 고르면 나옴)
+function SupplierBulkButton({ supplier, showDeleted, count, busy, onDelete, onRestore }) {
+  if (supplier === "all" || !count) return null;
+  return showDeleted ? (
+    <button disabled={busy} onClick={onRestore} style={{ ...smallBtnStyle, padding: "8px 12px", color: T.teal, borderColor: T.teal + "66", fontWeight: 700 }}>
+      ↺ {supplier} 전체 복구 ({count})
+    </button>
+  ) : (
+    <button disabled={busy} onClick={onDelete} style={{ ...smallBtnStyle, padding: "8px 12px", color: T.danger, borderColor: T.danger + "66", fontWeight: 700 }}>
+      🗑 {supplier} 공급사 삭제 ({count})
+    </button>
+  );
+}
 async function saveProductInfoEntry(authToken, fallback, name, updater) {
   let latest = fallback || {};
   try {
@@ -17151,6 +17194,28 @@ function BrandProductInfoView({ brand, label, rows: allRowsIn, authToken, loadin
     setMsg(r.ok ? done : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
   }
   const btn = { ...smallBtnStyle, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4 };
+  // 공급사 전체 삭제·복구 (2026-10-28)
+  const supTargets = supplier === "all" ? [] : list.filter((r) => r.supplier === supplier && r.deleted === showDeleted);
+  async function bulkSupplier(del) {
+    const names = supTargets.map((r) => r.name);
+    if (!names.length) return;
+    if (del && !window.confirm(`[${supplier}] 공급사 상품 ${names.length}개를 모두 삭제(단종)할까요?\n\n${label} 피킹지·거래명세서·상품마스터에 더 이상 나오지 않아요.\n잘못 지웠으면 "삭제된 상품"에서 공급사를 고르고 [전체 복구]를 누르면 돼요.`)) return;
+    if (!del && !window.confirm(`[${supplier}] 삭제된 상품 ${names.length}개를 모두 복구할까요?`)) return;
+    setBusy("__sup");
+    setMsg("");
+    const skuOf = new Map(list.map((x) => [x.name, x.sku || ""]));
+    const r = await updateSetting(key, authToken, (v) => {
+      names.forEach((name) => {
+        const e = (del ? supDeleteEntry(supplier) : supRestoreEntry)({ ...(v[name] || {}) });
+        if (skuOf.get(name) && Object.keys(e).some((k) => k !== "sku")) e.sku = skuOf.get(name);
+        if (Object.keys(e).some((k) => k !== "sku")) v[name] = e;
+        else delete v[name];
+      });
+      return v;
+    });
+    setBusy(null);
+    setMsg(r.ok ? `[${supplier}] 상품 ${names.length}개를 ${del ? "삭제" : "복구"}했어요.` : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
   return (
     <div>
       <PageHeader
@@ -17192,6 +17257,7 @@ function BrandProductInfoView({ brand, label, rows: allRowsIn, authToken, loadin
         <button onClick={() => setShowDeleted((v) => !v)} style={{ ...smallBtnStyle, padding: "8px 12px", background: showDeleted ? T.danger : T.surface, color: showDeleted ? "#fff" : T.ink, borderColor: showDeleted ? T.danger : T.border }}>
           삭제된 상품 ({list.filter((r) => r.deleted).length})
         </button>
+        <SupplierBulkButton supplier={supplier} showDeleted={showDeleted} count={supTargets.length} busy={!!busy} onDelete={() => bulkSupplier(true)} onRestore={() => bulkSupplier(false)} />
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
           {label} 상품 {filtered.length}개{filtered.length > shown.length ? ` (앞 ${shown.length}개 표시 - 검색으로 좁혀주세요)` : ""}
         </span>
@@ -22309,6 +22375,20 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
   });
   const changedCount = rows.filter((r) => r.changed && !r.deleted).length;
   const shown = filtered.slice(0, 400);
+  // 공급사 전체 삭제·복구 (2026-10-28): 그 공급사 상품을 한 번에 삭제(단종) → 피킹지·명세서·상품마스터에서 안 보임
+  const supTargets = supplier === "all" ? [] : rows.filter((r) => r.brand === "GS" && r.supplier === supplier && r.deleted === showDeleted);
+  async function bulkSupplier(del) {
+    const names = supTargets.map((r) => r.name);
+    if (!names.length) return;
+    if (del && !window.confirm(`[${supplier}] 공급사 상품 ${names.length}개를 모두 삭제(단종)할까요?\n\n피킹지시서·거래명세서·편수리스트·상품마스터에 더 이상 나오지 않아요.\n잘못 지웠으면 "삭제된 상품"에서 공급사를 고르고 [전체 복구]를 누르면 돼요.`)) return;
+    if (!del && !window.confirm(`[${supplier}] 삭제된 상품 ${names.length}개를 모두 복구할까요?`)) return;
+    setRowBusy("__sup");
+    setPageMsg("");
+    const r = await saveProductInfoBulk(authToken, productInfo, names, del ? supDeleteEntry(supplier) : supRestoreEntry);
+    onSaved(r.value);
+    setRowBusy(null);
+    setPageMsg(r.ok ? `[${supplier}] 상품 ${names.length}개를 ${del ? "삭제" : "복구"}했어요.` : `서버에 저장하지 못해 이 브라우저에만 임시 저장했어요 (${r.error})`);
+  }
 
   return (
     <div>
@@ -22348,6 +22428,7 @@ function ProductInfoPage({ orders, authToken, productInfo, onSaved }) {
         >
           삭제된 상품 ({deletedCount})
         </button>
+        <SupplierBulkButton supplier={supplier} showDeleted={showDeleted} count={supTargets.length} busy={!!rowBusy} onDelete={() => bulkSupplier(true)} onRestore={() => bulkSupplier(false)} />
         <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.inkSoft }}>
           {pausedCount > 0 && !showDeleted ? `일시중지 ${pausedCount}개 · ` : ""}상품 {filtered.length}개{filtered.length > shown.length ? ` (앞 ${shown.length}개 표시 - 검색으로 좁혀주세요)` : ""}
         </span>
@@ -22786,6 +22867,36 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
   const [createErr, setCreateErr] = useState("");
   const [brandFilter, setBrandFilter] = useState("all");
   const [tempFilter, setTempFilter] = useState("all"); // 온도구역: 전체 / 냉장 / 냉동 (2026-10-26, 상온 없음)
+  // 상품 정보 관리에서 삭제(단종)한 상품은 여기서도 숨김 (2026-10-28). 브랜드가 여럿이면 모든 브랜드에서 삭제됐을 때만
+  const PI_BRANDS = ["GSFROZEN", "GSSUPER", "EMART", "EMARTFROZEN", "SEVEN", "SEVENFROZEN", "BGF", "BGFFROZEN"];
+  const piInfos = PI_BRANDS.map((b) => useSetting(brandSettingKey("product_info", b), authToken)); // eslint-disable-line react-hooks/rules-of-hooks
+  const [showDelItems, setShowDelItems] = useState(false);
+  const delSets = useMemo(() => {
+    const out = {};
+    PI_BRANDS.forEach((b, k) => {
+      const names = new Set();
+      const skus = new Set();
+      Object.entries(piInfos[k] || {}).forEach(([n, e]) => {
+        if (!e || !e.discontinued) return;
+        names.add(n);
+        if (e.sku) skus.add(String(e.sku));
+      });
+      out[b] = { names, skus };
+    });
+    return out;
+  }, piInfos); // eslint-disable-line react-hooks/exhaustive-deps
+  const isDeletedItem = (i) => {
+    const bs = itemBrandsOf(i);
+    if (!bs.length) return false;
+    return bs.every((b) => {
+      if (b === "GS") {
+        const ov = productInfoOf(i.name);
+        return !!(ov && ov.discontinued);
+      }
+      const d = delSets[b];
+      return !!d && (d.names.has(String(i.name).trim()) || d.skus.has(String(i.sku)));
+    });
+  };
 
   const selected = items.find((i) => i.sku === selectedSku) || null;
   // 브랜드 탭은 일반·냉동을 한 칸으로 (GS = GS + GS 냉동 …). 냉장/냉동은 아래 온도구역으로 나눠 봄 (2026-10-26)
@@ -22798,8 +22909,9 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
   ];
   const membersOf = (b) => (PM_TABS.find((t) => t.brand === b) || { members: [b] }).members;
   const inTab = (i, b) => b === "all" || membersOf(b).some((m) => itemBrandsOf(i).includes(m));
-  const brandCount = (b) => items.filter((i) => inTab(i, b)).length;
-  const inBrand = items.filter((i) => inTab(i, brandFilter));
+  const brandCount = (b) => items.filter((i) => inTab(i, b) && !isDeletedItem(i)).length;
+  const delCount = items.filter((i) => inTab(i, brandFilter) && isDeletedItem(i)).length;
+  const inBrand = items.filter((i) => inTab(i, brandFilter) && (showDelItems ? isDeletedItem(i) : !isDeletedItem(i)));
   const TEMP_ORDER = ["냉장", "냉동"];
   const tempOf = (i) => (i.tempZone === "냉동" ? "냉동" : "냉장");
   const tempCount = (t) => inBrand.filter((i) => tempOf(i) === t).length;
@@ -22889,6 +23001,15 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
             {t.label} <span style={{ fontSize: 11.5, opacity: 0.8 }}>{t.n}</span>
           </button>
         ))}
+        {(delCount > 0 || showDelItems) && (
+          <button
+            onClick={() => setShowDelItems((v) => !v)}
+            title="상품 정보 관리에서 삭제(단종)한 상품"
+            style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, border: `1px solid ${showDelItems ? T.danger : T.border}`, background: showDelItems ? T.danger : T.surface, color: showDelItems ? "#fff" : T.inkSoft }}
+          >
+            {showDelItems ? "← 삭제된 상품 보기 끄기" : `삭제된 상품 ${delCount}개 숨김 · 보기`}
+          </button>
+        )}
       </div>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div style={{ flex: "2 1 420px" }}>
