@@ -3425,6 +3425,23 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  // 상품마스터 브랜드 일괄 변경 (GS슈퍼·GS냉동 정리) - [{ sku, brands }]
+  const setItemBrandsBulk = useCallback(
+    async (list) => {
+      let ok = 0;
+      for (const x of list) {
+        try {
+          await apiFetch(`/items/${encodeURIComponent(x.sku)}`, authToken, { method: "PATCH", body: { brands: x.brands } });
+          ok++;
+        } catch (e) {
+          setApiErr(e.message);
+        }
+      }
+      await loadCoreData();
+      return ok;
+    },
+    [authToken, loadCoreData]
+  );
   // 발주파일에 있지만 상품마스터에 없는 바코드를 "미배정" 상태로 자동 등록
   // 테스트 데이터 초기화 (모든 발주 삭제, 재고/상품마스터는 유지)
   const resetAllOrders = useCallback(async () => {
@@ -3972,7 +3989,7 @@ function WMSApp() {
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} authToken={authToken} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} onSetBrands={setItemBrandsBulk} authToken={authToken} />}
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
         {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
@@ -5822,8 +5839,10 @@ function resolveNamePackOverride(name) {
         allNewOrders.forEach((o) => o.lines.forEach((l) => gsSkus.add(l.sku)));
         // GS 냉동 화면(channelTag GSFROZEN)에서 올린 상품은 GS 냉동 브랜드로 (2026-10-26: 전부 GS로 들어가던 문제)
         const myBrand = channelTag === "GSFROZEN" ? "GSFROZEN" : "GS";
-        const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes(myBrand)).map((i) => ({ sku: i.sku, name: i.name, brand: myBrand }));
-        await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: myBrand })), ...addGs]);
+        // GS 발주파일에 섞여 오는 GS슈퍼 상품은 GS슈퍼 브랜드로 (2026-10-29: 전부 GS로 들어가던 문제)
+        const brandOfName = (name) => (myBrand === "GS" && productBrandOf(name) === "GSSUPER" ? "GSSUPER" : myBrand);
+        const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes(brandOfName(i.name))).map((i) => ({ sku: i.sku, name: i.name, brand: brandOfName(i.name) }));
+        await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: brandOfName(name) })), ...addGs]);
       } else {
         for (const [sku, name] of unmatchedList) {
           if (onRegisterItem) await onRegisterItem(sku, name);
@@ -22836,7 +22855,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
 // 상품마스터에서 등록·수정한 품목은 하루(24시간) 동안 목록 맨 위에 (2026-10-20 현장 요청: 맨 밑에 있어서 찾기 힘듦)
 // 서버 설정 wms_item_touched = { 상품코드: 수정한 시각(ms) } - 모든 PC에서 같이 보임, 하루 지난 건 저장할 때 자동 정리
 const ITEM_TOUCH_MS = 24 * 60 * 60 * 1000;
-function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }) {
+function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands, authToken }) {
   const touched = useSetting("wms_item_touched", authToken) || {};
   const nowMs = Date.now();
   const touchedAt = (sku) => {
@@ -22871,6 +22890,52 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
   const PI_BRANDS = ["GSFROZEN", "GSSUPER", "EMART", "EMARTFROZEN", "SEVEN", "SEVENFROZEN", "BGF", "BGFFROZEN"];
   const piInfos = PI_BRANDS.map((b) => useSetting(brandSettingKey("product_info", b), authToken)); // eslint-disable-line react-hooks/rules-of-hooks
   const [showDelItems, setShowDelItems] = useState(false);
+  // GS 슈퍼·GS 냉동 상품이 일반 GS로 들어가 있던 것 정리 (2026-10-29)
+  //  - GS슈퍼: 상품 정보 관리 브랜드 설정(GS슈퍼로 정한 상품) → GS 대신 GS슈퍼
+  //  - GS냉동: 서버에 남은 최근 14일 발주에서 GS 냉동 발주에만 나오고 GS 일반 발주엔 안 나온 상품 → GS 대신 GS 냉동
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixMsg, setFixMsg] = useState("");
+  async function fixGsBrands() {
+    if (!onSetBrands) return;
+    setFixBusy(true);
+    setFixMsg("");
+    try {
+      const cat = await apiFetch("/orders/catalog", authToken);
+      const gsSkus = new Set();
+      const frzSkus = new Set();
+      ((cat && cat.products) || []).forEach((p) => {
+        const sku = String(p.sku || "").trim();
+        if (!sku) return;
+        if (!p.channel || p.channel === "GS") gsSkus.add(sku);
+        if (p.channel === "GSFROZEN") frzSkus.add(sku);
+      });
+      const plan = [];
+      itemsIn.forEach((i) => {
+        const bs = itemBrandsOf(i);
+        if (!bs.includes("GS")) return;
+        let to = null;
+        if (productBrandOf(i.name) === "GSSUPER") to = "GSSUPER";
+        else if ((frzSkus.has(i.sku) || bs.includes("GSFROZEN")) && !gsSkus.has(i.sku)) to = "GSFROZEN";
+        if (!to) return;
+        const next = Array.from(new Set(bs.map((b) => (b === "GS" ? to : b))));
+        plan.push({ sku: i.sku, name: i.name, to, brands: PICKING_CHANNELS.map((c) => c.brand).filter((b) => next.includes(b)).join(",") });
+      });
+      if (!plan.length) {
+        setFixMsg("정리할 상품이 없어요. GS로 잘못 들어간 GS슈퍼·GS 냉동 상품이 없어요.");
+        return;
+      }
+      const sup = plan.filter((x) => x.to === "GSSUPER");
+      const frz = plan.filter((x) => x.to === "GSFROZEN");
+      const ex = (l) => l.slice(0, 6).map((x) => `  · ${x.name}`).join("\n") + (l.length > 6 ? `\n  … 외 ${l.length - 6}개` : "");
+      if (!window.confirm(`GS로 들어가 있던 상품의 브랜드를 바꿀까요?\n\nGS → GS슈퍼 ${sup.length}개${sup.length ? "\n" + ex(sup) : ""}\n\nGS → GS 냉동 ${frz.length}개${frz.length ? "\n" + ex(frz) : ""}\n\n(GS 냉동은 최근 14일 발주 기준: GS 냉동 발주에만 있고 GS 일반 발주엔 없는 상품)`)) return;
+      const n = await onSetBrands(plan);
+      setFixMsg(`브랜드를 정리했어요: GS슈퍼 ${sup.length}개 · GS 냉동 ${frz.length}개${n < plan.length ? ` (실패 ${plan.length - n}개)` : ""}`);
+    } catch (e) {
+      setFixMsg(`정리하지 못했어요: ${e.message}`);
+    } finally {
+      setFixBusy(false);
+    }
+  }
   const delSets = useMemo(() => {
     const out = {};
     PI_BRANDS.forEach((b, k) => {
@@ -22974,7 +23039,18 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, authToken }
 
   return (
     <div>
-      <PageHeader title="X. 상품마스터" sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요." />
+      <PageHeader
+        title="X. 상품마스터"
+        sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요."
+        action={
+          onSetBrands && canDo("edit") ? (
+            <button disabled={fixBusy} onClick={fixGsBrands} style={{ ...settingBtnStyle, whiteSpace: "nowrap" }} title="GS로 잘못 들어간 GS슈퍼·GS 냉동 상품의 브랜드를 바로잡아요">
+              {fixBusy ? "확인 중..." : "GS슈퍼·냉동 브랜드 정리"}
+            </button>
+          ) : null
+        }
+      />
+      {fixMsg && <div style={{ fontSize: 12.5, fontWeight: 600, color: /못했|실패/.test(fixMsg) ? T.danger : T.teal, margin: "-6px 0 12px 2px" }}>{fixMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
         {[{ brand: "all", label: "전체" }, ...PM_TABS].map((c) => (
           <button
