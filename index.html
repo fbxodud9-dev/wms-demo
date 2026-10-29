@@ -3220,45 +3220,7 @@ function WMSApp() {
     [authToken]
   );
 
-  // 채널별로 올라온 발주 상품에 그 채널 브랜드가 빠져 있으면 상품마스터에 붙여줌 (2026-10-26: GS 냉동 상품이 전부 GS로만 등록돼 있었음)
-  // 화면에 불러온 발주(최근 2일 + 지난 기록) 기준, 세션마다 한 번씩. 권한이 없으면 조용히 넘어감
-  const brandFixDoneRef = useRef(new Set());
-  useEffect(() => {
-    if (!authToken || !items.length) return;
-    const chans = [
-      ["GSFROZEN", frozenOrders],
-      ["EMART", emartOrders],
-      ["EMARTFROZEN", emFrozenOrders],
-      ["SEVEN", sevenOrders],
-      ["SEVENFROZEN", sevenFrozenOrders],
-      ["BGF", bgfOrders],
-      ["BGFFROZEN", bgfFrozenOrders],
-    ];
-    const bySku = new Map(items.map((i) => [i.sku, i]));
-    const fix = [];
-    chans.forEach(([brand, list]) =>
-      (list || []).forEach((o) =>
-        (o.lines || []).forEach((l) => {
-          const sku = String(l.sku || "").trim();
-          const k = brand + "|" + sku;
-          if (!sku || brandFixDoneRef.current.has(k)) return;
-          brandFixDoneRef.current.add(k);
-          const it = bySku.get(sku);
-          if (!it || !itemBrandsOf(it).includes(brand)) fix.push({ sku, name: (it && it.name) || l.name || sku, brand });
-        })
-      )
-    );
-    if (!fix.length) return;
-    (async () => {
-      try {
-        for (let i = 0; i < fix.length; i += 400) await apiFetch("/orders/bulk-register-items", authToken, { method: "POST", body: { items: fix.slice(i, i + 400) } });
-        const r = await apiFetch("/items", authToken);
-        if (r && Array.isArray(r.items)) setItems(r.items.map(mapItemFromApi));
-      } catch (e) {
-        // 권한 없음 등: 무시 (다음에 권한 있는 사람이 열면 맞춰짐)
-      }
-    })();
-  }, [authToken, items, frozenOrders, emartOrders, emFrozenOrders, sevenOrders, sevenFrozenOrders, bgfOrders, bgfFrozenOrders]); // eslint-disable-line
+  // (2026-10-29 끔) 화면을 열 때마다 발주 기록을 보고 상품마스터 브랜드를 자동으로 붙이던 기능 - 사람 확인 없이 서버 값을 바꿔서 제거
 
   const updateChangedQty = useCallback(
     async (orderId, sku, value) => {
