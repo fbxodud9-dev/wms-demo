@@ -11522,6 +11522,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   // 엑셀에서 위만 고쳐도 아래가 같이 바뀜. 원본에 예전 숫자가 적혀 있거나 아래 줄이 따로 계산하던 칸도 위를 따라감 (2026-10-30·31)
   tpl.sheets.forEach((ws) => {
     if (!keep.has(ws.name) || !ws.cells) return;
+    if (lay === INV_LAYOUT_GSFROZEN || lay.key === "G4") return; // GS 냉동은 원본 그대로 (2026-10-31 되돌림)
     readSheetCells(ws, tpl.sst);
     let changed = false;
     const setMirror = (ref, f) => {
@@ -11674,6 +11675,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     if (!s || !keep.has(p.sheet)) return;
     const lo = s.cells.get(p.col + p.m);
     if (!lo || !lo.f) return;
+    if (p.kind === "calc") return; // 위와 같은 수식이라 위에서 계산한 값 그대로 둠
     const top = ctx.cell(p.sheet, colToNum(p.col), p.r);
     const blank = top == null || top === "" || isErr(top);
     let v;
@@ -19678,7 +19680,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
 
     // 품목 행 (+ 아래 빈 줄 1개)
     // 아래 공급자 보관용은 위(공급받는자 보관용) 칸을 그대로 따라감 (=IF(B13="","",B13)) → 엑셀에서 위만 고쳐도 아래가 같이 바뀜 (2026-10-30)
-    const top = T === 2 ? null : 2; // 위 부의 시작 줄
+    const top = null; // GS는 예전처럼 아래도 숫자로 (2026-10-31 되돌림: GS는 그대로 잘 돌아가서)
     const mirror = (ir, c, v) => {
       if (top == null) return v;
       const ref = `${ws.getColumn(c).letter}${top + (ir - T)}`;
@@ -19705,7 +19707,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
     put(tr, 2, "총수량", { name: INV_FONT, size: 9, bold: true, color: black }, { h: "center" }); mc(tr, 2, tr, 4);
     mc(tr, 5, tr, 12);
     mc(tr, 13, tr, 17);
-    put(tr, 18, top == null ? region.totalQty : { formula: `R${top + (tr - T)}`, result: region.totalQty }, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_QTY }); mc(tr, 18, tr, 21);
+    put(tr, 18, region.totalQty, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_QTY }); mc(tr, 18, tr, 21);
     mc(tr, 22, tr, 34);
 
     // 하단: 3자물류 담당자 / 받는 센터 주소
