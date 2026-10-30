@@ -11536,24 +11536,32 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       emInvSetFormula(ws, ref, f, st);
     };
     const mirrorCols = (lay.cols || []).filter((c) => c !== "E");
-    for (let m = 20; m <= Math.min(ws.maxRow || 0, 140); m++) {
+    const qc = lay.qty || "Q";
+    // 비고(소비기한)는 위 칸에서 총수량이 0이면 조건부 서식으로 안 보이게 돼 있음 → 아래도 총수량이 0이면 비움 (보이는 그대로 같게)
+    const mirrorF = (col, r) => (col === "AA" ? `IF(OR(${qc}${r}="",${qc}${r}=0),"",AA${r})` : `IF(${col}${r}="","",${col}${r})`);
+    // 위 상품 줄 끝(총수량 줄)과 아래 첫 줄(=E13) 찾기 → 아래 빈 줄까지 같은 간격으로 맞춤
+    const isTotal = (r) => {
+      const bc = ws.cells.get("B" + r);
+      return bc && !bc.f && typeof bc.v === "string" && bc.v.replace(/\s/g, "") === "총수량";
+    };
+    let topTotal = null;
+    for (let r = 14; r <= 60; r++) if (isTotal(r)) { topTotal = r; break; }
+    let off = null;
+    for (let m = 20; m <= Math.min(ws.maxRow || 0, 140) && off == null; m++) {
       const e = ws.cells.get("E" + m);
-      const mm = e && e.f && /^\s*\$?E\$?(\d+)\s*$/.exec(e.f);
-      if (!mm) continue;
-      const r = Number(mm[1]);
-      if (r < 13 || r >= m) continue;
+      const mm = e && e.f && /^\s*\$?E\$?13\s*$/.exec(e.f);
+      if (mm) off = m - 13;
+    }
+    const pairs = [];
+    if (off != null && topTotal) for (let r = 13; r < topTotal; r++) pairs.push([r, r + off]);
+    for (const [r, m] of pairs) {
+      if (isTotal(m)) break;
+      const e = ws.cells.get("E" + m);
+      if (!(e && e.f && e.f.replace(/[\s$]/g, "") === `E${r}`)) setMirror("E" + m, `IF(E${r}="","",E${r})`);
       mirrorCols.forEach((col) => {
-        const t = ws.cells.get(col + r);
-        if (!t || (!t.f && (t.v == null || t.v === ""))) {
-          // 위 칸이 비어 있으면 아래도 비게 (수식 그대로 두되 위를 보게)
-          const lo = ws.cells.get(col + m);
-          if (lo && (lo.f || (lo.v != null && lo.v !== ""))) setMirror(col + m, `IF(${col}${r}="","",${col}${r})`);
-          return;
-        }
         const lo = ws.cells.get(col + m);
-        const ref = `\\$?${col}\\$?${r}`;
-        const plain = lo && lo.f && new RegExp(`^\\s*(${ref}|IF\\(\\s*${ref}\\s*=\\s*""\\s*,\\s*""\\s*,\\s*${ref}\\s*\\))\\s*$`).test(lo.f); // 위 칸을 그대로 보는 수식만 그대로 둠
-        if (!plain) setMirror(col + m, `IF(${col}${r}="","",${col}${r})`);
+        const want = mirrorF(col, r);
+        if (!(lo && lo.f && lo.f.replace(/\s+/g, "") === want.replace(/\s+/g, ""))) setMirror(col + m, want);
       });
       if (r === 13) {
         const b = ws.cells.get("B" + m);
