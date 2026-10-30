@@ -11538,7 +11538,15 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     const mirrorCols = (lay.cols || []).filter((c) => c !== "E");
     const qc = lay.qty || "Q";
     // 비고(소비기한)는 위 칸에서 총수량이 0이면 조건부 서식으로 안 보이게 돼 있음 → 아래도 총수량이 0이면 비움 (보이는 그대로 같게)
-    const mirrorF = (col, r) => (col === "AA" ? `IF(OR(${qc}${r}="",${qc}${r}=0),"",AA${r})` : `IF(${col}${r}="","",${col}${r})`);
+    // 총수량·박스는 위에서 0이면 "-"로 보이므로 아래도 "-" (낱개수량·입수는 숫자 그대로)
+    const kindOf = (col) => (col === "AA" ? "aa" : col === qc || col === "T" ? "dash" : "plain");
+    const mirrorF = (col, r) => {
+      const k = kindOf(col);
+      if (k === "aa") return `IF(OR(${qc}${r}="",${qc}${r}=0),"",AA${r})`;
+      if (k === "dash") return `IF(${col}${r}="","",IF(${col}${r}=0,"-",${col}${r}))`;
+      return `IF(${col}${r}="","",${col}${r})`;
+    };
+    const pairsOut = (tpl.mirrorPairs = tpl.mirrorPairs || []);
     // 위 상품 줄 끝(총수량 줄)과 아래 첫 줄(=E13) 찾기 → 아래 빈 줄까지 같은 간격으로 맞춤
     const isTotal = (r) => {
       const bc = ws.cells.get("B" + r);
@@ -11562,8 +11570,11 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const lo = ws.cells.get(col + m);
         const want = mirrorF(col, r);
         if (!(lo && lo.f && lo.f.replace(/\s+/g, "") === want.replace(/\s+/g, ""))) setMirror(col + m, want);
+        pairsOut.push({ sheet: ws.name, col, r, m, kind: kindOf(col), qc });
       });
+      pairsOut.push({ sheet: ws.name, col: "E", r, m, kind: "plain", qc });
       if (r === 13) {
+        pairsOut.push({ sheet: ws.name, col: "B", r, m, kind: "plain", qc });
         const b = ws.cells.get("B" + m);
         if (!(b && b.f && /^\s*\$?B\$?13\s*$/.test(b.f))) setMirror("B" + m, "B13");
       }
@@ -11621,6 +11632,22 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       if (isErr(v) && v.err === "#CIRC") return;
       writeCachedValue(s.doc, cell.el, v);
     });
+  });
+  // 아래 공급자 보관용 칸의 미리 계산된 값 = 위 칸에서 보이는 값 그대로 (엑셀 '제한된 보기'처럼 다시 계산 안 하고 열어도 같게)
+  (tpl.mirrorPairs || []).forEach((p) => {
+    const s = byName2.get(p.sheet);
+    if (!s || !keep.has(p.sheet)) return;
+    const lo = s.cells.get(p.col + p.m);
+    if (!lo || !lo.f) return;
+    const top = ctx.cell(p.sheet, colToNum(p.col), p.r);
+    const blank = top == null || top === "" || isErr(top);
+    let v;
+    if (p.kind === "aa") {
+      const q = ctx.cell(p.sheet, colToNum(p.qc), p.r);
+      v = q == null || q === "" || Number(q) === 0 || blank ? "" : top;
+    } else if (p.kind === "dash") v = blank ? "" : Number(top) === 0 ? "-" : top;
+    else v = blank ? "" : top;
+    writeCachedValue(s.doc, lo.el, v);
   });
 
   // 4) 안 쓰는 시트 지우기
