@@ -11513,6 +11513,45 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     report.suppliers.push({ supplier: x.supplier, total: x.total, sheets: kept });
   });
   if (keep.size === 0) throw new Error(`이 날짜에 거래명세서로 나갈 ${chLabel} 발주가 없어요.`);
+  // 아래 공급자 보관용 줄의 날짜·소비기한(비고)은 위 줄을 그대로 따라가게 (=AA13 …) - 엑셀에서 위만 고쳐도 아래가 같이 바뀜 (2026-10-30)
+  tpl.sheets.forEach((ws) => {
+    if (!keep.has(ws.name) || !ws.cells) return;
+    readSheetCells(ws, tpl.sst);
+    let changed = false;
+    for (let m = 20; m <= Math.min(ws.maxRow || 0, 140); m++) {
+      const e = ws.cells.get("E" + m);
+      const mm = e && e.f && /^\s*\$?E\$?(\d+)\s*$/.exec(e.f);
+      if (!mm) continue;
+      const r = Number(mm[1]);
+      if (r < 13 || r >= m) continue;
+      const a = ws.cells.get("AA" + m);
+      const refRe = new RegExp(`(^|[^A-Z$])\\$?AA\\$?${r}(?!\\d)`);
+      if (!(a && a.f && refRe.test(a.f))) {
+        if (!changed) emInvUnshare(ws, tpl.sst);
+        changed = true;
+        const st = a ? a.el.getAttribute("s") : null;
+        if (a) {
+          const fEl = a.el.getElementsByTagName("f")[0];
+          if (fEl) a.el.removeChild(fEl);
+        }
+        emInvSetFormula(ws, "AA" + m, `IF(AA${r}="","",AA${r})`, st);
+      }
+      if (r === 13) {
+        const b = ws.cells.get("B" + m);
+        if (!(b && b.f && /^\s*\$?B\$?13\s*$/.test(b.f))) {
+          if (!changed) emInvUnshare(ws, tpl.sst);
+          changed = true;
+          const st = b ? b.el.getAttribute("s") : null;
+          if (b) {
+            const fEl = b.el.getElementsByTagName("f")[0];
+            if (fEl) b.el.removeChild(fEl);
+          }
+          emInvSetFormula(ws, "B" + m, "B13", st);
+        }
+      }
+    }
+    if (changed) readSheetCells(ws, tpl.sst);
+  });
   // 남기는 시트 수식이 지우려는 피벗을 보고 있으면(BGF 대신 2편 시트의 APP 줄 → 사전예약 피벗) 그 피벗도 남김.
   // 그날 발주가 없는 피벗은 빈 피벗으로 (원본 예전 숫자가 남지 않게, 엑셀 "외부 링크" 경고 안 뜨게) 2026-10-26
   {
@@ -19499,20 +19538,27 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
     put(hr, 22, "비고", LBL, { h: "center" }); mc(hr, 22, hr, 34);
 
     // 품목 행 (+ 아래 빈 줄 1개)
+    // 아래 공급자 보관용은 위(공급받는자 보관용) 칸을 그대로 따라감 (=IF(B13="","",B13)) → 엑셀에서 위만 고쳐도 아래가 같이 바뀜 (2026-10-30)
+    const top = T === 2 ? null : 2; // 위 부의 시작 줄
+    const mirror = (ir, c, v) => {
+      if (top == null) return v;
+      const ref = `${ws.getColumn(c).letter}${top + (ir - T)}`;
+      return { formula: `IF(${ref}="","",${ref})`, result: v == null ? "" : v };
+    };
     for (let k = 0; k <= n; k++) {
       const ir = T + 11 + k;
       const it = k < n ? region.items[k] : null;
       const hasQty = !!it && it.qty > 0;
       if (k === 0) {
-        put(ir, 2, invDate(invoiceDate), BLK9, { h: "center", nf: "mm-dd-yy" });
+        put(ir, 2, mirror(ir, 2, invDate(invoiceDate)), BLK9, { h: "center", nf: "mm-dd-yy" });
         mc(ir, 2, ir, 4);
       }
-      put(ir, 5, it ? it.label || displayNameOf(it.name) : null, BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
-      put(ir, 13, it ? it.packQty : null, BLK9, { h: "center" }); mc(ir, 13, ir, 17);
-      put(ir, 18, it ? it.qty : null, BLK9, { nf: INV_NF_QTY }); mc(ir, 18, ir, 21);
+      put(ir, 5, mirror(ir, 5, it ? it.label || displayNameOf(it.name) : null), BLK9, { h: "left", nf: INV_NF_ACCT }); mc(ir, 5, ir, 12);
+      put(ir, 13, mirror(ir, 13, it ? it.packQty : null), BLK9, { h: "center" }); mc(ir, 13, ir, 17);
+      put(ir, 18, mirror(ir, 18, it ? it.qty : null), BLK9, { nf: INV_NF_QTY }); mc(ir, 18, ir, 21);
       // 비고(소비기한) = 이 편의 년월일 + 상품별 오프셋(PRODUCT_EXPIRY_DELTA). DC는 상품마다 달라서 아직 공란.
       const remark = hasQty && (part === 1 || part === 2 || it.expiryFixed) ? invDate(addDaysStr(invoiceDate, it.expiryDays ?? expiryDaysOf(it.name))) : null;
-      put(ir, 22, remark, BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
+      put(ir, 22, mirror(ir, 22, remark), BLK9, { h: "center", nf: "mm-dd-yy" }); mc(ir, 22, ir, 34);
     }
 
     // 총수량
@@ -19520,7 +19566,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
     put(tr, 2, "총수량", { name: INV_FONT, size: 9, bold: true, color: black }, { h: "center" }); mc(tr, 2, tr, 4);
     mc(tr, 5, tr, 12);
     mc(tr, 13, tr, 17);
-    put(tr, 18, region.totalQty, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_QTY }); mc(tr, 18, tr, 21);
+    put(tr, 18, top == null ? region.totalQty : { formula: `R${top + (tr - T)}`, result: region.totalQty }, { name: INV_FONT, size: 9, bold: true, color: black }, { nf: INV_NF_QTY }); mc(tr, 18, tr, 21);
     mc(tr, 22, tr, 34);
 
     // 하단: 3자물류 담당자 / 받는 센터 주소
