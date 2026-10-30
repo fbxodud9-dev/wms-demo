@@ -11518,41 +11518,46 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     report.suppliers.push({ supplier: x.supplier, total: x.total, sheets: kept });
   });
   if (keep.size === 0) throw new Error(`이 날짜에 거래명세서로 나갈 ${chLabel} 발주가 없어요.`);
-  // 아래 공급자 보관용 줄의 날짜·소비기한(비고)은 위 줄을 그대로 따라가게 (=AA13 …) - 엑셀에서 위만 고쳐도 아래가 같이 바뀜 (2026-10-30)
+  // 아래 공급자 보관용 줄은 위 줄을 그대로 따라가게: 날짜·입수·총수량·박스·낱개·비고 (=IF(Q13="","",Q13) …)
+  // 엑셀에서 위만 고쳐도 아래가 같이 바뀜. 원본에 예전 숫자가 적혀 있거나 아래 줄이 따로 계산하던 칸도 위를 따라감 (2026-10-30·31)
   tpl.sheets.forEach((ws) => {
     if (!keep.has(ws.name) || !ws.cells) return;
     readSheetCells(ws, tpl.sst);
     let changed = false;
+    const setMirror = (ref, f) => {
+      if (!changed) emInvUnshare(ws, tpl.sst);
+      changed = true;
+      const c = ws.cells.get(ref);
+      const st = c ? c.el.getAttribute("s") : null;
+      if (c) {
+        const fEl = c.el.getElementsByTagName("f")[0];
+        if (fEl) c.el.removeChild(fEl);
+      }
+      emInvSetFormula(ws, ref, f, st);
+    };
+    const mirrorCols = (lay.cols || []).filter((c) => c !== "E");
     for (let m = 20; m <= Math.min(ws.maxRow || 0, 140); m++) {
       const e = ws.cells.get("E" + m);
       const mm = e && e.f && /^\s*\$?E\$?(\d+)\s*$/.exec(e.f);
       if (!mm) continue;
       const r = Number(mm[1]);
       if (r < 13 || r >= m) continue;
-      const a = ws.cells.get("AA" + m);
-      const refRe = new RegExp(`(^|[^A-Z$])\\$?AA\\$?${r}(?!\\d)`);
-      if (!(a && a.f && refRe.test(a.f))) {
-        if (!changed) emInvUnshare(ws, tpl.sst);
-        changed = true;
-        const st = a ? a.el.getAttribute("s") : null;
-        if (a) {
-          const fEl = a.el.getElementsByTagName("f")[0];
-          if (fEl) a.el.removeChild(fEl);
+      mirrorCols.forEach((col) => {
+        const t = ws.cells.get(col + r);
+        if (!t || (!t.f && (t.v == null || t.v === ""))) {
+          // 위 칸이 비어 있으면 아래도 비게 (수식 그대로 두되 위를 보게)
+          const lo = ws.cells.get(col + m);
+          if (lo && (lo.f || (lo.v != null && lo.v !== ""))) setMirror(col + m, `IF(${col}${r}="","",${col}${r})`);
+          return;
         }
-        emInvSetFormula(ws, "AA" + m, `IF(AA${r}="","",AA${r})`, st);
-      }
+        const lo = ws.cells.get(col + m);
+        const ref = `\\$?${col}\\$?${r}`;
+        const plain = lo && lo.f && new RegExp(`^\\s*(${ref}|IF\\(\\s*${ref}\\s*=\\s*""\\s*,\\s*""\\s*,\\s*${ref}\\s*\\))\\s*$`).test(lo.f); // 위 칸을 그대로 보는 수식만 그대로 둠
+        if (!plain) setMirror(col + m, `IF(${col}${r}="","",${col}${r})`);
+      });
       if (r === 13) {
         const b = ws.cells.get("B" + m);
-        if (!(b && b.f && /^\s*\$?B\$?13\s*$/.test(b.f))) {
-          if (!changed) emInvUnshare(ws, tpl.sst);
-          changed = true;
-          const st = b ? b.el.getAttribute("s") : null;
-          if (b) {
-            const fEl = b.el.getElementsByTagName("f")[0];
-            if (fEl) b.el.removeChild(fEl);
-          }
-          emInvSetFormula(ws, "B" + m, "B13", st);
-        }
+        if (!(b && b.f && /^\s*\$?B\$?13\s*$/.test(b.f))) setMirror("B" + m, "B13");
       }
     }
     if (changed) readSheetCells(ws, tpl.sst);
