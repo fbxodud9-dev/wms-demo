@@ -1777,7 +1777,7 @@ function canDo(perm) {
 // 화면이 알아서 저장하는 설정(배운 업체코드·상품 연결·확인한 신제품)은 설정 권한 없이도 저장
 //  - 일별 집계 월별 자동 기록(daily_emart_202610 등)도 화면이 알아서 저장
 //  - 일별 집계 손 수정(daily_edits_)은 '수량·상품 수정' 권한
-const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|seven_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart|seven|sevenfrozen|bgf|bgffrozen|emdeli)_\d{6}$|emdeli_raw_\d{8}$|sevenfrozen_product_alias$|bgf_product_alias$|bgffrozen_product_alias$|bgf_vendor_codes$)/;
+const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|seven_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart|seven|sevenfrozen|bgf|bgffrozen|emdeli)_\d{6}$|emdeli_raw_\d{8}$|emdeli_shift_v1$|sevenfrozen_product_alias$|bgf_product_alias$|bgffrozen_product_alias$|bgf_vendor_codes$)/;
 const settingPermOf = (key) => (QUIET_SETTING_RE.test(key) ? null : /^daily_edits_/.test(key) ? "edit" : "settings");
 const NO_SETTINGS_PERM_MSG = "설정을 바꿀 권한이 없어요. 관리자에게 '설정 변경' 권한을 요청해주세요.";
 const noPermMsgOf = (perm) => (perm === "edit" ? "수정 권한이 없어요. 관리자에게 '수량·상품 수정' 권한을 요청해주세요." : NO_SETTINGS_PERM_MSG);
@@ -3221,6 +3221,11 @@ function WMSApp() {
   );
 
   // (2026-10-29 끔) 화면을 열 때마다 발주 기록을 보고 상품마스터 브랜드를 자동으로 붙이던 기능 - 사람 확인 없이 서버 값을 바꿔서 제거
+  // 이마트 델리: 예전 기록(올린 날 = 물량 날)을 다음 날 물량으로 한 번만 옮김 (2026-10-31)
+  useEffect(() => {
+    if (!authToken) return;
+    migrateEmdeliShiftOnce(authToken).catch((e) => console.warn("이마트 델리 날짜 옮기기 실패:", e.message));
+  }, [authToken]);
 
   const updateChangedQty = useCallback(
     async (orderId, sku, value) => {
@@ -13135,19 +13140,77 @@ function parseEmartDeliRows(rows) {
   });
   return out;
 }
+// 이마트 델리 물량 날짜 = 올린 날 다음 날 (2026-10-31: 29일에 올린 발주는 30일 물량)
+const emdeliCountDate = (uploadDate = localDateStr()) => shiftDateStr(uploadDate, 1);
+// 예전(올린 날 = 물량 날)으로 쌓인 기록을 하루씩 뒤로 한 번만 옮김 (일별 집계·대시보드·중복 막기 기록 같이)
+async function migrateEmdeliShiftOnce(authToken) {
+  const FLAG = "emdeli_shift_v1";
+  try {
+    const f = await apiFetch(`/settings/${FLAG}`, authToken);
+    if (f && f.value && f.value.done) return false;
+  } catch (e) {
+    return false; // 서버를 못 읽으면 안 건드림
+  }
+  const now = localDateStr();
+  const months = [shiftDateStr(`${now.slice(0, 7)}-01`, -1).slice(0, 7), now.slice(0, 7)];
+  const read = async (key) => {
+    try {
+      const r = await apiFetch(`/settings/${key}`, authToken);
+      return (r && r.value) || null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const put = (key, value) => apiFetch(`/settings/${key}`, authToken, { method: "PUT", body: { value } });
+  await put(FLAG, { done: true, at: new Date().toISOString() }); // 먼저 표시 (두 번 옮기지 않게)
+  const src = {};
+  for (const m of months) src[m] = await read(emdeliDailyKey(m));
+  const entries = []; // [date, items, sups, meta]
+  Object.values(src).forEach((v) => Object.entries((v && v.days) || {}).forEach(([d, items]) => entries.push([d, items, v.sups || [], ((v && v.meta) || {})[d]])));
+  if (!entries.length) return true;
+  const out = {};
+  const outOf = (m) => (out[m] = out[m] || { sups: [], days: {}, meta: {} });
+  entries.forEach(([d, items, sups, meta]) => {
+    const nd = shiftDateStr(d, 1);
+    const o = outOf(nd.slice(0, 7));
+    o.days[nd] = items.map(([name, si, qty]) => {
+      const sup = sups[si] || "이마트델리";
+      let i = o.sups.indexOf(sup);
+      if (i === -1) i = o.sups.push(sup) - 1;
+      return [name, i, qty];
+    });
+    if (meta) o.meta[nd] = meta;
+  });
+  for (const m of new Set([...months, ...Object.keys(out)])) {
+    const v = out[m] || { sups: [], days: {}, meta: {} };
+    await put(emdeliDailyKey(m), v);
+    publishSetting(emdeliDailyKey(m), v);
+  }
+  // 중복 막기 기록도 하루 뒤로 (늦은 날짜부터 옮겨서 겹치지 않게)
+  const dates = entries.map((x) => x[0]).sort().reverse();
+  for (const d of dates) {
+    const raw = await read(emdeliRawKey(d));
+    if (!raw || !raw.lines || !Object.keys(raw.lines).length) continue;
+    await put(emdeliRawKey(shiftDateStr(d, 1)), raw);
+    await put(emdeliRawKey(d), { lines: {}, files: [] });
+  }
+  return true;
+}
 function EmartDeliPage({ authToken }) {
   const today = localDateStr();
   const month = today.slice(0, 7);
   const prevMonth = shiftDateStr(`${month}-01`, -1).slice(0, 7);
+  const nextMonth = shiftDateStr(today, 1).slice(0, 7); // 말일에 올리면 다음 달 1일 물량
   const cur = useSetting(emdeliDailyKey(month), authToken);
   const prev = useSetting(emdeliDailyKey(prevMonth), authToken);
+  const next = useSetting(emdeliDailyKey(nextMonth), authToken);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [open, setOpen] = useState(null);
   const fileRef = useRef(null);
   const list = useMemo(() => {
     const out = [];
-    [cur, prev].forEach((v) =>
+    (nextMonth === month ? [cur, prev] : [next, cur, prev]).forEach((v) =>
       Object.entries((v && v.days) || {}).forEach(([d, items]) => {
         if (!items || !items.length) return;
         const meta = ((v && v.meta) || {})[d] || {};
@@ -13155,7 +13218,7 @@ function EmartDeliPage({ authToken }) {
       })
     );
     return out.sort((a, b) => (a.date < b.date ? 1 : -1));
-  }, [cur, prev]);
+  }, [cur, prev, next]);
   const writeDaily = async (date, lines, metaPatch) => {
     const m = new Map();
     Object.values(lines).forEach(([name, qty, vendor]) => {
@@ -13202,7 +13265,7 @@ function EmartDeliPage({ authToken }) {
         names.push(f.name);
       }
       if (!all.length) throw new Error("수량이 있는 줄이 없어요.");
-      const date = localDateStr(); // 업로드한 날 기준 (파일 안 발주일자는 날마다 달라서 안 씀)
+      const date = emdeliCountDate(); // 올린 날 다음 날 물량 (파일 안 발주일자는 날마다 달라서 안 씀)
       const rawKey = emdeliRawKey(date);
       let added = 0, dup = 0;
       let merged = null;
@@ -13221,7 +13284,7 @@ function EmartDeliPage({ authToken }) {
       const w = await writeDaily(date, merged, { by: (CURRENT_USER && (CURRENT_USER.name || CURRENT_USER.username)) || "", files: names.join(", ") });
       if (!w.ok) throw new Error(w.error || "일별 집계에 저장하지 못했어요.");
       logUi("upload_emdeli", `이마트 델리 ${date}`, { files: names, lines: added, dup, total: tot });
-      setMsg(`${fmtDate(date)} 이마트 델리 발주 ${added.toLocaleString()}줄 등록${dup ? ` · 이미 올라와 있던 ${dup.toLocaleString()}줄은 건너뜀` : ""} · 그날 총량 ${tot.toLocaleString()}개. 일별 발주 집계 > 이마트 델리, 대시보드에 바로 반영돼요.`);
+      setMsg(`오늘 올린 발주 → ${fmtDate(date)} 물량으로 이마트 델리 ${added.toLocaleString()}줄 등록${dup ? ` · 이미 올라와 있던 ${dup.toLocaleString()}줄은 건너뜀` : ""} · 그날 총량 ${tot.toLocaleString()}개. 일별 발주 집계 > 이마트 델리, 대시보드에 바로 반영돼요.`);
       setOpen(date);
     } catch (e) {
       setMsg(e.message);
@@ -13242,10 +13305,10 @@ function EmartDeliPage({ authToken }) {
   };
   return (
     <div>
-      <PageHeader title="주문정보 (이마트 델리)" sub="이마트 델리(키친델리) 발주파일을 올리면 올린 날짜로 상품별 수량이 일별 발주 집계·대시보드(이마트델리 WET)에 들어가요. 피킹지·거래명세서는 만들지 않아요." />
+      <PageHeader title="주문정보 (이마트 델리)" sub="이마트 델리(키친델리) 발주파일을 올리면 올린 날 다음 날 물량으로 상품별 수량이 일별 발주 집계·대시보드(이마트델리 WET)에 들어가요. 피킹지·거래명세서는 만들지 않아요." />
       <div style={{ ...cardStyle, marginBottom: 16 }}>
         <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 12, lineHeight: 1.6 }}>
-          파일 안 발주일자는 날마다 달라도 <b>올린 날짜</b> 기준으로 쌓여요. 같은 파일을 또 올려도 같은 줄(문서번호·점포·상품)은 한 번만 들어가요. 여러 파일을 한 번에 골라도 돼요.
+          파일 안 발주일자는 보지 않고 <b>올린 날 다음 날 물량</b>으로 쌓여요 (예: 29일에 올리면 30일 물량). 같은 파일을 또 올려도 같은 줄(문서번호·점포·상품)은 한 번만 들어가요. 여러 파일을 한 번에 골라도 돼요.
         </div>
         <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple style={{ display: "none" }} onChange={(e) => onFiles(e.target.files)} />
         <button disabled={busy} onClick={() => fileRef.current && fileRef.current.click()} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
@@ -13253,7 +13316,7 @@ function EmartDeliPage({ authToken }) {
         </button>
         {msg && <div style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: /없어요|아니에요|못했어요|권한/.test(msg) ? T.danger : T.tealDeep }}>{msg}</div>}
       </div>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>날짜별 발주 현황</div>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>날짜별 발주 현황 <span style={{ fontWeight: 500, fontSize: 12, color: T.inkSoft }}>(날짜 = 물량 날짜, 올린 날 다음 날)</span></div>
       {list.length === 0 ? (
         <div style={{ ...cardStyle, textAlign: "center", color: T.inkSoft, fontSize: 13 }}>등록된 발주가 없습니다.</div>
       ) : (
