@@ -11540,8 +11540,22 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     // 비고(소비기한)는 위 칸에서 총수량이 0이면 조건부 서식으로 안 보이게 돼 있음 → 아래도 총수량이 0이면 비움 (보이는 그대로 같게)
     // 총수량·박스는 위에서 0이면 "-"로 보이므로 아래도 "-" (낱개수량·입수는 숫자 그대로)
     const kindOf = (col) => (col === "AA" ? "aa" : col === qc || col === "T" ? "dash" : "plain");
+    // 총수량·박스·낱개수량: 위 칸 수식을 아래 줄로 그대로 옮겨서 같은 피벗을 보고 같은 계산을 하게 (2026-10-31 요청)
+    //  - 위 상품 줄(13 ~ 총수량 줄 전) 칸 참조만 아래 줄로 옮기고, 피벗·B1 등 나머지는 그대로
+    const calcCols = new Set([qc, "T", "W", "V", "R"].filter((c) => (lay.cols || []).includes(c)));
+    const shiftBlock = (f, off, lo, hi) =>
+      f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])/g, (all, sh, ca, col, ra, row, at, str) => {
+        if (sh || ra) return all;
+        if ((str.slice(0, at).match(/"/g) || []).length % 2 === 1) return all; // 글자 안
+        const n = Number(row);
+        return n >= lo && n <= hi ? `${ca}${col}${n + off}` : all;
+      });
     const mirrorF = (col, r) => {
       const k = kindOf(col);
+      if (calcCols.has(col) && topTotal) {
+        const t = ws.cells.get(col + r);
+        if (t && t.f) return shiftBlock(t.f, off, 13, topTotal - 1);
+      }
       if (k === "aa") return `IF(OR(${qc}${r}="",${qc}${r}=0),"",AA${r})`;
       if (k === "dash") return `IF(${col}${r}="","",IF(${col}${r}=0,"-",${col}${r}))`;
       return `IF(${col}${r}="","",${col}${r})`;
@@ -11570,7 +11584,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const lo = ws.cells.get(col + m);
         const want = mirrorF(col, r);
         if (!(lo && lo.f && lo.f.replace(/\s+/g, "") === want.replace(/\s+/g, ""))) setMirror(col + m, want);
-        pairsOut.push({ sheet: ws.name, col, r, m, kind: kindOf(col), qc });
+        const tf = ws.cells.get(col + r);
+        pairsOut.push({ sheet: ws.name, col, r, m, kind: calcCols.has(col) && topTotal && tf && tf.f ? "calc" : kindOf(col), qc });
       });
       pairsOut.push({ sheet: ws.name, col: "E", r, m, kind: "plain", qc });
       if (r === 13) {
@@ -11645,7 +11660,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     if (p.kind === "aa") {
       const q = ctx.cell(p.sheet, colToNum(p.qc), p.r);
       v = q == null || q === "" || Number(q) === 0 || blank ? "" : top;
-    } else if (p.kind === "dash") v = blank ? "" : Number(top) === 0 ? "-" : top;
+    } else if (p.kind === "calc") v = top == null || isErr(top) ? "" : top; // 위와 같은 계산 → 같은 값 (0은 칸 서식대로 "-")
+    else if (p.kind === "dash") v = blank ? "" : Number(top) === 0 ? "-" : top;
     else v = blank ? "" : top;
     writeCachedValue(s.doc, lo.el, v);
   });
