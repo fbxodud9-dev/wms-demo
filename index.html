@@ -11594,6 +11594,26 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (!(b && b.f && /^\s*\$?B\$?13\s*$/.test(b.f))) setMirror("B" + m, "B13");
       }
     }
+    // 원본 조건부 서식 고치기: 아래 보관용 칸의 "총수량이 0이면 숨김" 규칙이 엉뚱한 줄을 보고 있었음
+    // (예: 화성 W39:Z43 규칙이 Q16을 봄 → W40은 Q17, W41은 Q18을 보고 다른 상품 수량이 0이라 낱개수량이 숨겨짐) → 규칙이 자기 줄을 보게 맞춤 (2026-10-31)
+    if (topTotal && off != null) {
+      Array.from(ws.doc.getElementsByTagName("conditionalFormatting")).forEach((cf) => {
+        const sq = String(cf.getAttribute("sqref") || "").trim().split(/\s+/)[0];
+        const m0 = /^([A-Z]+)(\d+)/.exec(sq);
+        if (!m0) return;
+        const r0 = Number(m0[2]);
+        if (r0 <= topTotal) return; // 위쪽(공급받는자 보관용) 규칙은 그대로
+        Array.from(cf.getElementsByTagName("formula")).forEach((fe) => {
+          const f = fe.textContent || "";
+          const fm = /(?:^|[^A-Z$!])\$?[A-Z]{1,3}(\d+)/.exec(f);
+          if (!fm) return;
+          const d = r0 - Number(fm[1]);
+          if (!d) return;
+          fe.textContent = f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])/g, (all, sh, ca, col, ra, row) => (sh || ra ? all : `${ca}${col}${Number(row) + d}`));
+          changed = true;
+        });
+      });
+    }
     if (changed) readSheetCells(ws, tpl.sst);
   });
   // 남기는 시트 수식이 지우려는 피벗을 보고 있으면(BGF 대신 2편 시트의 APP 줄 → 사전예약 피벗) 그 피벗도 남김.
