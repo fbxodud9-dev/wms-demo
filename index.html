@@ -9106,7 +9106,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     let pivot = (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] : (opts.pivotFirst && opts.pivotForVendor && opts.pivotForVendor(tpl, item.vendor, item.name)) || emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || (opts.pivotForVendor ? opts.pivotForVendor(tpl, item.vendor, item.name) : emartPivotByVendorName(tpl, item.vendor)));
     if (!pivot && (opts.cloneUnknownVendor || opts.cloneNewVendor) && tpl.products.length) {
       // 템플릿에 없는 공급사(이마트 냉동·세븐 새 공급사 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
-      const srcPv = tpl.products[0].pivot;
+      // opts.newVendorSrc: 새 공급사 틀로 쓸 공급사 피벗 (이마트: "신성베이커리" - 센터 12줄만 있는 단순한 모양, 2026-10-31)
+      const srcPv = ((opts.newVendorSrc && tpl.products.find((p) => p.pivot === opts.newVendorSrc)) || tpl.products[0]).pivot;
       const pvName = safeEmartSheetName(`${(opts.supKey || emartVendorKey)(item.vendor)} 피벗`, usedNames);
       tpl.lastSheetOfPivot[pvName] = tpl.sheets[tpl.sheets.length - 1].name;
       const m0 = () => {};
@@ -9123,12 +9124,18 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const sameP = tpl.products.filter((p) => p.pivot === pivot);
     const k = sameP.length ? Math.max(...sameP.map((p) => p.k)) + 1 : 2;
     const lastD = (x) => (/(\d)\s*$/.exec(String(x || "").replace(/\s*\n\s*/g, "")) || [])[1] || "";
-    const srcProd = (item.likeProd && item.likeProd.pivot === pivot && item.likeProd) || (lastD(item.name) && sameP.find((p) => lastD(p.title) === lastD(item.name))) || sameP[0] || tpl.products[0]; // 1편/2편 상품은 같은 편 시트 모양으로
+    const srcProd = (item.likeProd && item.likeProd.pivot === pivot && item.likeProd) || (lastD(item.name) && sameP.find((p) => lastD(p.title) === lastD(item.name))) || sameP[0] || (opts.newVendorSrc && tpl.products.find((p) => p.pivot === opts.newVendorSrc)) || tpl.products[0]; // 1편/2편 상품은 같은 편 시트 모양으로
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
     const wantName = item.code && usedNames.has(String(item.name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(item.name).slice(0, 24)}(${item.code.slice(-5)})` : item.name;
     const newName = safeEmartSheetName(wantName, usedNames);
+    // 복사한 시트 위 공급사 이름: "신성베이커리 - 이마트24" → "자몽 - 이마트24" (원래 공급사 이름 부분만 바꿈)
+    const newTitleOf = () => {
+      const key = (opts.supKey || emartVendorKey)(item.vendor);
+      const t = String(srcProd.sheetTitle || "");
+      return t && srcProd.pivot && t.includes(srcProd.pivot) ? t.replace(srcProd.pivot, key) : emartVendorKey(item.vendor);
+    };
     const mutate = (sheet) => {
       Array.from(sheet.doc.getElementsByTagName("c")).forEach((c) => {
         const f = c.getElementsByTagName("f")[0];
@@ -9142,7 +9149,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       // 다른 공급사 시트를 복사했으면 시트 위쪽 공급사 이름 글자도 이 공급사로
       if (pvRe && srcProd.sheetTitle) {
         readSheetCells(tmp, tpl.sst);
-        tmp.cells.forEach((c, ref) => !c.f && c.v === srcProd.sheetTitle && setCellXml(tmp, ref, emartVendorKey(item.vendor)));
+        tmp.cells.forEach((c, ref) => !c.f && c.v === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
       }
       setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
       const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || item.box;
@@ -9164,7 +9171,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     mutate.pivot = pivot;
     await cloneEmartSheet(tpl, srcProd.sheet, newName, mutate);
     const boxQ0 = (opts.packOverride && opts.packOverride.get(item.name)) || item.box;
-    const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe ? emartVendorKey(item.vendor) : srcProd.sheetTitle, isNew: true };
+    const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe ? newTitleOf() : srcProd.sheetTitle, isNew: true };
     tpl.products.push(np);
     links.push({ prod: np, item });
     report.added.push({ name: item.name, code: item.code, sheet: newName, pivot });
@@ -9769,7 +9776,8 @@ async function getEmartTemplateInfo() {
 }
 async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts = {}) {
   const buf = await getEmartTemplateBuffer(customTpl);
-  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, opts);
+  // 원본에 없는 새 공급사(예: 자몽)는 다른 공급사 피벗을 복사해서 "자몽 피벗"과 상품 시트를 새로 만든다 (2026-10-31, 세븐·BGF와 같은 방식)
+  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, { cloneNewVendor: true, newVendorSrc: "신성베이커리", ...opts });
   const filename = `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
