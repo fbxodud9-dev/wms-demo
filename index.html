@@ -11821,7 +11821,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     const x2 = ser.serializeToString(doc);
     return x2.startsWith("<?xml") ? x2 : XML_DECL + x2;
   };
-  tpl.sheets.forEach((s) => xmlSetSheetZoom(s.doc));
+  tpl.sheets.forEach((s) => xmlSetSheetZoom(s.doc, XL_INVOICE_ZOOM)); // 거래명세서 75%
   tpl.sheets.forEach((s) => tpl.zip.file(s.path, out(s.doc)));
   const calc = tpl.wbXml.getElementsByTagName("calcPr")[0];
   if (calc) calc.setAttribute("fullCalcOnLoad", "1");
@@ -18114,6 +18114,7 @@ function safeSheetName(name, used) {
 const XLFONT = "맑은 고딕";
 // ===== 모든 엑셀 다운로드 화면 배율 45% 고정 (화주사 요청: 작게, 한눈에 보이게) =====
 const XL_ZOOM = 45;
+const XL_INVOICE_ZOOM = 75; // 거래명세서만 75% (2026-11-01 요청, 피킹지 등 다른 파일은 45% 그대로)
 // ExcelJS로 만드는 모든 파일: 저장(writeBuffer) 직전에 시트마다 배율을 45%로 맞춘다
 (function patchExcelZoom() {
   try {
@@ -18124,7 +18125,8 @@ const XL_ZOOM = 45;
       try {
         (this.workbook.worksheets || []).forEach((ws) => {
           const views = ws.views && ws.views.length ? ws.views : [{}];
-          ws.views = views.map((v) => ({ ...v, zoomScale: XL_ZOOM, zoomScaleNormal: XL_ZOOM }));
+          const z = this.workbook.__zoom || XL_ZOOM; // 거래명세서 파일은 workbook.__zoom = 75
+          ws.views = views.map((v) => ({ ...v, zoomScale: z, zoomScaleNormal: z }));
         });
       } catch (e) {
         console.warn("엑셀 배율 설정 실패:", e.message);
@@ -18137,7 +18139,7 @@ const XL_ZOOM = 45;
   }
 })();
 // 템플릿 XML로 만드는 파일(이마트 피킹 등): 시트 XML의 sheetView에 배율 지정
-function xmlSetSheetZoom(doc) {
+function xmlSetSheetZoom(doc, zoom = XL_ZOOM) {
   try {
     const NS = doc.documentElement.namespaceURI;
     let views = doc.getElementsByTagNameNS(NS, "sheetView");
@@ -18154,8 +18156,8 @@ function xmlSetSheetZoom(doc) {
       views = doc.getElementsByTagNameNS(NS, "sheetView");
     }
     Array.from(views).forEach((v) => {
-      v.setAttribute("zoomScale", String(XL_ZOOM));
-      v.setAttribute("zoomScaleNormal", String(XL_ZOOM));
+      v.setAttribute("zoomScale", String(zoom));
+      v.setAttribute("zoomScaleNormal", String(zoom));
     });
   } catch (e) {
     console.warn("엑셀 배율 설정 실패:", e.message);
@@ -19945,6 +19947,7 @@ async function downloadSupplierInvoicePart(products, supplierKey, date, part, se
     const data = buildInvoiceDataForSupplier(products, supplierKey, part);
     if (data.regions.length === 0) return false;
     const workbook = new ExcelJS.Workbook();
+    workbook.__zoom = XL_INVOICE_ZOOM; // 거래명세서 75%
     const usedNames = new Set();
     addInvoiceSummarySheet(workbook, data, date, part, usedNames);
     workbook.worksheets[workbook.worksheets.length - 1].__sheetMeta = { supplier: supplierKey, type: "pivot" };
