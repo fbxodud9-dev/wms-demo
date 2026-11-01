@@ -9187,6 +9187,59 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     report.added.push({ name: item.name, code: item.code, sheet: newName, pivot });
   }
 
+  // 순서 설정(opts.productRank: 상품명 → 순위)대로 피벗 열과 시트 탭 순서를 맞춤 (2026-11-01 BGF 딥핑·콰트로 1/2편이 설정과 다르게 나오던 문제)
+  // 피벗: 그 피벗에서 오늘 나가는 상품들의 열 번호(k)를 설정 순서대로 다시 나눠 주고, 그 피벗을 보는 모든 시트의 VLOOKUP 열 번호도 같이 바꿈
+  if (opts.productRank && opts.productRank.size) {
+    const rankOf = (item) => Math.min(...[item.name, ...(item.names || [])].map((n) => (opts.productRank.has(n) ? opts.productRank.get(n) : Infinity)));
+    const byPv = new Map();
+    links.forEach((l) => (byPv.get(l.prod.pivot) || byPv.set(l.prod.pivot, []).get(l.prod.pivot)).push(l));
+    const escRe2 = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
+    byPv.forEach((ls, pvName) => {
+      if (ls.length < 2 || ls.some((l) => !isFinite(rankOf(l.item)))) return;
+      // 한 시트에 상품 여러 개(제주권 등)이거나 같은 열을 두 상품이 보면 건드리지 않음
+      if (new Set(ls.map((l) => l.prod.k)).size !== ls.length || new Set(ls.map((l) => l.prod.sheet)).size !== ls.length) return;
+      if (tpl.products.some((p) => p.pivot === pvName && !ls.some((l) => l.prod === p) && ls.some((l) => l.prod.sheet === p.sheet))) return;
+      const ks = ls.map((l) => l.prod.k).sort((x, y) => x - y);
+      const sorted = [...ls].sort((x, y) => rankOf(x.item) - rankOf(y.item));
+      const kMap = new Map();
+      sorted.forEach((l, i) => l.prod.k !== ks[i] && kMap.set(l.prod.k, ks[i]));
+      if (!kMap.size) return;
+      const re = new RegExp("(VLOOKUP\\([^,]+,\\s*(?:'" + escRe2(pvName.replace(/'/g, "''")) + "'|" + escRe2(pvName) + ")![^,]+,\\s*)(\\d+)(\\s*,)", "g");
+      tpl.sheets.forEach((sh) => {
+        if (!sh.doc) return;
+        Array.from(sh.doc.getElementsByTagName("f")).forEach((f) => {
+          const t = f.textContent || "";
+          if (!t.includes("VLOOKUP")) return;
+          const nt = t.replace(re, (m0, pre, k, post) => pre + (kMap.has(Number(k)) ? kMap.get(Number(k)) : k) + post);
+          if (nt !== t) f.textContent = nt;
+        });
+      });
+      sorted.forEach((l, i) => (l.prod.k = ks[i]));
+    });
+    // 시트 탭 순서: 원래 순위(opts.sheetRank, 템플릿 시트) 그대로 두고, 순위가 없는 새로 복사한 시트만 설정 순서상 바로 앞 상품 뒤에 끼움
+    if (opts.sheetRank && opts.sheetRank.size) {
+      const rk = new Map(opts.sheetRank);
+      let lastG = -1, c = 0;
+      const lastInPv = new Map();
+      [...links].sort((x, y) => rankOf(x.item) - rankOf(y.item)).forEach((l) => {
+        if (!isFinite(rankOf(l.item))) return;
+        const pvN = l.prod.pivot;
+        if (rk.has(l.prod.sheet)) {
+          lastG = rk.get(l.prod.sheet);
+          lastInPv.set(pvN, lastG);
+          return;
+        }
+        if (!rk.has(pvN)) rk.set(pvN, lastG + 0.0001 * ++c);
+        const base = lastInPv.has(pvN) ? lastInPv.get(pvN) : rk.get(pvN);
+        const r = base + 0.0001 * ++c;
+        rk.set(l.prod.sheet, r);
+        lastInPv.set(pvN, r);
+        lastG = Math.max(lastG, r);
+      });
+      opts = { ...opts, sheetRank: rk };
+    }
+  }
+
   // 피벗 다시 쓰기
   const byPivot = {};
   links.forEach(({ prod, item }) => {
@@ -10301,6 +10354,8 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         delivOfName: delivOfName.size ? new Map([...delivOfName].map(([n, v]) => [n, mdOf(v)])) : null,
         excludeSheets: hiddenSheets,
         sheetRank,
+        // 순서 설정대로 피벗 열·시트 탭 순서 (GS 냉동은 예전 그대로 - 2026-11-01)
+        productRank: sheetRank && cfg.colorKind !== "gsfrozen_picking" ? new Map(list.flatMap((x, i) => (x.names || [x.title]).map((n) => [n, i]))) : null,
         hideRegionRows,
         ...cfg.buildOpts(tplInfo, deliv),
         regionCodeOf: cfg.codeOf,
@@ -14287,7 +14342,9 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines 
         setVerifyOpen(bad || result.warns.length > 0);
         return !bad;
       };
-      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets });
+      // 순서 설정이 있으면 화면 순서(상품명) 그대로 피벗 열·시트 탭 순서를 맞춤 (새로 복사되는 상품 시트 포함)
+      const productRank = sheetRank ? new Map(products.map((p, i) => [p.name, i])) : null;
+      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets });
       if (rep.held) setVerify((v) => (v ? { ...v, held: rep.held } : v));
       setReport(rep);
     } catch (e) {
