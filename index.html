@@ -3239,6 +3239,15 @@ function WMSApp() {
     [authToken, loadCoreData]
   );
 
+  // 피킹지시서 화면에서 "이 날짜 이 상품 발주 삭제": 그 줄들 수량을 0으로 (수량 0 줄은 피킹지·명세서·집계·대시보드에서 다 빠짐, 작업 기록에 남음)
+  const zeroOrderLines = useCallback(
+    async (pairs) => {
+      for (const [orderId, sku] of pairs) await apiFetch(`/orders/${orderId}/lines/${encodeURIComponent(sku)}`, authToken, { method: "PATCH", body: { changedQty: 0 } });
+      await loadCoreData();
+    },
+    [authToken, loadCoreData]
+  );
+
   // II. 상품할당
   const allocateOrder = useCallback(
     async (orderId) => {
@@ -3930,6 +3939,7 @@ function WMSApp() {
             bgfOrders={vBgfOrders}
             bgfFrozenOrders={vBgfFrozenOrders}
             authToken={authToken}
+            onZeroLines={zeroOrderLines}
             gsView={<PickingInspection orders={vOrders} orderCfg={orderCfg} productInfo={productInfo} authToken={authToken} onOrderCfgSaved={applyOrderCfg} onProductInfoSaved={applyProductInfo} />}
           />
         )}
@@ -14025,7 +14035,7 @@ function EmartPickReportModal({ report, tplInfo, authToken, onClose, aliasKey = 
     </BrandModalFrame>
   );
 }
-function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG }) {
+function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines }) {
   // pv: 채널 설정 (이마트 / 세븐일레븐 - 같은 화면·엔진, 원본 템플릿·설정 저장 이름만 다름)
   const orderCfg = useSetting(pv.orderKey, authToken);
   // 상품 연결 기억 (상품명/상품코드 → 템플릿 시트)
@@ -14034,6 +14044,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG }) {
   const emInfoRaw = useSetting(pv.infoKey, authToken);
   const emInfo = useMemo(() => emInfoRaw || {}, [emInfoRaw]);
   const [showOrderSet, setShowOrderSet] = useState(false);
+  const [zeroBusy, setZeroBusy] = useState(false);
   const dateOptions = useMemo(() => Array.from(new Set(emartOrders.map((o) => o.createdAt))).sort((a, b) => (a < b ? 1 : -1)), [emartOrders]);
   const [selectedDate, setSelectedDate] = useState(null);
   const activeDate = selectedDate && dateOptions.includes(selectedDate) ? selectedDate : dateOptions[0] || null;
@@ -14536,6 +14547,41 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG }) {
                     >
                       <SettingsGear size={14} /> 피킹지 설정
                     </button>
+                    {onZeroLines && (
+                      <button
+                        disabled={exporting || zeroBusy}
+                        onClick={async () => {
+                          // 이 날짜에 이 상품 발주 줄 (다른 날짜·다른 상품은 그대로)
+                          const pairs = [];
+                          let q = 0;
+                          emartOrders.forEach((o) => {
+                            if (o.createdAt !== activeDate || !pv.rowFilter(o)) return;
+                            o.lines.forEach((l) => {
+                              const n = Number(l.changedQty ?? l.qty) || 0;
+                              if (n > 0 && String(l.name || "").trim() === String(selected.name).trim()) {
+                                pairs.push([o.id, l.sku]);
+                                q += n;
+                              }
+                            });
+                          });
+                          if (!pairs.length) return window.alert("지울 발주 줄이 없어요.");
+                          if (!window.confirm(`${activeDate} 발주에서 "${selected.name}"을(를) 지울까요?\n센터 ${pairs.length}곳 · 총 ${q.toLocaleString()}개\n\n이 날짜의 이 상품만 지워져요 (다른 날짜·다른 상품은 그대로).\n피킹지·명세서·일별 집계·대시보드에서 빠져요.`)) return;
+                          setZeroBusy(true);
+                          try {
+                            await onZeroLines(pairs);
+                          } catch (e) {
+                            window.alert(`지우지 못했어요: ${e.message}`);
+                          } finally {
+                            setZeroBusy(false);
+                          }
+                        }}
+                        className="ghost-btn"
+                        style={{ ...smallBtnStyle, borderColor: T.danger, color: T.danger, opacity: zeroBusy ? 0.7 : 1 }}
+                        title="잘못된 날짜로 올라간 발주 등: 이 날짜의 이 상품 발주만 지워요"
+                      >
+                        {zeroBusy ? "지우는 중..." : "이 날짜 발주 삭제"}
+                      </button>
+                    )}
                     <button onClick={() => exportAll(selected.name)} disabled={exporting} className="ghost-btn" style={{ ...smallBtnStyle, opacity: exporting ? 0.7 : 1 }} title="전체 피킹검수 파일을 받고, 이 상품 시트가 열리게 해요">
                       <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
                     </button>
@@ -16980,13 +17026,13 @@ function SheetColorButton({ kind, suppliers, authToken }) {
   );
 }
 
-function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken }) {
+function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken, onZeroLines }) {
   return (
     <BrandTabs
       channel={channel}
       onChannel={onChannel}
       title="피킹지시서 출력"
-      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} /> : c === "bgf" ? <EmartPickingView key="bgf" pv={BGF_PV_CFG} emartOrders={bgfOrders} authToken={authToken} /> : c === "bgffrozen" ? <EmartPickingView key="bgffrozen" pv={BGF_FROZEN_PV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} /> : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "bgf" ? <EmartPickingView key="bgf" pv={BGF_PV_CFG} emartOrders={bgfOrders} authToken={authToken} /> : c === "bgffrozen" ? <EmartPickingView key="bgffrozen" pv={BGF_FROZEN_PV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} /> : null)}
       placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
     />
   );
