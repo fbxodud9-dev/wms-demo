@@ -12332,9 +12332,13 @@ function parseSevenOrderRows(rows) {
   return out;
 }
 // 파일(공급사 하나)의 작업 날짜: 원본 피벗 규칙 → 줄마다 계산해서 가장 많은 날짜. 규칙이 없으면 가장 많은 주문일자
+// 발주파일 공급사 이름과 피킹지 원본 피벗 이름이 다른 공급사: 날짜 규칙은 피벗 쪽 규칙을 씀
+// (2026-11-01 "농협경제지주(주)" 파일 = 원본 "★화산농협) 피벗(입고일+2)" → 규칙을 못 찾아 주문일로 들어가서 하루 앞 날짜에 올라감)
+const SEVEN_RULE_ALIAS = { 농협경제지주: "화산농협" };
 function sevenWorkDateOf(parsed, rules) {
   const key = sevenSupKey(parsed.vendor || (parsed[0] && parsed[0].vendor));
-  const rule = (rules || SEVEN_DATE_RULES_FALLBACK).find((r) => r.key === key) || null;
+  const ruleKey = SEVEN_RULE_ALIAS[String(key).replace(/\s/g, "")] || key;
+  const rule = (rules || SEVEN_DATE_RULES_FALLBACK).find((r) => r.key === ruleKey) || null;
   const cnt = {};
   parsed.forEach((r) => {
     const d = rule && rule.base === "in" ? ymdAddDays(r.inDate, rule.off) : rule && rule.base === "order" ? ymdAddDays(r.orderDate, rule.off) : r.orderDate;
