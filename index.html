@@ -4519,7 +4519,13 @@ function trendDatesOf(baseDate, range) {
   return Array.from({ length: n }, (_, i) => shiftDateStr(baseDate, i - n + 1));
 }
 const trendValOf = (day, id) => (!day ? 0 : id === "total" ? day.total : (day.channels.find((c) => c.id === id) || { total: 0 }).total);
-const fmtK = (v) => (v >= 10000 ? `${Math.round(v / 1000).toLocaleString()}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v));
+// 그래프 숫자: 만·천 단위 (25,000 → 2.5만, 100,000 → 10만, 5,000 → 5천)
+const fmtK = (v) => {
+  const t = (x) => String(Math.round(x * 10) / 10);
+  if (v >= 10000) return `${v >= 1000000 ? Math.round(v / 10000).toLocaleString() : t(v / 10000)}만`;
+  if (v >= 1000) return `${t(v / 1000)}천`;
+  return String(v);
+};
 function niceMax(v) {
   if (v <= 0) return 10;
   const p = Math.pow(10, Math.floor(Math.log10(v)));
@@ -4583,7 +4589,7 @@ function VolumeTrend({ baseDate, dayOf }) {
   const areaD = n ? `M${xs[0].toFixed(1)},${Y(0).toFixed(1)} ` + xs.map((x, i) => `L${x.toFixed(1)},${Y(vals[i]).toFixed(1)}`).join(" ") + ` L${xs[n - 1].toFixed(1)},${Y(0).toFixed(1)} Z` : "";
   const prevPts = xs.map((x, i) => `${x.toFixed(1)},${Y(prevVals[i]).toFixed(1)}`).join(" ");
   const ticks = peak >= STEP ? Array.from({ length: top / STEP + 1 }, (_, i) => i * STEP) : [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(top * f));
-  const tickLabel = (t) => (!t ? "0" : peak >= STEP ? `${t / 10000}만` : fmtK(t));
+  const tickLabel = (t) => (!t ? "0" : fmtK(t));
   const labelEvery = n > 20 ? 3 : n > 14 ? 2 : 1;
   const gid = "trendg-" + cur.id;
   const animKey = `${cur.id}|${range}|${baseDate}`;
@@ -4825,7 +4831,7 @@ function VolumeTrend({ baseDate, dayOf }) {
                 <circle cx={x} cy={Y(vals[i])} r={hover === i ? 5.5 : 3.8} fill="#fff" stroke={cur.color} strokeWidth="2.4" />
                 {(n <= 16 || i === n - 1 || hover === i) && vals[i] > 0 && (
                   <text x={x} y={Y(vals[i]) - 10} fontSize="10.5" fill="#3E4A57" textAnchor="middle">
-                    {peak >= STEP ? `${(vals[i] / 10000).toFixed(1)}만` : fmtK(vals[i])}
+                    {fmtK(vals[i])}
                   </text>
                 )}
               </g>
