@@ -4013,10 +4013,12 @@ const VOLUME_ROW_DEFS = [
   // [key, 화면 라벨, 채널 id, 수기입력 시 표시하는 전체 이름]
   ["emart_1", "1편", "emart", "이마트 1편"],
   ["emart_2", "2편", "emart", "이마트 2편"],
+  ["emart_dk", "당착", "emart", "이마트 당착"],
   ["seven_1", "1편/당착", "seven", "세븐 1편/당착"],
   ["seven_2", "2편", "seven", "세븐 2편"],
   ["cu_1", "1편", "cu", "CU(BGF) 1편"],
   ["cu_2", "2편", "cu", "CU(BGF) 2편"],
+  ["cu_dk", "당착", "cu", "CU(BGF) 당착"],
   ["gs_frozen", "GS", "frozen", "GS 냉동(EA)"],
   ["e24_frozen", "이마트", "frozen", "E24 냉동(EA)"],
   ["seven_frozen", "세븐", "frozen", "세븐일레븐 냉동(EA)"],
@@ -4044,7 +4046,7 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "emart_dk", "cu_dk", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -4086,15 +4088,43 @@ function computeGsAuto(orders, date, rules, editsGs, storedSnap) {
   return auto;
 }
 
+// ----- 대시보드 당착 상품 (2026-11-02 "delivery_list.xlsx") - 대시보드·물동량 그래프에서만 1편·2편·당착으로 나눔 (피킹지·명세서·일별 집계는 그대로) -----
+const DASH_DANGCHAK = {
+  emart: [
+    "노브랜드) 굿모닝 굿밀크 1L", "성수310) 딸기우유 300ml", "성수310) 바나나우유 300ml", "성수310) 커피우유 300ml", // 데어리젠
+    "자뎅) 시그니처 바닐라헤이즐넛", "자뎅) 시그니처 아메리카노 블랙", "델로우) 단커피 500ml", "델로우) 쓴커피 500ml", "델로우) 짠커피 500ml", "델로우) 향커피 500ml", // 자뎅
+  ],
+  bgf: [
+    "참조은) 그릭복숭아모찌롤", "참조은) 생초코파이", "참조은) 생초코파이치즈", "참조은) 우유모찌롤케익", "참조은) 초코모찌롤케익", "405) 미미치의카레이치", "405) 오아시치의닭고기향", "참조은) 치즈케익모찌롤", // 참조은
+    "405) 베어스무화과깜빠뉴", "405) 베어스지중해식깜빠뉴", "널담) 다크초코호두쿠키", "널담) 도넛케이크아몬드", "널담) 도넛케이크초코", "널담) 베이컨치즈베이글", "널담) 블랙올리브베이글", "널담) 화이트초코마카쿠키", "널담) 황치즈쿠키", // 조인앤조인
+  ],
+};
+// 띄어쓰기·쟈/자 차이는 무시. 발주 이름 뒤에 용량·편 번호(…1, …2편)·(냉장)이 더 붙은 것까지 같은 상품
+const dashDkNorm = (n) => String(n || "").replace(/\s+/g, "").replace(/쟈/g, "자").toLowerCase();
+const DASH_DK_SETS = Object.fromEntries(Object.entries(DASH_DANGCHAK).map(([k, a]) => [k, a.map(dashDkNorm)]));
+function isDashDangchak(ch, name) {
+  const n = dashDkNorm(name);
+  return (DASH_DK_SETS[ch] || []).some((k) => n === k || (n.startsWith(k) && /^(\d+(\.\d+)?(g|kg|ml|l|입|개|ea))?(\(?냉장\)?)?(\d\s*편|[12])?$/i.test(n.slice(k.length))));
+}
+// 일별 집계 표(편 나누기)를 그대로 쓰고, 당착 상품만 따로 한 번 더 계산해서 1편·2편에서 빼고 "당착"으로
+function dashSplitDangchak(ch, date, day, partOf, edits, rules) {
+  const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, partOf, edits, rules);
+  const r = t.rows.find((x) => x.date === date);
+  const isDk = (n) => isDashDangchak(ch, n);
+  const dDay = { ...(day || {}), products: ((day && day.products) || []).filter((p) => isDk(p.name)) };
+  const ed = edits && edits[date] ? { [date]: Object.fromEntries(Object.entries(edits[date]).filter(([n]) => isDk(n))) } : null;
+  const t2 = buildBrandDailyTable(date.slice(0, 7), { [date]: dDay }, partOf, ed, rules);
+  const r2 = t2.rows.find((x) => x.date === date);
+  return { p1: (r ? r.p1 : 0) - (r2 ? r2.p1 : 0), p2: (r ? r.p2 : 0) - (r2 ? r2.p2 : 0), dk: r2 ? r2.total : 0 };
+}
 // 이마트 자동 집계: "일별 발주 집계 > 이마트" 시트와 같은 계산 (이마트 집계 설정·직접 고친 칸 반영)
 //   1편 = 이마트 시트 1편수량, 2편 = 2편수량
 function computeEmartAuto(emartOrders, date, rules, editsEm, savedMonth) {
   const hasOrders = emartOrders.some((o) => o.createdAt === date);
   const stored = packEmartMonth(savedMonth)[date];
   const day = hasOrders || !stored ? computeEmartDailySnapshot(emartOrders, date, rules) : stored;
-  const t = buildBrandDailyTable(date.slice(0, 7), { [date]: day }, emartPartOf, editsEm && editsEm[date] ? { [date]: editsEm[date] } : null, rules);
-  const r = t.rows.find((x) => x.date === date);
-  return { emart_1: r ? r.p1 : 0, emart_2: r ? r.p2 : 0 };
+  const s = dashSplitDangchak("emart", date, day, emartPartOf, editsEm && editsEm[date] ? { [date]: editsEm[date] } : null, rules);
+  return { emart_1: s.p1, emart_2: s.p2, emart_dk: s.dk };
 }
 
 // 세븐 자동 집계: "일별 발주 집계 > 세븐일레븐" 시트 (1편/당착 = 1편수량, 2편 = 2편수량)
@@ -4127,7 +4157,11 @@ function computeBgfAuto(list, frozenList, date, rules, frRules, edits, editsFr, 
   };
   const a = one(list, saved, bgfPartOf, rules, edits);
   const b = one(frozenList, savedFr, (n) => detectPartByName(n), frRules, editsFr);
-  return { cu_1: a.r ? a.r.p1 : 0, cu_2: a.r ? a.r.p2 : 0, bgfHas: a.has, bgf_frozen: b.r ? b.r.total : 0, bgfFrozenHas: b.has };
+  // CU(BGF) 냉장: 당착 상품은 1편·2편에서 빼서 "당착"으로 (대시보드만)
+  const aHas = list.some((o) => o.createdAt === date);
+  const aDay = aHas || !packEmartMonth(saved)[date] ? computeBgfDailySnapshot(list, date, rules) : packEmartMonth(saved)[date];
+  const sp = dashSplitDangchak("bgf", date, aDay, bgfPartOf, edits && edits[date] ? { [date]: edits[date] } : null, rules);
+  return { cu_1: a.r ? sp.p1 : 0, cu_2: a.r ? sp.p2 : 0, cu_dk: a.r ? sp.dk : 0, bgfHas: a.has, bgf_frozen: b.r ? b.r.total : 0, bgfFrozenHas: b.has };
 }
 // 이마트 델리 자동 집계: "일별 발주 집계 > 이마트델리" 시트 일일물동량 (발주 업로드가 없는 날은 직접 입력값)
 function computeDeliAuto(date, rules, edits, savedMonth) {
@@ -4165,7 +4199,7 @@ function computeVolumeDay(auto, saved) {
     const entered = s !== undefined && s !== null && s !== "";
     // 세븐은 그날 세븐 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (세븐 연동 전 날짜 입력값 보존)
     // 세븐·세븐냉동·GS슈퍼는 그날 발주(또는 저장된 집계)가 있을 때만 자동, 없으면 예전처럼 직접 입력값 (연동 전 날짜 입력값 보존)
-    const hasOf = { seven_frozen: "sevenFrozenHas", gs_super: "gsSuperHas", cu_1: "bgfHas", cu_2: "bgfHas", bgf_frozen: "bgfFrozenHas", seven_1: "sevenHas", seven_2: "sevenHas", emart_deli: "deliHas" };
+    const hasOf = { seven_frozen: "sevenFrozenHas", gs_super: "gsSuperHas", cu_1: "bgfHas", cu_2: "bgfHas", cu_dk: "bgfHas", bgf_frozen: "bgfFrozenHas", seven_1: "sevenHas", seven_2: "sevenHas", emart_deli: "deliHas" };
     const isAuto = VOLUME_AUTO_KEYS.includes(key) && !(hasOf[key] && !auto[hasOf[key]]);
     // GS 1편·냉장·2편, 이마트 1편·2편은 항상 "일별 발주 집계" 숫자 그대로 (예전에 손으로 넣어둔 값이 있어도 무시)
     if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
