@@ -1778,7 +1778,7 @@ function canDo(perm) {
 //  - 일별 집계 월별 자동 기록(daily_emart_202610 등)도 화면이 알아서 저장
 //  - 일별 집계 손 수정(daily_edits_)은 '수량·상품 수정' 권한
 const QUIET_SETTING_RE = /^(known_products_|emart_vendor_codes$|emart_product_alias$|seven_product_alias$|wms_|daily_(gsfrozen|emfrozen|emart|seven|sevenfrozen|bgf|bgffrozen|emdeli)_\d{6}$|emdeli_raw_\d{8}$|emdeli_shift_v1$|sevenfrozen_product_alias$|bgf_product_alias$|bgffrozen_product_alias$|bgf_vendor_codes$)/;
-const settingPermOf = (key) => (QUIET_SETTING_RE.test(key) ? null : /^daily_edits_/.test(key) ? "edit" : "settings");
+const settingPermOf = (key) => (QUIET_SETTING_RE.test(key) ? null : /^daily_edits_/.test(key) ? "edit" : key === "excluded_items" ? "delete" : "settings");
 const NO_SETTINGS_PERM_MSG = "설정을 바꿀 권한이 없어요. 관리자에게 '설정 변경' 권한을 요청해주세요.";
 const noPermMsgOf = (perm) => (perm === "edit" ? "수정 권한이 없어요. 관리자에게 '수량·상품 수정' 권한을 요청해주세요." : NO_SETTINGS_PERM_MSG);
 // 업로드할 때 파일 이름·페이지를 서버 작업 기록에 같이 남김 (addOrdersBulk가 가져감)
@@ -2820,6 +2820,7 @@ function WMSApp() {
   // GS 일별 발주 집계: 발주가 남아 있는 날짜마다 상품별 총수량을 계산해서 서버에 스냅샷으로 저장한다.
   // (발주 원본은 14일 뒤 지워지지만, 스냅샷은 남아서 월별 집계에 쓰인다) 바뀐 날짜만 저장.
   const gsDailySavedRef = useRef(new Map()); // 날짜 -> 마지막으로 저장한 JSON
+  useSetting(EXCLUDED_ITEMS_KEY, authToken); // 취급 안 함 상품 (업로드 때 뺌)
   const gsRulesForSnap = useSetting(GS_DAILY_RULES_KEY, authToken);
   const emRulesForSnap = useSetting("emart_daily_rules", authToken); // 이마트 지역 제외 // 지역 제외 설정이 바뀌면 스냅샷도 다시 저장
   const gsDailyMonthsLoaded = useRef(new Set());
@@ -3158,7 +3159,28 @@ function WMSApp() {
 
   // 발주파일 업로드처럼 여러 건을 한 번에 등록할 때 사용 (건마다 새로고침하지 않아 훨씬 빠름)
   const addOrdersBulk = useCallback(
-    async (orderList) => {
+    async (orderListIn) => {
+      // 취급 안 함(상품마스터에서 삭제)으로 정한 상품 줄은 빼고 올림
+      const ex = excludedMapOf(SETTING_CACHE[EXCLUDED_ITEMS_KEY]);
+      let dropped = 0;
+      const droppedNames = new Set();
+      const orderList = orderListIn
+        .map((o) => ({
+          ...o,
+          lines: o.lines.filter((l) => {
+            if (!isExcludedLine(ex, orderBrandOf(o, l.name), l.sku, l.name)) return true;
+            dropped++;
+            droppedNames.add(l.name);
+            return false;
+          }),
+        }))
+        .filter((o) => o.lines.length > 0);
+      if (dropped) {
+        try {
+          window.alert(`취급 안 함(상품마스터에서 삭제)으로 정한 상품 ${droppedNames.size}개 · ${dropped}줄은 빼고 올렸어요.\n${[...droppedNames].slice(0, 6).join(", ")}${droppedNames.size > 6 ? " …" : ""}`);
+        } catch (e) {}
+      }
+      if (!orderList.length) return { createdCount: 0, skippedCount: 0, skippedOrderNos: [] };
       try {
         const body = {
           orders: orderList.map((order) => ({
@@ -3208,7 +3230,11 @@ function WMSApp() {
       if (!list || list.length === 0) return;
       try {
         // [sku, name] 쌍 또는 { sku, name, brand, boxQty } -> 발주 브랜드로 상품마스터 자동 등록
-        const itemsBody = list.map((x) => (Array.isArray(x) ? { sku: x[0], name: x[1], brand: defaultBrand || "" } : { sku: x.sku, name: x.name, brand: x.brand || defaultBrand || "", boxQty: x.boxQty || 0 }));
+        const ex = excludedMapOf(SETTING_CACHE[EXCLUDED_ITEMS_KEY]);
+        const itemsBody = list
+          .map((x) => (Array.isArray(x) ? { sku: x[0], name: x[1], brand: defaultBrand || "" } : { sku: x.sku, name: x.name, brand: x.brand || defaultBrand || "", boxQty: x.boxQty || 0 }))
+          .filter((it) => !isExcludedLine(ex, it.brand || "GS", it.sku, it.name)); // 취급 안 함 상품은 다시 등록 안 함
+        if (!itemsBody.length) return;
         await apiFetch("/orders/bulk-register-items", authToken, {
           method: "POST",
           body: { items: itemsBody },
@@ -3966,7 +3992,7 @@ function WMSApp() {
 
         {tab === "masdatacheck" && <MasterDataCheck items={itemsView} stores={stores} vehicles={vehicles} courses={courses} cells={cells} />}
         {tab === "vehiclemap" && <VehicleStoreMap stores={stores} vehicles={vehicles} onAddVehicle={addVehicle} onMap={mapStoreVehicle} />}
-        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} onSetBrands={setItemBrandsBulk} authToken={authToken} />}
+        {tab === "productmaster" && <ProductMaster items={itemsView} onSave={updateItemMaster} onCreate={createItem} onDelete={deleteItem} onSetBrands={setItemBrandsBulk} authToken={authToken} allOrders={[...vOrders, ...vFrozenOrders, ...vEmartOrders, ...vEmFrozenOrders, ...vSevenOrders, ...vSevenFrozenOrders, ...vBgfOrders, ...vBgfFrozenOrders]} onZeroLines={zeroOrderLines} />}
         {tab === "accounts" && canDo("accounts") && <AccountsPage authToken={authToken} me={authUser} />}
         {tab === "auditlog" && canDo("logs") && <AuditLogPage authToken={authToken} />}
         {tab === "myaccount" && <MyAccountPage authToken={authToken} user={authUser} onPwChanged={() => doLogout(PW_CHANGED_NOTICE)} />}
@@ -5703,7 +5729,9 @@ function resolveNamePackOverride(name) {
       const packQtyFixed = PACK_QTY_OVERRIDES[sku] ?? resolveNamePackOverride(name); // 이 상품이면 파일 값 무시하고 고정값 사용
       // 상품코드가 기준: 코드로 먼저 찾고, 없으면 품목명으로 찾되 그때는 마스터 코드를 발주파일 상품코드로 바꾼다
       const byCode = items.find((i) => i.sku === sku);
-      const byName = byCode ? null : items.find((i) => i.name === name);
+      // 품목명으로 찾을 때는 GS 계열(GS·GS슈퍼·GS냉동) 상품만 - 이마트·세븐·BGF에 같은 이름 상품이 있으면 그 상품 코드를 GS 코드로 바꿔버리던 문제 (2026-11-02 우유콘)
+      // 상품마스터는 한 번 올라가면 채널이 바뀌면 안 됨 (2026-11-02): GS 냉동 화면은 GS 냉동 상품끼리만, GS 화면은 GS·GS슈퍼 상품끼리만
+      const byName = byCode ? null : items.find((i) => i.name === name && itemBrandsOf(i).some((b) => (channelTag === "GSFROZEN" ? b === "GSFROZEN" : b === "GS" || b === "GSSUPER")));
       const matched = byCode || byName;
       if (byName && byName.sku !== sku && !fileCodes.has(byName.sku) && (nameToCodes.get(String(name).trim()) || new Set([sku])).size === 1) {
         rekeyMap.set(byName.sku, sku);
@@ -5819,6 +5847,11 @@ function resolveNamePackOverride(name) {
         // GS 발주파일에 섞여 오는 GS슈퍼 상품은 GS슈퍼 브랜드로 (2026-10-29: 전부 GS로 들어가던 문제)
         const brandOfName = (name) => (myBrand === "GS" && productBrandOf(name) === "GSSUPER" ? "GSSUPER" : myBrand);
         const addGs = items.filter((i) => gsSkus.has(i.sku) && !allUnmatched.has(i.sku) && !itemBrandsOf(i).includes(brandOfName(i.name))).map((i) => ({ sku: i.sku, name: i.name, brand: brandOfName(i.name) }));
+        // 품목명으로 찾아서 코드를 바꾼 상품도 이 화면 브랜드를 붙임 (예전엔 빠져서 GS 냉동 상품이 냉동 탭에 안 보였음)
+        allRekey.forEach((to, from) => {
+          const it = items.find((i) => i.sku === from);
+          if (it && gsSkus.has(to) && !itemBrandsOf(it).includes(brandOfName(it.name))) addGs.push({ sku: to, name: it.name, brand: brandOfName(it.name) });
+        });
         await onRegisterItemsBulk([...unmatchedList.map(([sku, name]) => ({ sku, name, brand: brandOfName(name) })), ...addGs]);
       } else {
         for (const [sku, name] of unmatchedList) {
@@ -9986,7 +10019,9 @@ async function analyzeGsFrozenBuffer(buf) {
 const frozenSupKey = (s) => String(s || "").replace(/\(주\)|㈜|주식회사/g, "").trim() || "미지정";
 // GS 냉동: 거래처 이름으로 원본 공급사 피벗 찾기 ("(주)리치푸드" → "리치푸드 피벗"). 못 찾으면 null → 새 공급사로 시트 생성
 function gsFrozenPivotOf(tpl, vendor) {
-  const key = frozenSupKey(vendor).replace(/\s/g, "");
+  // "(빙과)에이치투글로벌컴퍼니" → "에이치투글로벌컴퍼니" → H2 피벗
+  let key = frozenSupKey(vendor).replace(/\([^)]*\)/g, "").replace(/\s/g, "");
+  if (/에이치투/.test(key)) key = "H2";
   if (key.length < 2) return null;
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
   return pivots.find((pv) => {
@@ -10312,6 +10347,9 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
 }
 
 function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG, editMode }) {
+  // 상품마스터에서 삭제(취급 안 함)한 상품: 발주 없어도 0으로 남기던 원본 시트도 뺌 (2026-11-02)
+  const exMapF = excludedMapOf(useSetting(EXCLUDED_ITEMS_KEY, authToken));
+  const isExF = (title, names) => isExcludedLine(exMapF, cfg.brand, "", title) || (names || []).some((n) => isExcludedLine(exMapF, cfg.brand, "", n));
   const formCfg = useSetting(cfg.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(cfg, formCfg), [formCfg]); // eslint-disable-line
   const [baseInfo, setBaseInfo] = useState(null);
@@ -10376,9 +10414,9 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         out.push({ sheet: null, pivot: cfg.supKey(x.vendor), title: x.name, total: x.total, centers: x.centers.size, isNew: true, vendor: x.vendor, names: [x.name], byCode, prod });
       });
     // 순서 설정: 공급사 = 피벗, 상품 = 시트 상품명. 삭제(피킹 안 함)한 것은 뺌
-    const visibleList = out.filter((x) => !isBrandHidden(orderCfg, x.pivot, x.title));
+    const visibleList = out.filter((x) => !isBrandHidden(orderCfg, x.pivot, x.title) && !isExF(x.title, x.names));
     return applyBrandOrder(visibleList, orderCfg, (x) => x.pivot, (x) => x.title);
-  }, [tplInfo, rows, orderCfg]);
+  }, [tplInfo, rows, orderCfg, exMapF]);
   const [supFilter, setSupFilter] = useState("all");
   const [q, setQ] = useState("");
   const [selSheet, setSelSheet] = useState(null);
@@ -10399,7 +10437,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     try {
       const buf = customTpl ? customTpl.buffer.slice(0) : await cfg.getBuffer(tplInfo);
       // 삭제한 상품: 발주 줄도 빼고, 시트도 뺌
-      const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).map((p) => p.sheet));
+      const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p)) || isExF(frozenTitleOf(p))).map((p) => p.sheet));
       // 필터/한 상품만: 나머지 시트는 빼기
       if (onlySheets) tplInfo.sheets.forEach((s) => !onlySheets.has(s.name) && hiddenSheets.add(s.name));
       const regCfgOf = (sheet) => ((pickCfg && pickCfg.products) || {})[sheet] || {};
@@ -15105,6 +15143,26 @@ const BRAND_COLOR = {
   BGFFROZEN: { bg: "#E8E4F4", fg: "#3E2E73" },
 };
 // 상품마스터 품목의 브랜드 목록 (예전에 등록된 품목은 brands가 비어 있어서 GS로 본다)
+// ----- 취급 안 함 상품 (상품마스터에서 "삭제", 2026-11-02) -----
+// 저장: settings "excluded_items" = { brands: { 브랜드: { 상품코드: { name, at, by } } } }
+// 이 채널 발주파일에 이 상품이 있어도 빼고 올림 → 피킹지·거래명세서·일별 집계·대시보드에 안 나옴. 상품마스터 자동 등록도 안 함
+const EXCLUDED_ITEMS_KEY = "excluded_items";
+function excludedMapOf(v) {
+  return v && typeof v === "object" && v.brands && typeof v.brands === "object" ? v.brands : {};
+}
+// 발주 줄의 브랜드 (GS 발주 중 GS슈퍼 상품은 GSSUPER)
+function orderBrandOf(o, lineName) {
+  const ch = SEPARATE_CHANNELS.includes(o && o.channel) ? o.channel : "GS";
+  return ch === "GS" && productBrandOf(lineName) === "GSSUPER" ? "GSSUPER" : ch;
+}
+function isExcludedLine(ex, brand, sku, name) {
+  const m = ex && ex[brand];
+  if (!m) return false;
+  const k = String(sku || "").trim();
+  if (k && m[k]) return true;
+  const n = String(name || "").trim();
+  return !!n && Object.values(m).some((e) => e && String(e.name || "").trim() === n);
+}
 function itemBrandsOf(i) {
   return String((i && i.brands) || "GS")
     .split(",")
@@ -17481,6 +17539,7 @@ function InvoiceCenter({ channel, onChannel, gsView, emartOrders, frozenOrders =
 /* ----- XIII. 상품 정보 관리: 브랜드 필터 ----- */
 function ProductInfoCenter({ orders, items, emartOrders, sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken, productInfo, onSaved }) {
   const [channel, setChannel] = useState("gs");
+  const exMapPI = excludedMapOf(useSetting(EXCLUDED_ITEMS_KEY, authToken)); // 상품마스터에서 삭제(취급 안 함)한 상품은 여기서도 숨김
   const tplInfo = useEmartTplInfo();
   const [sevenTplC, setSevenTpl] = useState(SEVEN_TPL_SYNC);
   const [sevenFrzTpl, setSevenFrzTpl] = useState(SEVEN_FROZEN_TPL_SYNC);
@@ -17577,7 +17636,7 @@ function ProductInfoCenter({ orders, items, emartOrders, sevenOrders = [], seven
         if (brand !== "GS" && (gsNames.has(name) || gsSkus.has(String(i.sku || ""))) && productBrandOf(name) !== brand) return;
         map.set(name, { name, sku: i.sku, supplier: "-", basePack: Number(i.boxQty) > 1 ? Number(i.boxQty) : 0, lastDate: "" });
       });
-    return Array.from(map.values());
+    return Array.from(map.values()).filter((r) => !isExcludedLine(exMapPI, brand, r.sku, r.name));
   };
   return (
     <BrandTabs
@@ -23776,7 +23835,10 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
 // 상품마스터에서 등록·수정한 품목은 하루(24시간) 동안 목록 맨 위에 (2026-10-20 현장 요청: 맨 밑에 있어서 찾기 힘듦)
 // 서버 설정 wms_item_touched = { 상품코드: 수정한 시각(ms) } - 모든 PC에서 같이 보임, 하루 지난 건 저장할 때 자동 정리
 const ITEM_TOUCH_MS = 24 * 60 * 60 * 1000;
-function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands, authToken }) {
+function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands, authToken, allOrders = [], onZeroLines }) {
+  const excludedCfg = useSetting(EXCLUDED_ITEMS_KEY, authToken);
+  const exMap = excludedMapOf(excludedCfg);
+  const [exBusy, setExBusy] = useState(null);
   const touched = useSetting("wms_item_touched", authToken) || {};
   const nowMs = Date.now();
   const touchedAt = (sku) => {
@@ -23833,6 +23895,12 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands
       const plan = [];
       itemsIn.forEach((i) => {
         const bs = itemBrandsOf(i);
+        // GS 냉동 발주에 나오는데 GS 계열 브랜드가 하나도 없는 상품 (예전 업로드가 같은 이름의 이마트·세븐 상품 코드를 바꿔버린 경우, 2026-11-02 우유콘) → GS 냉동 추가
+        if (!bs.includes("GS") && !bs.includes("GSSUPER") && !bs.includes("GSFROZEN") && frzSkus.has(i.sku)) {
+          const next = [...bs, "GSFROZEN"];
+          plan.push({ sku: i.sku, name: i.name, to: "GSFROZEN", brands: PICKING_CHANNELS.map((c) => c.brand).filter((x) => next.includes(x)).join(",") });
+          return;
+        }
         if (!bs.includes("GS")) return;
         let to = null;
         if (productBrandOf(i.name) === "GSSUPER") to = "GSSUPER";
@@ -23895,9 +23963,77 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands
   ];
   const membersOf = (b) => (PM_TABS.find((t) => t.brand === b) || { members: [b] }).members;
   const inTab = (i, b) => b === "all" || membersOf(b).some((m) => itemBrandsOf(i).includes(m));
-  const brandCount = (b) => items.filter((i) => inTab(i, b) && !isDeletedItem(i)).length;
-  const delCount = items.filter((i) => inTab(i, brandFilter) && isDeletedItem(i)).length;
-  const inBrand = items.filter((i) => inTab(i, brandFilter) && (showDelItems ? isDeletedItem(i) : !isDeletedItem(i)));
+  // 취급 안 함: 이 탭에 해당하는 브랜드가 전부 취급 안 함이면 이 탭에서 숨김
+  const tabBrandsOf = (i, b) => itemBrandsOf(i).filter((x) => b === "all" || membersOf(b).includes(x));
+  const isExcludedIn = (i, b) => {
+    const bs = tabBrandsOf(i, b);
+    return bs.length > 0 && bs.every((x) => isExcludedLine(exMap, x, i.sku, i.name));
+  };
+  const isGone = (i, b) => isDeletedItem(i) || isExcludedIn(i, b);
+  const brandCount = (b) => items.filter((i) => inTab(i, b) && !isGone(i, b)).length;
+  const delCount = items.filter((i) => inTab(i, brandFilter) && isGone(i, brandFilter)).length;
+  const inBrand = items.filter((i) => inTab(i, brandFilter) && (showDelItems ? isGone(i, brandFilter) : !isGone(i, brandFilter)));
+  // 삭제 = 그 채널에서 취급 안 함 (상품마스터에서 지우지 않고 숨김 → 다음 발주에 다시 등록되지 않음, 복구 가능)
+  async function excludeItem(i) {
+    const bs = tabBrandsOf(i, brandFilter);
+    if (!bs.length) return;
+    const labelOf = (b) => (PICKING_CHANNELS.find((c) => c.brand === b) || { label: b }).label;
+    const pairs = [];
+    let q = 0;
+    allOrders.forEach((o) =>
+      (o.lines || []).forEach((l) => {
+        const n = Number(l.changedQty ?? l.qty) || 0;
+        if (n > 0 && bs.includes(orderBrandOf(o, l.name)) && (l.sku === i.sku || String(l.name || "").trim() === String(i.name || "").trim())) {
+          pairs.push([o.id, l.sku]);
+          q += n;
+        }
+      })
+    );
+    if (
+      !window.confirm(
+        `"${i.name}"을(를) ${bs.map(labelOf).join("·")}에서 삭제(취급 안 함)할까요?\n\n` +
+          `· 앞으로 이 채널 발주파일에 이 상품이 있어도 빼고 올라가요 → 피킹지·거래명세서·일별 집계·대시보드에 안 나와요.\n` +
+          (pairs.length ? `· 이미 올라온 최근 발주 ${pairs.length}줄(${q.toLocaleString()}개)도 지금 빠져요.\n` : "") +
+          `· 상품마스터에는 "삭제된 상품"으로 남아서 언제든 복구할 수 있어요.`
+      )
+    )
+      return;
+    setExBusy(i.sku);
+    try {
+      const r = await updateSetting(EXCLUDED_ITEMS_KEY, authToken, (v) => {
+        const b = { ...excludedMapOf(v) };
+        bs.forEach((br) => (b[br] = { ...(b[br] || {}), [i.sku]: { name: i.name, at: localDateStr(), by: (CURRENT_USER && (CURRENT_USER.name || CURRENT_USER.username)) || "" } }));
+        return { brands: b };
+      });
+      if (r && r.ok === false) return;
+      logUi("item_exclude", i.name, { sku: i.sku, brands: bs, zeroLines: pairs.length });
+      if (pairs.length && onZeroLines) await onZeroLines(pairs);
+    } catch (e) {
+      window.alert(`삭제하지 못했어요: ${e.message}`);
+    } finally {
+      setExBusy(null);
+    }
+  }
+  async function restoreItem(i) {
+    const bs = tabBrandsOf(i, brandFilter).filter((x) => isExcludedLine(exMap, x, i.sku, i.name));
+    if (!bs.length) return;
+    if (!window.confirm(`"${i.name}"을(를) 다시 취급할까요?\n다음 발주부터 피킹지·거래명세서·집계에 다시 나와요. (이미 빠진 지난 발주 수량은 그대로예요)`)) return;
+    setExBusy(i.sku);
+    try {
+      await updateSetting(EXCLUDED_ITEMS_KEY, authToken, (v) => {
+        const b = { ...excludedMapOf(v) };
+        bs.forEach((br) => {
+          const m = { ...(b[br] || {}) };
+          Object.keys(m).forEach((k) => (k === i.sku || String((m[k] || {}).name || "").trim() === String(i.name || "").trim()) && delete m[k]);
+          b[br] = m;
+        });
+        return { brands: b };
+      });
+      logUi("item_restore", i.name, { sku: i.sku, brands: bs });
+    } finally {
+      setExBusy(null);
+    }
+  }
   const TEMP_ORDER = ["냉장", "냉동"];
   const tempOf = (i) => (i.tempZone === "냉동" ? "냉동" : "냉장");
   const tempCount = (t) => inBrand.filter((i) => tempOf(i) === t).length;
@@ -23962,14 +24098,7 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands
     <div>
       <PageHeader
         title="X. 상품마스터"
-        sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요."
-        action={
-          onSetBrands && canDo("edit") ? (
-            <button disabled={fixBusy} onClick={fixGsBrands} style={{ ...settingBtnStyle, whiteSpace: "nowrap" }} title="GS로 잘못 들어간 GS슈퍼·GS 냉동 상품의 브랜드를 바로잡아요">
-              {fixBusy ? "확인 중..." : "GS슈퍼·냉동 브랜드 정리"}
-            </button>
-          ) : null
-        }
+        sub="브랜드별 품목의 온도구역·작업유형·로케이션·단위정보를 관리합니다. 발주파일을 올리면 그 브랜드 상품으로 자동 등록돼요. 우리가 취급하지 않는 상품은 [삭제]하면 그 채널 피킹지·거래명세서·일별 집계에서 빠져요."
       />
       {fixMsg && <div style={{ fontSize: 12.5, fontWeight: 600, color: /못했|실패/.test(fixMsg) ? T.danger : T.teal, margin: "-6px 0 12px 2px" }}>{fixMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 5, width: "fit-content", maxWidth: "100%", flexWrap: "wrap" }}>
@@ -24072,15 +24201,21 @@ function ProductMaster({ items: itemsIn, onSave, onCreate, onDelete, onSetBrands
                           <button onClick={() => openEdit(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px" }}>
                             <Pencil size={13} /> 수정
                           </button>
-                          <button
-                            onClick={() => {
-                              if (window.confirm(`"${i.name}" 품목을 삭제할까요? 되돌릴 수 없습니다.`)) onDelete(i.sku);
-                            }}
-                            className="ghost-btn"
-                            style={{ ...smallBtnStyle, padding: "6px 10px", color: T.danger, borderColor: T.danger + "55" }}
-                          >
-                            <Trash2 size={13} /> 삭제
-                          </button>
+                          {isExcludedIn(i, brandFilter) ? (
+                            <button disabled={exBusy === i.sku} onClick={() => restoreItem(i)} className="ghost-btn" style={{ ...smallBtnStyle, padding: "6px 10px", color: T.teal, borderColor: T.teal + "66" }} title="다시 취급 (다음 발주부터 다시 나와요)">
+                              ↺ 복구
+                            </button>
+                          ) : (
+                            <button
+                              disabled={exBusy === i.sku}
+                              onClick={() => excludeItem(i)}
+                              className="ghost-btn"
+                              style={{ ...smallBtnStyle, padding: "6px 10px", color: T.danger, borderColor: T.danger + "55" }}
+                              title="우리가 취급하지 않는 상품: 이 채널 피킹지·거래명세서·일별 집계에서 빼요 (복구 가능)"
+                            >
+                              <Trash2 size={13} /> {exBusy === i.sku ? "삭제 중..." : "삭제"}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
