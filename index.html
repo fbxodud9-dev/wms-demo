@@ -4411,6 +4411,360 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   );
 }
 
+// ---------- 물동량 추이 그래프 (대시보드 금일·전일 사이, 2026-11-02) ----------
+// 위: 큰 그래프 (총 물동량 또는 고른 채널). 아래: 채널별 작은 그래프 카드 → 누르면 그 채널이 위 큰 그래프로
+// 회색 점선 = 전주 같은 요일. [엑셀 다운로드] = 고른 기간 날짜별 채널 물동량
+const TREND_TOTAL = { id: "total", name: "총 물동량", color: "#1F4E79" };
+const TREND_RANGES = [
+  { id: "14", label: "최근 14일" },
+  { id: "30", label: "최근 30일" },
+  { id: "month", label: "이번 달" },
+];
+function trendDatesOf(baseDate, range) {
+  if (range === "month") {
+    const out = [];
+    for (let d = baseDate.slice(0, 8) + "01"; d <= baseDate; d = shiftDateStr(d, 1)) out.push(d);
+    return out;
+  }
+  const n = Number(range) || 14;
+  return Array.from({ length: n }, (_, i) => shiftDateStr(baseDate, i - n + 1));
+}
+const trendValOf = (day, id) => (!day ? 0 : id === "total" ? day.total : (day.channels.find((c) => c.id === id) || { total: 0 }).total);
+const fmtK = (v) => (v >= 10000 ? `${Math.round(v / 1000).toLocaleString()}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v));
+function niceMax(v) {
+  if (v <= 0) return 10;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+function TrendSpark({ vals, color, w = 150, h = 38 }) {
+  const m = Math.max(1, ...vals);
+  const pts = vals.map((v, i) => `${((i * w) / Math.max(1, vals.length - 1)).toFixed(1)},${(h - 4 - ((h - 8) * v) / m).toFixed(1)}`).join(" ");
+  const last = vals.length ? vals[vals.length - 1] : 0;
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block", overflow: "visible" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+      <circle cx={w} cy={h - 4 - ((h - 8) * last) / m} r="3" fill={color} />
+    </svg>
+  );
+}
+function VolumeTrend({ baseDate, dayOf }) {
+  const [range, setRange] = useState("14");
+  const [focus, setFocus] = useState("total");
+  const [compare, setCompare] = useState(true);
+  const [hover, setHover] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const boxRef = useRef(null);
+  const [W, setW] = useState(1200);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setW(Math.max(480, el.clientWidth)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const dates = useMemo(() => trendDatesOf(baseDate, range), [baseDate, range]);
+  const days = useMemo(() => dates.map((d) => ({ date: d, day: dayOf(d), prev: dayOf(shiftDateStr(d, -7)) })), [dates, dayOf]);
+  const series = [TREND_TOTAL, ...VOLUME_CHANNELS];
+  // 기간 안에 물량이 있는 채널만 카드로 (총 물동량은 항상)
+  const shownSeries = series.filter((s) => s.id === "total" || days.some((x) => trendValOf(x.day, s.id) > 0));
+  const cur = series.find((s) => s.id === focus) || TREND_TOTAL;
+  const vals = days.map((x) => trendValOf(x.day, cur.id));
+  const prevVals = days.map((x) => trendValOf(x.prev, cur.id));
+  const nonZero = vals.map((v, i) => ({ v, i })).filter((x) => x.v > 0);
+  const sum = vals.reduce((a, b) => a + b, 0);
+  const avg = nonZero.length ? Math.round(sum / nonZero.length) : 0;
+  const mx = nonZero.length ? nonZero.reduce((a, b) => (b.v > a.v ? b : a)) : null;
+  const mn = nonZero.length ? nonZero.reduce((a, b) => (b.v < a.v ? b : a)) : null;
+  const lab = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}(${weekdayKo(d)})`;
+  // 큰 그래프 크기
+  const H = 270,
+    L = 58,
+    R = 18,
+    TP = 26,
+    B = 34;
+  const top = niceMax(Math.max(...vals, ...(compare ? prevVals : [0]), 1) * 1.08);
+  const n = days.length;
+  const xs = days.map((_, i) => L + ((W - L - R) * (i + 0.5)) / n);
+  const Y = (v) => TP + (H - TP - B) * (1 - v / top);
+  const linePts = xs.map((x, i) => `${x.toFixed(1)},${Y(vals[i]).toFixed(1)}`).join(" ");
+  const areaD = n ? `M${xs[0].toFixed(1)},${Y(0).toFixed(1)} ` + xs.map((x, i) => `L${x.toFixed(1)},${Y(vals[i]).toFixed(1)}`).join(" ") + ` L${xs[n - 1].toFixed(1)},${Y(0).toFixed(1)} Z` : "";
+  const prevPts = xs.map((x, i) => `${x.toFixed(1)},${Y(prevVals[i]).toFixed(1)}`).join(" ");
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(top * f));
+  const labelEvery = n > 20 ? 3 : n > 14 ? 2 : 1;
+  const gid = "trendg-" + cur.id;
+  const animKey = `${cur.id}|${range}|${baseDate}`;
+
+  async function downloadExcel() {
+    setBusy(true);
+    try {
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("물동량 추이");
+      const chs = VOLUME_CHANNELS;
+      ws.columns = [{ width: 13 }, { width: 6 }, ...chs.map(() => ({ width: 14 })), { width: 14 }, { width: 14 }, { width: 14 }];
+      ws.addRow([`채널별 물동량 (${fmtDate(dates[0])} ~ ${fmtDate(dates[dates.length - 1])})`]);
+      ws.getRow(1).font = { name: XLFONT, size: 13, bold: true };
+      const head = ["날짜", "요일", ...chs.map((c) => c.name), "타 채널 소계", "GS 계열 소계", "총합계"];
+      const hr = ws.addRow(head);
+      hr.eachCell((c) => {
+        c.font = { name: XLFONT, bold: true, size: 10 };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9E6DE" } };
+        c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+      });
+      const first = 3;
+      const colL = (i) => numToCol(i);
+      const otherCols = chs.map((c, i) => (c.group === "other" ? colL(3 + i) : null)).filter(Boolean);
+      const gsCols = chs.map((c, i) => (c.group === "gs" ? colL(3 + i) : null)).filter(Boolean);
+      const nC = 3 + chs.length; // 타 채널 소계 열
+      days.forEach((x, k) => {
+        const r = first + k;
+        const row = ws.addRow([x.date, weekdayKo(x.date), ...chs.map((c) => trendValOf(x.day, c.id))]);
+        const oT = chs.filter((c) => c.group === "other").reduce((a, c) => a + trendValOf(x.day, c.id), 0);
+        const gT = chs.filter((c) => c.group === "gs").reduce((a, c) => a + trendValOf(x.day, c.id), 0);
+        row.getCell(nC).value = { formula: otherCols.map((c) => c + r).join("+"), result: oT };
+        row.getCell(nC + 1).value = { formula: gsCols.map((c) => c + r).join("+"), result: gT };
+        row.getCell(nC + 2).value = { formula: `${colL(nC)}${r}+${colL(nC + 1)}${r}`, result: oT + gT };
+      });
+      const last = first + days.length - 1;
+      const sr = ws.addRow(["합계", ""]);
+      for (let c = 3; c <= nC + 2; c++) {
+        const L2 = colL(c);
+        let res = 0;
+        for (let r = first; r <= last; r++) {
+          const v = ws.getCell(L2 + r).value;
+          res += typeof v === "number" ? v : v && v.result ? v.result : 0;
+        }
+        sr.getCell(c).value = { formula: `SUM(${L2}${first}:${L2}${last})`, result: res };
+      }
+      for (let r = first; r <= last + 1; r++) {
+        const row = ws.getRow(r);
+        for (let c = 1; c <= nC + 2; c++) {
+          const cell = row.getCell(c);
+          cell.font = { name: XLFONT, size: 10, bold: r === last + 1 || c >= nC + 2 };
+          cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+          if (c >= 3) cell.numFmt = "#,##0;-#,##0;-";
+          if (c <= 2) cell.alignment = { horizontal: "center" };
+          if (r === last + 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F2EC" } };
+        }
+      }
+      ws.views = [{ state: "frozen", xSplit: 2, ySplit: 2 }];
+      // 두 번째 시트: 편·세부 칸까지
+      const ws2 = wb.addWorksheet("세부 (편별)");
+      ws2.columns = [{ width: 13 }, { width: 6 }, ...VOLUME_ROW_DEFS.map(() => ({ width: 13 }))];
+      const h2 = ws2.addRow(["날짜", "요일", ...VOLUME_ROW_DEFS.map((d) => d[3])]);
+      h2.eachCell((c) => {
+        c.font = { name: XLFONT, bold: true, size: 10 };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9E6DE" } };
+        c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+      });
+      days.forEach((x) => {
+        const row = ws2.addRow([x.date, weekdayKo(x.date), ...VOLUME_ROW_DEFS.map((d) => (x.day && x.day.rows[d[0]] ? x.day.rows[d[0]].value : 0))]);
+        row.eachCell((c, ci) => {
+          c.font = { name: XLFONT, size: 10 };
+          c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+          if (ci >= 3) c.numFmt = "#,##0;-#,##0;-";
+        });
+      });
+      ws2.views = [{ state: "frozen", xSplit: 2, ySplit: 1 }];
+      const buf = await wb.xlsx.writeBuffer();
+      saveXlsxBuffer(buf, `물동량추이_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
+      logUi("download_volume_trend", `${dates[0]}~${dates[dates.length - 1]}`, { range });
+    } catch (e) {
+      window.alert(`엑셀을 만들지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const segBtn = (on) => ({ border: "none", padding: "6px 12px", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer", background: on ? T.ink : "transparent", color: on ? "#fff" : T.inkSoft, fontWeight: on ? 700 : 500, transition: "background .2s, color .2s" });
+  const hv = hover != null && days[hover] ? days[hover] : null;
+  return (
+    <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" }}>
+      <style>{`
+        @keyframes trendRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        @keyframes trendDraw { from { stroke-dashoffset: 2400; } to { stroke-dashoffset: 0; } }
+        @keyframes trendFade { from { opacity: 0; } to { opacity: 1; } }
+        .trend-anim { animation: trendRise .45s cubic-bezier(.2,.7,.2,1) both; }
+        .trend-line { stroke-dasharray: 2400; animation: trendDraw .9s cubic-bezier(.3,.6,.2,1) both; }
+        .trend-area { animation: trendFade .7s ease-out both; }
+        .trend-card { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease; }
+        .trend-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(30,33,36,.08); }
+      `}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px 6px", flexWrap: "wrap" }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>물동량 추이</div>
+        <div style={{ display: "inline-flex", border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+          {TREND_RANGES.map((r) => (
+            <button key={r.id} onClick={() => setRange(r.id)} style={segBtn(range === r.id)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <button onClick={() => setCompare((v) => !v)} style={{ ...segBtn(compare), border: `1px solid ${compare ? T.ink : T.border}`, borderRadius: 8 }}>
+          전주 같은 요일 비교 {compare ? "켜짐" : "꺼짐"}
+        </button>
+        <button onClick={downloadExcel} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, opacity: busy ? 0.7 : 1 }}>
+          <Download size={14} /> {busy ? "만드는 중..." : "엑셀 다운로드"}
+        </button>
+      </div>
+      <div key={animKey + "|h"} className="trend-anim" style={{ display: "flex", alignItems: "baseline", gap: 22, padding: "4px 18px 2px", flexWrap: "wrap", fontSize: 12, color: T.inkSoft }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 14, fontWeight: 800, color: T.ink }}>
+          <i style={{ width: 10, height: 10, borderRadius: 3, background: cur.color, display: "inline-block" }} />
+          {cur.name}
+        </span>
+        <span>
+          기간 합계 <b style={{ color: T.ink, fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(sum)}</b>
+        </span>
+        <span>
+          하루 평균 <b style={{ color: T.ink, fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(avg)}</b>
+        </span>
+        {mx && (
+          <span>
+            최대 <b style={{ color: T.ink }}>{lab(days[mx.i].date)} {fmtNum(mx.v)}</b>
+          </span>
+        )}
+        {mn && (
+          <span>
+            최소 <b style={{ color: T.ink }}>{lab(days[mn.i].date)} {fmtNum(mn.v)}</b>
+          </span>
+        )}
+        {focus !== "total" && (
+          <button onClick={() => setFocus("total")} style={{ marginLeft: "auto", border: "none", background: "none", color: T.teal, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5 }}>
+            ← 총 물동량으로
+          </button>
+        )}
+      </div>
+      <div ref={boxRef} style={{ position: "relative", padding: "0 0 0 0" }} onMouseLeave={() => setHover(null)}>
+        <svg width={W} height={H} style={{ display: "block" }}>
+          <defs>
+            <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor={cur.color} stopOpacity="0.28" />
+              <stop offset="1" stopColor={cur.color} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {days.length > 0 && days[n - 1].date === baseDate && <rect x={xs[n - 1] - (W - L - R) / n / 2 + 2} y={TP - 8} width={(W - L - R) / n - 4} height={H - TP - B + 8} rx="6" fill="#FCF1DD" />}
+          {hover != null && <rect x={xs[hover] - (W - L - R) / n / 2 + 2} y={TP - 8} width={(W - L - R) / n - 4} height={H - TP - B + 8} rx="6" fill="#F1EFEA" />}
+          {ticks.map((t, ti) => (
+            <g key={ti}>
+              <line x1={L} x2={W - R} y1={Y(t)} y2={Y(t)} stroke="#ECEAE4" />
+              <text x={L - 8} y={Y(t) + 4} fontSize="11" fill="#8A8F94" textAnchor="end">
+                {t ? fmtK(t) : 0}
+              </text>
+            </g>
+          ))}
+          <g key={animKey}>
+            <path d={areaD} fill={`url(#${gid})`} className="trend-area" />
+            {compare && <polyline points={prevPts} fill="none" stroke="#9C978A" strokeWidth="1.6" strokeDasharray="5 4" className="trend-area" />}
+            <polyline points={linePts} fill="none" stroke={cur.color} strokeWidth="2.8" strokeLinejoin="round" className="trend-line" />
+            {xs.map((x, i) => (
+              <g key={i} className="trend-area" style={{ animationDelay: `${0.25 + i * 0.015}s` }}>
+                <circle cx={x} cy={Y(vals[i])} r={hover === i ? 5.5 : 3.8} fill="#fff" stroke={cur.color} strokeWidth="2.4" />
+                {(n <= 16 || i === n - 1 || hover === i) && vals[i] > 0 && (
+                  <text x={x} y={Y(vals[i]) - 10} fontSize="10.5" fill="#3E4A57" textAnchor="middle">
+                    {fmtK(vals[i])}
+                  </text>
+                )}
+              </g>
+            ))}
+          </g>
+          {days.map((x, i) =>
+            i % labelEvery === 0 || i === n - 1 ? (
+              <text key={x.date} x={xs[i]} y={H - B + 18} fontSize="11.5" textAnchor="middle" fill={x.date === baseDate ? T.ink : "#6B7177"} fontWeight={x.date === baseDate ? 700 : 400}>
+                {lab(x.date)}
+              </text>
+            ) : null
+          )}
+          {xs.map((x, i) => (
+            <rect key={"h" + i} x={x - (W - L - R) / n / 2} y={TP - 8} width={(W - L - R) / n} height={H - TP - B + 8} fill="transparent" onMouseEnter={() => setHover(i)} />
+          ))}
+        </svg>
+        {hv && (
+          <div style={{ position: "absolute", top: 8, left: Math.min(Math.max(xs[hover] + 14, 8), W - 230), width: 210, background: "#fff", border: `1px solid ${T.border}`, borderRadius: 8, boxShadow: "0 8px 20px rgba(30,33,36,.12)", padding: "9px 11px", fontSize: 12, pointerEvents: "none", animation: "trendFade .15s ease-out" }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>
+              {fmtDate(hv.date)} ({weekdayKo(hv.date)})
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+              <span>{cur.name}</span>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(trendValOf(hv.day, cur.id))}</span>
+            </div>
+            {compare && (
+              <div style={{ display: "flex", justifyContent: "space-between", color: T.inkSoft }}>
+                <span>전주 {lab(shiftDateStr(hv.date, -7))}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(trendValOf(hv.prev, cur.id))}</span>
+              </div>
+            )}
+            {cur.id === "total" && hv.day && (
+              <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 5, paddingTop: 5 }}>
+                {hv.day.channels
+                  .filter((c) => c.total > 0)
+                  .map((c) => (
+                    <div key={c.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <i style={{ width: 8, height: 8, borderRadius: 2, background: c.color, display: "inline-block" }} />
+                        {c.name}
+                      </span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(c.total)}</span>
+                    </div>
+                  ))}
+              </div>
+            )}
+            {cur.id !== "total" && hv.day && (
+              <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 5, paddingTop: 5 }}>
+                {(hv.day.channels.find((c) => c.id === cur.id) || { parts: [] }).parts
+                  .filter((p) => p.value > 0)
+                  .map((p) => (
+                    <div key={p.key} style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: T.inkSoft }}>{p.label}</span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(p.value)}</span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 16, alignItems: "center", padding: "0 18px 8px", fontSize: 11.5, color: T.inkSoft, flexWrap: "wrap" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <i style={{ width: 14, height: 3, borderRadius: 2, background: cur.color, display: "inline-block" }} />
+          {cur.name}
+        </span>
+        {compare && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <i style={{ width: 14, height: 0, borderTop: "2px dashed #9C978A", display: "inline-block" }} />
+            전주 같은 요일
+          </span>
+        )}
+        <span style={{ marginLeft: "auto" }}>점에 마우스를 올리면 그날 수량이 보여요 · 노란 칸 = 기준일 · 아래 카드를 누르면 그 채널을 크게 봐요</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(150px, 1fr))`, gap: 10, padding: "6px 18px 16px" }}>
+        {shownSeries.map((s) => {
+          const v = days.map((x) => trendValOf(x.day, s.id));
+          const on = s.id === cur.id;
+          const lastV = v.length ? v[v.length - 1] : 0;
+          return (
+            <button
+              key={s.id}
+              onClick={() => setFocus(s.id)}
+              className="trend-card"
+              style={{ textAlign: "left", fontFamily: "inherit", cursor: "pointer", border: `1px solid ${on ? s.color : T.border}`, borderLeft: `4px solid ${s.color}`, borderRadius: 9, padding: "9px 11px 7px", background: on ? "#FAF8F3" : T.surface, boxShadow: on ? `0 0 0 2px ${s.color}22` : "none" }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</span>
+                <span style={{ fontSize: 13, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(lastV)}</span>
+              </div>
+              <div style={{ margin: "5px 0 3px" }}>
+                <TrendSpark vals={v} color={s.color} />
+              </div>
+              <div style={{ fontSize: 10.5, color: T.inkSoft }}>기간 합계 {fmtNum(v.reduce((a, b) => a + b, 0))}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozenOrders = [], sevenOrders = [], sevenFrozenOrders = [], bgfOrders = [], bgfFrozenOrders = [], authToken }) {
   const today = localDateStr();
   const [baseDate, setBaseDate] = useState(today);
@@ -4422,7 +4776,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   useEffect(() => {
     if (!authToken) return;
     let cancelled = false;
-    const from = shiftDateStr(baseDate, -21);
+    const from = shiftDateStr(baseDate, -45); // 물동량 추이 그래프(최근 30일 + 전주 비교)까지
     (async () => {
       try {
         const res = await apiFetch(`/volumes?from=${from}&to=${baseDate}`, authToken);
@@ -4463,7 +4817,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   useEffect(() => {
     if (!authToken) return;
     let cancelled = false;
-    Array.from(new Set([baseDate.slice(0, 7), prevDate.slice(0, 7)])).forEach((m) =>
+    Array.from(new Set([baseDate.slice(0, 7), prevDate.slice(0, 7), shiftDateStr(baseDate, -20).slice(0, 7), shiftDateStr(baseDate, -40).slice(0, 7)])).forEach((m) =>
       apiFetch(`/gs-daily?month=${m}`, authToken)
         .then((r) => {
           if (cancelled) return;
@@ -4530,6 +4884,41 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   const autoPrev = useMemo(() => autoOf(prevDate, editsPrev, emSavedPrev, frSavedPrev, efSavedPrev, svSavedPrev, sfSavedPrev, bgSavedPrev, bfSavedPrev), [bgfOrders, bgfFrozenOrders, bgRules, bfRules, bgSavedPrev, bfSavedPrev, bgfTplTick, orders, emartOrders, frozenOrders, emFrozenOrders, sevenOrders, sevenFrozenOrders, prevDate, dailyRules, emRules, frRules, efRules, svRules, sfRules, editsPrev, emSavedPrev, frSavedPrev, efSavedPrev, svSavedPrev, sfSavedPrev, gsStored]);
   const dayToday = useMemo(() => computeVolumeDay(autoToday, savedMap[baseDate]), [autoToday, savedMap, baseDate]);
   const dayPrev = useMemo(() => computeVolumeDay(autoPrev, savedMap[prevDate]), [autoPrev, savedMap, prevDate]);
+  // 물동량 추이 그래프: 기준일 앞 40일까지의 달별 일별 집계 저장값을 미리 불러옴 (금일·전일과 같은 계산)
+  const trendMonths = useMemo(() => Array.from(new Set([baseDate, shiftDateStr(baseDate, -20), shiftDateStr(baseDate, -40)].map((d) => d.slice(0, 7)))), [baseDate]);
+  const [trendTick, setTrendTick] = useState(0);
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    const keys = [];
+    trendMonths.forEach((m) => keys.push(dailyEditsKey(m), emartDailyKey(m), gsFrozenDailyKey(m), emFrozenDailyKey(m), sevenDailyKey(m), sevenFrozenDailyKey(m), bgfDailyKey(m), bgfFrozenDailyKey(m), emdeliDailyKey(m)));
+    const need = keys.filter((k) => !(k in SETTING_CACHE));
+    if (!need.length) return;
+    Promise.all(
+      need.map((k) =>
+        apiFetch(`/settings/${k}`, authToken)
+          .then((r) => !(k in SETTING_CACHE) && publishSetting(k, r ? r.value ?? null : null))
+          .catch(() => {})
+      )
+    ).then(() => !cancelled && setTrendTick((t) => t + 1));
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, trendMonths]); // eslint-disable-line
+  const trendDayOf = useMemo(() => {
+    const cache = new Map();
+    return (date) => {
+      if (date === baseDate) return dayToday;
+      if (date === prevDate) return dayPrev;
+      if (date > today) return null;
+      if (cache.has(date)) return cache.get(date);
+      const m = date.slice(0, 7);
+      const C = (k) => SETTING_CACHE[k];
+      const d = computeVolumeDay(autoOf(date, C(dailyEditsKey(m)) || {}, C(emartDailyKey(m)), C(gsFrozenDailyKey(m)), C(emFrozenDailyKey(m)), C(sevenDailyKey(m)), C(sevenFrozenDailyKey(m)), C(bgfDailyKey(m)), C(bgfFrozenDailyKey(m))), savedMap[date]);
+      cache.set(date, d);
+      return d;
+    };
+  }, [dayToday, dayPrev, trendTick, savedMap, gsStored, baseDate, prevDate]); // eslint-disable-line
 
   async function handleSave(date, data) {
     try {
@@ -4563,6 +4952,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <VolumePanel variant="today" date={baseDate} day={dayToday} prevDay={dayPrev} onEdit={() => setEditingDate(baseDate)} />
+        <VolumeTrend baseDate={baseDate} dayOf={trendDayOf} />
         <VolumePanel variant="prev" date={prevDate} day={dayPrev} prevDay={null} onEdit={() => setEditingDate(prevDate)} />
       </div>
       {editingDate && (
@@ -4587,61 +4977,7 @@ function Dashboard({ items, tx, lowStock, totalQty, todayTx, goTo, orders, emart
     <div>
       <PageHeader title="대시보드" sub={`오늘, ${fmtDate(localDateStr())}`} />
       <VolumeDashboard orders={orders || []} emartOrders={emartOrders || []} frozenOrders={frozenOrders || []} emFrozenOrders={emFrozenOrders || []} sevenOrders={sevenOrders || []} sevenFrozenOrders={sevenFrozenOrders || []} bgfOrders={bgfOrders || []} bgfFrozenOrders={bgfFrozenOrders || []} authToken={authToken} />
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>재고 · 입출고</div>
-      <div style={{ display: "flex", gap: 14, marginBottom: 22, flexWrap: "wrap" }}>
-        <Metric label="총 품목 수" value={items.length} sub="등록된 상품코드" />
-        <Metric label="총 재고 수량" value={totalQty.toLocaleString()} sub="전체 로케이션 합산" />
-        <Metric label="재고 부족 품목" value={lowStock.length} sub="안전재고 미달" accent={lowStock.length ? T.danger : T.ink} />
-        <Metric label="오늘 입출고" value={`${inCount + outCount}건`} sub={`입고 ${inCount} · 출고 ${outCount}`} />
-      </div>
-
-      <div style={{ display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 340px", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
-          <SectionHead icon={AlertTriangle} title="재고 부족 알림" color={T.danger} onMore={() => goTo("inventory")} />
-          {lowStock.length === 0 ? (
-            <EmptyRow text="안전재고 미달 품목이 없습니다." />
-          ) : (
-            <div>
-              {lowStock.slice(0, 6).map((i) => (
-                <div key={i.id} className="rowhover" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderBottom: `1px solid #EEECE3` }}>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{i.name}</div>
-                    <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{i.sku}</div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 13, fontFamily: "'JetBrains Mono', monospace", color: T.danger, fontWeight: 700 }}>
-                      {i.qty} / {i.safety} {i.unit}
-                    </div>
-                    <LocationTag loc={i.location} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: "1 1 340px", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
-          <SectionHead icon={Clock} title="최근 입출고 내역" color={T.steel} onMore={() => goTo("history")} />
-          {tx.length === 0 ? (
-            <EmptyRow text="입출고 이력이 없습니다." />
-          ) : (
-            <div>
-              {tx.slice(0, 6).map((t) => (
-                <div key={t.id} className="rowhover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderBottom: `1px solid #EEECE3` }}>
-                  <TxBadge type={t.type} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{t.name}</div>
-                    <div style={{ fontSize: 11.5, color: T.inkSoft }}>{fmtDate(t.date)} · {t.memo || "-"}</div>
-                  </div>
-                  <div style={{ fontSize: 13, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: t.type === "IN" ? T.tealDeep : T.clayDeep }}>
-                    {t.type === "IN" ? "+" : "−"}{t.qty}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      {/* 재고 · 입출고 칸은 지움 (2026-11-02 요청) */}
     </div>
   );
 }
