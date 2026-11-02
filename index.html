@@ -9020,6 +9020,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // opts.regionRe: 지역(센터) 줄 알아보는 규칙 (기본: 이마트 "(저온)" 등), opts.regionOrder: 피벗 지역 순서,
   // opts.keepVisible: 원본에서 보이는 시트는 발주가 없어도 0으로 남김 (GS 냉동), opts.colorKind: 시트 색 설정 종류,
   // opts.pivotA2 / opts.dateTextOut: 피벗 A2·"10/15 납품" 같은 날짜 글자, opts.wideLookup: VLOOKUP 범위를 열 전체로
+  // opts.customerCopy: 고객사(공급사) 배포용 - 제주권·AZ공유 같은 따로 빼는 시트 없이 상품 시트에 실제 수량 그대로 (2026-11-02)
+  if (opts.customerCopy) opts = { ...opts, jejuShare: null, keepAlso: null };
   const tpl = analyzeEmartTemplate(await loadEmartTemplate(templateBuffer), opts.regionRe || undefined);
   // opts.notProduct: 상품 시트처럼 생겼지만 상품 시트가 아닌 시트 (세븐 냉동 "AZ공유" 제주 공유 시트)
   if (opts.notProduct) tpl.products = tpl.products.filter((p) => !opts.notProduct(p.sheet));
@@ -9917,7 +9919,7 @@ async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts 
   const buf = await getEmartTemplateBuffer(customTpl);
   // 원본에 없는 새 공급사(예: 자몽)는 다른 공급사 피벗을 복사해서 "자몽 피벗"과 상품 시트를 새로 만든다 (2026-10-31, 세븐·BGF와 같은 방식)
   const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, { cloneNewVendor: true, newVendorSrc: "신성베이커리", ...opts });
-  const filename = `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  const filename = opts.fileName || `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
     try {
@@ -10299,7 +10301,7 @@ function FrozenPickSettingModal({ item, tplInfo, pickCfg, orderCfg, authToken, o
   );
 }
 
-function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG }) {
+function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG, editMode }) {
   const formCfg = useSetting(cfg.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(cfg, formCfg), [formCfg]); // eslint-disable-line
   const [baseInfo, setBaseInfo] = useState(null);
@@ -10379,8 +10381,9 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     return tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).length;
   }, [tplInfo, orderCfg]);
   const totalQty = rows.reduce((a, r) => a + r.qty, 0);
-  async function download(onlySheets) {
-    setBusy(true);
+  // mode: 피킹지 수정 화면 { vendor(피벗), customer } - customer면 0 처리·지역 빼기 없이 실제 수량 그대로 (고객사 배포)
+  async function download(onlySheets, mode = null) {
+    setBusy(mode ? mode.vendor + (mode.customer ? "|c" : "|e") : true);
     setErr("");
     setMsg("");
     try {
@@ -10394,16 +10397,17 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         const p = matchEmartProduct(tplInfo, r.name);
         if (p) {
           const c = regCfgOf(p.sheet);
-          if ((c.zero || []).includes(r.code) || (c.remove || []).includes(r.code)) return false; // 0 처리 / 지역 빼기
+          if (!(mode && mode.customer) && ((c.zero || []).includes(r.code) || (c.remove || []).includes(r.code))) return false; // 0 처리 / 지역 빼기 (고객사 배포는 그대로)
           return !hiddenSheets.has(p.sheet);
         }
         const cn = regCfgOf("new:" + r.name);
-        if ((cn.zero || []).includes(r.code) || (cn.remove || []).includes(r.code)) return false;
+        if (!(mode && mode.customer) && ((cn.zero || []).includes(r.code) || (cn.remove || []).includes(r.code))) return false;
         if (onlySheets) return onlySheets.has("new:" + r.name);
         return !isBrandHidden(orderCfg, cfg.supKey(r.vendor), r.name);
       });
       const hideRegionRows = new Map();
-      Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
+      if (!(mode && mode.customer)) Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
+      if (mode && !rowsOut.length) throw new Error("이 공급사 발주가 없어요.");
       // 순서 설정이 있으면 시트 순서도 (피벗 → 그 피벗 상품 시트들)
       let sheetRank = null;
       if (orderCfg && (orderCfg.suppliers || orderCfg.products)) {
@@ -10444,7 +10448,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = onlySheets && onlySheets.size <= 2 && [...onlySheets][0] ? `${cfg.filePrefix}_${String([...onlySheets].find((n) => !/^new:/.test(n)) || [...onlySheets][0]).replace(/^new:/, "").replace(/[\\/:*?"<>|]/g, "")}_${activeDate}.xlsx` : `${cfg.filePrefix}_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
+      a.download = mode ? `${cfg.filePrefix}_${mode.vendor}_${mode.customer ? "고객사배포" : "수정용"}_${activeDate}.xlsx`.replace(/[\\/:*?"<>|]/g, "") : onlySheets && onlySheets.size <= 2 && [...onlySheets][0] ? `${cfg.filePrefix}_${String([...onlySheets].find((n) => !/^new:/.test(n)) || [...onlySheets][0]).replace(/^new:/, "").replace(/[\\/:*?"<>|]/g, "")}_${activeDate}.xlsx` : `${cfg.filePrefix}_피킹지-${activeDate.slice(5, 7)}${activeDate.slice(8, 10)}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -10461,6 +10465,91 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     } finally {
       setBusy(false);
     }
+  }
+  // 피킹지 수정 화면 (이마트 냉동 등): 공급사(피벗)별 [고객사 배포] / [수정용 엑셀]
+  if (editMode) {
+    const regCfgOfE = (key) => ((pickCfg && pickCfg.products) || {})[key] || {};
+    const gm = new Map();
+    list.forEach((x) => {
+      if (!x.total) return;
+      const c = regCfgOfE(x.sheet || "new:" + x.title);
+      const off = new Set([...(c.zero || []), ...(c.remove || [])]);
+      const ours = Object.entries(x.byCode || {}).reduce((a, [code, q]) => a + (off.has(code) ? 0 : q), 0);
+      const g = gm.get(x.pivot) || { key: x.pivot, items: [], total: 0, customer: 0 };
+      g.items.push({ ...x, ours });
+      g.total += ours;
+      g.customer += x.total;
+      gm.set(x.pivot, g);
+    });
+    const groupsE = [...gm.values()];
+    const shownE = groupsE.filter((g) => (supFilter === "all" || g.key === supFilter) && (!q.trim() || g.key.includes(q.trim()) || g.items.some((x) => x.title.includes(q.trim()))));
+    return (
+      <div>
+        <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>피킹 날짜</span>
+          <select style={{ ...inputStyle, width: 170 }} value={activeDate} onChange={(e) => setDate(e.target.value)}>
+            {dates.length === 0 && <option value={activeDate}>발주 없음</option>}
+            {dates.map((d) => (
+              <option key={d} value={d}>
+                {fmtDate(d)}
+              </option>
+            ))}
+          </select>
+          <select style={{ ...inputStyle, width: 220 }} value={supFilter} onChange={(e) => setSupFilter(e.target.value)}>
+            <option value="all">전체 공급사 ({groupsE.length})</option>
+            {groupsE.map((g) => (
+              <option key={g.key} value={g.key}>
+                {g.key}
+              </option>
+            ))}
+          </select>
+          <input style={{ ...inputStyle, flex: 1, minWidth: 200 }} placeholder="공급사 또는 상품명 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <div style={{ ...cardStyle, padding: "12px 14px", marginBottom: 14, fontSize: 12.5, color: T.inkSoft, lineHeight: 1.7 }}>
+          <b style={{ color: T.ink }}>고객사 배포</b> — 공급사에 보여줄 피킹지. 우리 피킹지에서 0 처리·지역 빼기로 0이 된 지역도 실제 발주 수량으로 들어가요.
+          <br />
+          <b style={{ color: T.ink }}>수정용 엑셀</b> — 평소 피킹지와 같은 파일을 이 공급사 것만.
+          <br />★ = 고객사 배포와 우리 피킹지 수량이 다른 공급사
+        </div>
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.includes("⚠") ? T.amberDeep : T.teal, marginBottom: 10 }}>{msg}</div>}
+        {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
+        {!tplInfo ? (
+          <div style={cardStyle}>
+            <EmptyRow text={tplErr || "피킹지 원본 읽는 중..."} />
+          </div>
+        ) : shownE.length === 0 ? (
+          <div style={cardStyle}>
+            <EmptyRow text="이 날짜 발주가 없어요." />
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {shownE.map((g) => {
+              const diff = g.customer - g.total;
+              const only = new Set(g.items.map((x) => x.sheet || "new:" + x.title));
+              return (
+                <div key={g.key} style={{ ...cardStyle, padding: "14px 16px", borderColor: diff ? T.amber : T.border, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14.5, display: "flex", alignItems: "center", gap: 8 }}>
+                      {g.key}
+                      {diff !== 0 && <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "#FCF1DD", color: T.amberDeep }}>★ 고객사 배포 +{diff.toLocaleString()}개</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                      상품 {g.items.length}종 · 우리 피킹지 {g.total.toLocaleString()}개{diff ? ` · 고객사 배포 ${g.customer.toLocaleString()}개` : ""}
+                    </div>
+                  </div>
+                  <button onClick={() => download(only, { vendor: g.key, customer: true })} disabled={!!busy} className="primary-btn" style={{ ...primaryBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, opacity: busy ? 0.7 : 1 }}>
+                    <Download size={14} /> {busy === g.key + "|c" ? "생성 중..." : "고객사 배포"}
+                  </button>
+                  <button onClick={() => download(only, { vendor: g.key, customer: false })} disabled={!!busy} className="ghost-btn" style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, opacity: busy ? 0.7 : 1 }}>
+                    <Download size={14} /> {busy === g.key + "|e" ? "생성 중..." : "수정용 엑셀"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   }
   return (
     <div>
@@ -12576,7 +12665,7 @@ async function downloadSevenPickingFile(rows, date, customTpl, activeName, opts 
     colorKind: "seven_picking",
     removeTexts: [],
   });
-  const filename = `세븐-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  const filename = opts.fileName || `세븐-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
     try {
@@ -12689,7 +12778,7 @@ async function downloadSevenFrozenPickingFile(rows, date, customTpl, activeName,
     colorKind: "sevenfrozen_picking",
     removeTexts: [],
   });
-  const filename = `세븐냉동-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  const filename = opts.fileName || `세븐냉동-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
     try {
@@ -13212,7 +13301,7 @@ async function downloadBgfPickingFile(frozen, rows, date, customTpl, activeName,
     colorKind: frozen ? "bgffrozen_picking" : "bgf_picking",
     removeTexts: [],
   });
-  const filename = `BGF${frozen ? "냉동" : ""}-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
+  const filename = opts.fileName || `BGF${frozen ? "냉동" : ""}-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
     try {
@@ -14179,7 +14268,7 @@ function EmartPickReportModal({ report, tplInfo, authToken, onClose, aliasKey = 
     </BrandModalFrame>
   );
 }
-function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines }) {
+function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines, editMode }) {
   const formCfg = useSetting(pv.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(pv, formCfg), [formCfg]); // eslint-disable-line
   // pv: 채널 설정 (이마트 / 세븐일레븐 - 같은 화면·엔진, 원본 템플릿·설정 저장 이름만 다름)
@@ -14325,11 +14414,12 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines 
     });
     return set.size;
   };
-  async function exportAll(activeName) {
-    setExporting(true);
+  // mode: 피킹지 수정 화면에서 공급사 하나만 { vendor, customer } - customer면 0고정·당착·지역 빼기 없이 실제 수량 그대로 (고객사 배포)
+  async function exportAll(activeName, mode = null) {
+    setExporting(mode ? mode.vendor + (mode.customer ? "|c" : "|e") : true);
     setErr("");
     try {
-      const names = new Set((filterOn ? filtered : products).map((p) => p.name));
+      const names = new Set((mode && mode.vendor ? products.filter((p) => p.vendor === mode.vendor) : filterOn ? filtered : products).map((p) => p.name));
       // 템플릿 입수와 다른 입수(상품 정보 관리 값 또는 발주파일 입수)는 엑셀 시트 입수 칸에도 넣는다
       const packOverride = new Map(products.filter((p) => p.pack > 0 && (!p.tpl || p.pack !== p.tpl.pack)).map((p) => [p.name, p.pack]));
       // 순서 설정이 있으면 엑셀 시트 순서도 그대로 (공급사 피벗 -> 그 공급사 상품 시트들)
@@ -14406,6 +14496,13 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines 
       );
       const hideRegionRows = new Map();
       Object.entries((pickCfg && pickCfg.products) || {}).forEach(([sheet, c]) => (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove)));
+      if (mode && mode.customer) {
+        // 고객사 배포: 우리 피킹지에서 0고정·당착·지역 빼기 한 지역도 실제 발주 수량으로, 당착(오전현장) 시트 없이
+        outRows.length = 0;
+        rows.forEach((r) => names.has(r.name) && outRows.push(r));
+        dangchakSheets.length = 0;
+        hideRegionRows.clear();
+      }
       const verifyFn = async (bytes, rep) => {
         // BGF 냉동 제주권: 상품 시트의 제주·서귀포는 0 고정 (수량은 제주권(AZ공유) 시트로) → 고정값으로 안내하고 대조에서는 뺌
         const moved = (rep && rep.jejuMoved) || [];
@@ -14435,7 +14532,13 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines 
       };
       // 순서 설정이 있으면 화면 순서(상품명) 그대로 피벗 열·시트 탭 순서를 맞춤 (새로 복사되는 상품 시트 포함)
       const productRank = sheetRank ? new Map(products.map((p, i) => [p.name, i])) : null;
-      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, formMap, verify: verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets });
+      const fileName = mode ? `${pv.label}_${mode.vendor}_${mode.customer ? "고객사배포" : "수정용"}_${activeDate}.xlsx`.replace(/[\\/:*?"<>|]/g, "") : undefined;
+      if (mode && !outRows.length) throw new Error("이 공급사 발주가 없어요.");
+      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, formMap, verify: mode ? null : verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets, customerCopy: !!(mode && mode.customer), fileName });
+      if (mode) {
+        logUi(mode.customer ? "download_customer_picking" : "download_edit_picking", `${pv.label} ${mode.vendor} ${activeDate}`, { channel: pv.brand, date: activeDate, vendor: mode.vendor });
+        return;
+      }
       if (rep.held) setVerify((v) => (v ? { ...v, held: rep.held } : v));
       setReport(rep);
     } catch (e) {
@@ -14476,6 +14579,124 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines 
 
   const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 12, lineHeight: 1.6 };
   const mono = { fontFamily: "'JetBrains Mono', monospace" };
+  // 피킹지 수정 화면 (GS 피킹지 수정과 같은 모양): 공급사별 [고객사 배포] / [수정용 엑셀]
+  if (editMode) {
+    const jejuRegs = pv.channelKey === "bgffrozen" ? BGF_JEJU : []; // BGF 냉동: 제주·서귀포는 우리 피킹지에선 제주권 시트로 빠짐
+    // 제주권 시트에 블록이 있는 공급사 피벗만 (그 공급사 상품만 제주·서귀포가 빠짐)
+    const azPivots = new Set();
+    if (jejuRegs.length && tplInfo)
+      tplInfo.sheets
+        .filter((x) => BGF_JEJU_SHEET_RE.test(x.name) && x.cells)
+        .forEach((x) =>
+          x.cells.forEach((c) => {
+            const m = c.f && /VLOOKUP\([^,]+,\s*('(?:[^']|'')*'|[^!,]+)!/.exec(c.f);
+            if (m) azPivots.add(m[1].replace(/^'|'$/g, "").replace(/''/g, "'"));
+          })
+        );
+    const azVendorSet = new Set(products.filter((p) => p.tpl && azPivots.has(p.tpl.pivot)).map((p) => p.vendor));
+    const groupsE = (() => {
+      const m = new Map();
+      products.forEach((p) => {
+        const g = m.get(p.vendor) || { key: p.vendor, products: [], total: 0, customer: 0 };
+        let ours = 0;
+        Object.entries(p.qty).forEach(([c, q]) => {
+          if (!regAdjOf(p.name, p.tpl, c) && !(jejuRegs.includes(c) && azVendorSet.has(p.vendor))) ours += q;
+        });
+        g.products.push({ ...p, ours });
+        g.total += ours;
+        g.customer += p.total;
+        m.set(p.vendor, g);
+      });
+      return [...m.values()];
+    })();
+    const qq = searchQuery.trim();
+    const shownE = groupsE.filter((g) => (vendorFilter === "all" || g.key === vendorFilter) && (!qq || g.key.includes(qq) || g.products.some((p) => p.name.includes(qq))));
+    return (
+      <div>
+        <div style={{ ...cardStyle, padding: 14, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: T.inkSoft }}>피킹 날짜</span>
+          <select style={{ ...inputStyle, width: 170 }} value={activeDate || ""} onChange={(e) => setSelectedDate(e.target.value)}>
+            {dateOptions.length === 0 && <option value="">발주 없음</option>}
+            {dateOptions.map((d) => (
+              <option key={d} value={d}>
+                {fmtDate(d)}
+              </option>
+            ))}
+          </select>
+          <select style={{ ...inputStyle, width: 220 }} value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)}>
+            <option value="all">전체 공급사 ({groupsE.length})</option>
+            {groupsE.map((g) => (
+              <option key={g.key} value={g.key}>
+                {g.key}
+              </option>
+            ))}
+          </select>
+          <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+            <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
+            <input style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} placeholder="공급사 또는 상품명 검색" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ ...cardStyle, padding: "12px 14px", marginBottom: 14, fontSize: 12.5, color: T.inkSoft, lineHeight: 1.7 }}>
+          <b style={{ color: T.ink }}>고객사 배포</b> — 공급사에 보여줄 피킹지. 우리 피킹지에서 0고정·당착·지역 빼기로 0이 된 지역과{jejuRegs.length ? " 제주권 시트로 뺀 제주·서귀포" : ""}도 상품 시트에 실제 발주 수량으로 들어가요. 당착(오전현장)·제주권 같은 따로 빼는 시트는 없어요.
+          <br />
+          <b style={{ color: T.ink }}>수정용 엑셀</b> — 평소 피킹지와 같은 파일을 이 공급사 것만. 추가발주가 오면 피벗 숫자를 고치면 상품 시트가 같이 바뀌어요.
+          <br />★ = 고객사 배포와 우리 피킹지 수량이 다른 공급사
+        </div>
+        {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
+        {!tplInfo ? (
+          <div style={cardStyle}>
+            <EmptyRow text={tplErr || "피킹지 원본 읽는 중..."} />
+          </div>
+        ) : shownE.length === 0 ? (
+          <div style={cardStyle}>
+            <EmptyRow text={products.length ? "조건에 맞는 공급사가 없어요." : pv.emptyText || "발주가 없습니다."} />
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {shownE.map((g) => {
+              const diff = g.customer - g.total;
+              const open = selectedName === "grp:" + g.key;
+              return (
+                <div key={g.key} style={{ ...cardStyle, padding: "14px 16px", borderColor: diff ? T.amber : T.border }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14.5, display: "flex", alignItems: "center", gap: 8 }}>
+                        {g.key}
+                        {diff !== 0 && <span style={{ fontSize: 10.5, fontWeight: 700, padding: "1px 7px", borderRadius: 999, background: "#FCF1DD", color: T.amberDeep }}>★ 고객사 배포 {diff > 0 ? "+" : ""}{diff.toLocaleString()}개</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>
+                        상품 {g.products.length}종 · 우리 피킹지 {g.total.toLocaleString()}개{diff ? ` · 고객사 배포 ${g.customer.toLocaleString()}개` : ""}{" "}
+                        <button onClick={() => setSelectedName(open ? null : "grp:" + g.key)} style={{ border: "none", background: "none", color: T.teal, fontWeight: 700, cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>
+                          {open ? "접기" : "상품 보기"}
+                        </button>
+                      </div>
+                    </div>
+                    <button onClick={() => exportAll(null, { vendor: g.key, customer: true })} disabled={!!exporting} className="primary-btn" style={{ ...primaryBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, opacity: exporting ? 0.7 : 1 }}>
+                      <Download size={14} /> {exporting === g.key + "|c" ? "생성 중..." : "고객사 배포"}
+                    </button>
+                    <button onClick={() => exportAll(null, { vendor: g.key, customer: false })} disabled={!!exporting} className="ghost-btn" style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, opacity: exporting ? 0.7 : 1 }}>
+                      <Download size={14} /> {exporting === g.key + "|e" ? "생성 중..." : "수정용 엑셀"}
+                    </button>
+                  </div>
+                  {open && (
+                    <div style={{ marginTop: 10, borderTop: `1px solid ${T.border}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {g.products.map((p) => (
+                        <div key={p.name} style={{ fontSize: 12.5, display: "flex", gap: 8 }}>
+                          <span style={{ flex: 1 }}>{p.name}</span>
+                          <span style={{ color: T.inkSoft, ...mono }}>우리 {p.ours.toLocaleString()}</span>
+                          {p.ours !== p.total && <span style={{ color: T.amberDeep, fontWeight: 700, ...mono }}>고객사 {p.total.toLocaleString()}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -17808,8 +18029,19 @@ function PickingEditHub({ orders, productInfo, orderCfg, authToken, chOrders = {
         <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} headerAction={formBtn} />
       ) : (
         <div>
-          <PageHeader title={`피킹지 수정 · ${ch.label} ${part.label}`} sub="공급사마다 피킹지 모양(폼)을 바꿀 수 있어요. 바꾼 폼은 피킹지시서 출력에서 엑셀을 받을 때 바로 적용돼요." action={formBtn} />
-          <PickFormSummary part={part} orders={chOrders[part.key] || []} authToken={authToken} onOpen={() => setShowForm(true)} />
+          <PageHeader
+            title={`피킹지 수정 · ${ch.label} ${part.label}`}
+            sub={part.key === "gsfrozen" ? "GS 냉동은 피킹지 폼 변경만 해요." : "공급사별로 고객사 배포용 피킹지(0고정·당착 지역 포함)와 수정용 엑셀을 받아요. 공급사마다 피킹지 모양(폼)도 바꿀 수 있어요."}
+            action={formBtn}
+          />
+          {part.key === "emfrozen" ? (
+            <GsFrozenPickingView key="edit-emfrozen" editMode cfg={EM_FROZEN_PICK_CFG} frozenOrders={chOrders.emfrozen || []} authToken={authToken} />
+          ) : part.key !== "gsfrozen" ? (
+            <EmartPickingView key={"edit-" + part.key} editMode pv={part.cfg()} emartOrders={chOrders[part.key] || []} authToken={authToken} />
+          ) : null}
+          <div style={{ marginTop: 14 }}>
+            <PickFormSummary part={part} orders={chOrders[part.key] || []} authToken={authToken} onOpen={() => setShowForm(true)} />
+          </div>
         </div>
       )}
       {showForm && <PickFormModal part={part} chLabel={`${ch.label} ${part.label}`} orders={part.gsMain ? orders : chOrders[part.key] || []} authToken={authToken} onClose={() => setShowForm(false)} />}
