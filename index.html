@@ -4411,6 +4411,95 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   );
 }
 
+// ---------- 엑셀 차트 (ExcelJS는 차트를 못 만들어서, 저장한 파일에 차트 XML을 직접 넣음 - 2026-11-02 물동량 추이) ----------
+// 차트는 표 칸을 가리키는 진짜 엑셀 차트라서, 엑셀에서 숫자를 고치면 그래프도 같이 바뀜
+const xmlEsc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const xlSheetRef = (sheet) => `'${String(sheet).replace(/'/g, "''")}'`;
+function xlChartXml({ title, cats, catRef, bars = [], lines = [] }) {
+  const strCache = (arr) => `<c:strCache><c:ptCount val="${arr.length}"/>${arr.map((v, i) => `<c:pt idx="${i}"><c:v>${xmlEsc(v)}</c:v></c:pt>`).join("")}</c:strCache>`;
+  const numCache = (arr) => `<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${arr.length}"/>${arr.map((v, i) => `<c:pt idx="${i}"><c:v>${Number(v) || 0}</c:v></c:pt>`).join("")}</c:numCache>`;
+  const tx = (s) => `<c:tx><c:strRef><c:f>${xmlEsc(s.nameRef)}</c:f>${strCache([s.name])}</c:strRef></c:tx>`;
+  const cat = `<c:cat><c:strRef><c:f>${xmlEsc(catRef)}</c:f>${strCache(cats)}</c:strRef></c:cat>`;
+  const val = (s) => `<c:val><c:numRef><c:f>${xmlEsc(s.ref)}</c:f>${numCache(s.vals)}</c:numRef></c:val>`;
+  const fill = (c) => `<a:solidFill><a:srgbClr val="${c.replace("#", "")}"/></a:solidFill>`;
+  let idx = 0;
+  const barSer = bars.map((s) => `<c:ser><c:idx val="${idx}"/><c:order val="${idx++}"/>${tx(s)}<c:spPr>${fill(s.color)}</c:spPr><c:invertIfNegative val="0"/>${cat}${val(s)}</c:ser>`).join("");
+  const lineSer = lines
+    .map(
+      (s) =>
+        `<c:ser><c:idx val="${idx}"/><c:order val="${idx++}"/>${tx(s)}<c:spPr><a:ln w="31750" cap="rnd">${fill(s.color)}<a:round/></a:ln></c:spPr>` +
+        `<c:marker><c:symbol val="circle"/><c:size val="6"/><c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln w="19050">${fill(s.color)}</a:ln></c:spPr></c:marker>` +
+        `<c:dLbls><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr><c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="800" b="1"><a:solidFill><a:srgbClr val="3E4A57"/></a:solidFill></a:defRPr></a:pPr><a:endParaRPr lang="ko-KR"/></a:p></c:txPr><c:dLblPos val="t"/><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>` +
+        `${cat}${val(s)}<c:smooth val="0"/></c:ser>`
+    )
+    .join("");
+  const axTx = `<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="900"><a:solidFill><a:srgbClr val="6B7177"/></a:solidFill></a:defRPr></a:pPr><a:endParaRPr lang="ko-KR"/></a:p></c:txPr>`;
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
+    `<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+    `<c:lang val="ko-KR"/><c:roundedCorners val="0"/><c:chart>` +
+    `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1300" b="1"/></a:pPr><a:r><a:rPr lang="ko-KR" sz="1300" b="1"/><a:t>${xmlEsc(title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>` +
+    `<c:plotArea><c:layout/>` +
+    (bars.length ? `<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:varyColors val="0"/>${barSer}<c:gapWidth val="55"/><c:overlap val="100"/><c:axId val="5001"/><c:axId val="5002"/></c:barChart>` : "") +
+    (lines.length ? `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${lineSer}<c:marker val="1"/><c:axId val="5001"/><c:axId val="5002"/></c:lineChart>` : "") +
+    `<c:catAx><c:axId val="5001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:solidFill><a:srgbClr val="D9D6CE"/></a:solidFill></a:ln></c:spPr>${axTx}<c:crossAx val="5002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
+    `<c:valAx><c:axId val="5002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="ECEAE4"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:noFill/></a:ln></c:spPr>${axTx}<c:crossAx val="5001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>` +
+    `<c:spPr><a:noFill/></c:spPr></c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/>${axTx}</c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>` +
+    `<c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="D9D6CE"/></a:solidFill></a:ln></c:spPr></c:chartSpace>`
+  );
+}
+// charts: [{ sheet: 시트 이름, from: {col,row}, to: {col,row} (0부터), xml }]
+async function xlAddCharts(buffer, charts) {
+  const zip = await JSZip.loadAsync(buffer);
+  const wbXml = await zip.file("xl/workbook.xml").async("string");
+  const wbRels = await zip.file("xl/_rels/workbook.xml.rels").async("string");
+  let ct = await zip.file("[Content_Types].xml").async("string");
+  const ridOf = {};
+  wbXml.replace(/<sheet\b[^>]*>/g, (tag) => {
+    const nm = (/\bname="([^"]*)"/.exec(tag) || [])[1];
+    const rid = (/\br:id="([^"]*)"/.exec(tag) || [])[1];
+    if (nm != null) ridOf[nm.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&apos;/g, "'")] = rid;
+    return tag;
+  });
+  const targetOf = (rid) => {
+    const m = new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*>`).exec(wbRels);
+    const t = m && (/Target="([^"]*)"/.exec(m[0]) || [])[1];
+    return t ? (t.startsWith("/") ? t.slice(1) : "xl/" + t.replace(/^\.\//, "")) : null;
+  };
+  let n = 0;
+  for (const ch of charts) {
+    const path = targetOf(ridOf[ch.sheet]);
+    if (!path || !zip.file(path)) continue;
+    n++;
+    const chartPath = `xl/charts/chart${n}.xml`;
+    const drawPath = `xl/drawings/drawing${n}.xml`;
+    zip.file(chartPath, ch.xml);
+    zip.file(
+      drawPath,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+        `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${ch.from.col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${ch.from.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${ch.to.col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${ch.to.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>` +
+        `<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="${n + 1}" name="차트 ${n}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>` +
+        `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`
+    );
+    zip.file(`xl/drawings/_rels/drawing${n}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart${n}.xml"/></Relationships>`);
+    // 시트 → 그림 연결
+    const relPath = path.replace("worksheets/", "worksheets/_rels/") + ".rels";
+    let rels = zip.file(relPath) ? await zip.file(relPath).async("string") : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+    const rid = "rIdChart" + n;
+    rels = rels.replace("</Relationships>", `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${n}.xml"/></Relationships>`);
+    zip.file(relPath, rels);
+    let sx = await zip.file(path).async("string");
+    if (!/xmlns:r=/.test(sx.slice(0, 600))) sx = sx.replace(/<worksheet\b/, '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"');
+    // <drawing>은 pageMargins·pageSetup·headerFooter 뒤, legacyDrawing·tableParts·extLst 앞
+    const before = /<(legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst)\b/.exec(sx);
+    sx = before ? sx.slice(0, before.index) + `<drawing r:id="${rid}"/>` + sx.slice(before.index) : sx.replace("</worksheet>", `<drawing r:id="${rid}"/></worksheet>`);
+    zip.file(path, sx);
+    ct = ct.replace("</Types>", `<Override PartName="/${drawPath}" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/${chartPath}" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>`);
+  }
+  zip.file("[Content_Types].xml", ct);
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+}
+
 // ---------- 물동량 추이 그래프 (대시보드 금일·전일 사이, 2026-11-02) ----------
 // 위: 큰 그래프 (총 물동량 또는 고른 채널). 아래: 채널별 작은 그래프 카드 → 누르면 그 채널이 위 큰 그래프로
 // 회색 점선 = 전주 같은 요일. [엑셀 다운로드] = 고른 기간 날짜별 채널 물동량
@@ -4495,82 +4584,150 @@ function VolumeTrend({ baseDate, dayOf }) {
   const gid = "trendg-" + cur.id;
   const animKey = `${cur.id}|${range}|${baseDate}`;
 
+  // 엑셀: [총량] 시트(그래프 + 날짜별 채널 표) + 채널마다 시트(그래프 + 편별 표). 총량 표의 채널 칸은 채널 시트 합계를 가리키는 수식,
+  // 그래프는 표를 가리키는 엑셀 차트 → 채널 시트 숫자를 고치면 채널 합계·총량 표·두 그래프가 같이 바뀜
   async function downloadExcel() {
     setBusy(true);
     try {
       const wb = new ExcelJS.Workbook();
-      const ws = wb.addWorksheet("물동량 추이");
-      const chs = VOLUME_CHANNELS;
-      ws.columns = [{ width: 13 }, { width: 6 }, ...chs.map(() => ({ width: 14 })), { width: 14 }, { width: 14 }, { width: 14 }];
-      ws.addRow([`채널별 물동량 (${fmtDate(dates[0])} ~ ${fmtDate(dates[dates.length - 1])})`]);
-      ws.getRow(1).font = { name: XLFONT, size: 13, bold: true };
-      const head = ["날짜", "요일", ...chs.map((c) => c.name), "타 채널 소계", "GS 계열 소계", "총합계"];
-      const hr = ws.addRow(head);
-      hr.eachCell((c) => {
-        c.font = { name: XLFONT, bold: true, size: 10 };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9E6DE" } };
-        c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-        c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
-      });
-      const first = 3;
+      const period = `${fmtDate(dates[0])} ~ ${fmtDate(dates[dates.length - 1])}`;
+      const R0 = 24; // 표 제목 줄 (위 1~22줄은 그래프 자리)
+      const H0 = R0 + 1; // 머리글 줄
+      const D0 = R0 + 2; // 첫 날짜 줄
+      const DL = D0 + days.length - 1; // 마지막 날짜 줄
+      const SR = DL + 1; // 합계 줄
       const colL = (i) => numToCol(i);
-      const otherCols = chs.map((c, i) => (c.group === "other" ? colL(3 + i) : null)).filter(Boolean);
-      const gsCols = chs.map((c, i) => (c.group === "gs" ? colL(3 + i) : null)).filter(Boolean);
-      const nC = 3 + chs.length; // 타 채널 소계 열
-      days.forEach((x, k) => {
-        const r = first + k;
-        const row = ws.addRow([x.date, weekdayKo(x.date), ...chs.map((c) => trendValOf(x.day, c.id))]);
-        const oT = chs.filter((c) => c.group === "other").reduce((a, c) => a + trendValOf(x.day, c.id), 0);
-        const gT = chs.filter((c) => c.group === "gs").reduce((a, c) => a + trendValOf(x.day, c.id), 0);
-        row.getCell(nC).value = { formula: otherCols.map((c) => c + r).join("+"), result: oT };
-        row.getCell(nC + 1).value = { formula: gsCols.map((c) => c + r).join("+"), result: gT };
-        row.getCell(nC + 2).value = { formula: `${colL(nC)}${r}+${colL(nC + 1)}${r}`, result: oT + gT };
-      });
-      const last = first + days.length - 1;
-      const sr = ws.addRow(["합계", ""]);
-      for (let c = 3; c <= nC + 2; c++) {
-        const L2 = colL(c);
-        let res = 0;
-        for (let r = first; r <= last; r++) {
-          const v = ws.getCell(L2 + r).value;
-          res += typeof v === "number" ? v : v && v.result ? v.result : 0;
-        }
-        sr.getCell(c).value = { formula: `SUM(${L2}${first}:${L2}${last})`, result: res };
-      }
-      for (let r = first; r <= last + 1; r++) {
-        const row = ws.getRow(r);
-        for (let c = 1; c <= nC + 2; c++) {
-          const cell = row.getCell(c);
-          cell.font = { name: XLFONT, size: 10, bold: r === last + 1 || c >= nC + 2 };
-          cell.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
-          if (c >= 3) cell.numFmt = "#,##0;-#,##0;-";
-          if (c <= 2) cell.alignment = { horizontal: "center" };
-          if (r === last + 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F2EC" } };
-        }
-      }
-      ws.views = [{ state: "frozen", xSplit: 2, ySplit: 2 }];
-      // 두 번째 시트: 편·세부 칸까지
-      const ws2 = wb.addWorksheet("세부 (편별)");
-      ws2.columns = [{ width: 13 }, { width: 6 }, ...VOLUME_ROW_DEFS.map(() => ({ width: 13 }))];
-      const h2 = ws2.addRow(["날짜", "요일", ...VOLUME_ROW_DEFS.map((d) => d[3])]);
-      h2.eachCell((c) => {
+      const border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+      const headStyle = (c) => {
         c.font = { name: XLFONT, bold: true, size: 10 };
         c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9E6DE" } };
         c.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-        c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
+        c.border = border;
+      };
+      const bodyStyle = (ws, lastCol, boldCols = []) => {
+        for (let r = D0; r <= SR; r++) {
+          for (let c = 1; c <= lastCol; c++) {
+            const cell = ws.getCell(colL(c) + r);
+            cell.font = { name: XLFONT, size: 10, bold: r === SR || boldCols.includes(c) };
+            cell.border = border;
+            if (c >= 3) cell.numFmt = "#,##0;-#,##0;-";
+            if (c <= 2) cell.alignment = { horizontal: "center" };
+            if (r === SR) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F2EC" } };
+          }
+        }
+        ws.getCell("A" + SR).value = "합계";
+      };
+      const sumRow = (ws, c) => {
+        let res = 0;
+        for (let r = D0; r <= DL; r++) {
+          const v = ws.getCell(colL(c) + r).value;
+          res += typeof v === "number" ? v : v && typeof v.result === "number" ? v.result : 0;
+        }
+        ws.getCell(colL(c) + SR).value = { formula: `SUM(${colL(c)}${D0}:${colL(c)}${DL})`, result: res };
+      };
+      const catVals = days.map((x) => x.date);
+      const charts = [];
+      // 채널 시트를 먼저 정함 (기간 안에 물량이 있는 채널만)
+      const chs = VOLUME_CHANNELS;
+      const withData = chs.filter((c) => days.some((x) => trendValOf(x.day, c.id) > 0));
+      const sheetName = (c) => c.name.replace(/[\\/?*[\]:]/g, " ").slice(0, 31);
+      // 1) 총량 시트 (맨 앞)
+      const wt = wb.addWorksheet("총량");
+      wt.columns = [{ width: 13 }, { width: 6 }, ...chs.map(() => ({ width: 13 })), { width: 13 }, { width: 13 }, { width: 13 }];
+      wt.getCell("A" + R0).value = `채널별 물동량 (${period})`;
+      wt.getCell("A" + R0).font = { name: XLFONT, size: 13, bold: true };
+      ["날짜", "요일", ...chs.map((c) => c.name), "타 채널 소계", "GS 계열 소계", "총합계"].forEach((h, i) => {
+        const c = wt.getCell(colL(i + 1) + H0);
+        c.value = h;
+        headStyle(c);
       });
-      days.forEach((x) => {
-        const row = ws2.addRow([x.date, weekdayKo(x.date), ...VOLUME_ROW_DEFS.map((d) => (x.day && x.day.rows[d[0]] ? x.day.rows[d[0]].value : 0))]);
-        row.eachCell((c, ci) => {
-          c.font = { name: XLFONT, size: 10 };
-          c.border = { top: XL_THIN, bottom: XL_THIN, left: XL_THIN, right: XL_THIN };
-          if (ci >= 3) c.numFmt = "#,##0;-#,##0;-";
+      wt.getRow(H0).height = 30;
+      const nC = 3 + chs.length; // 타 채널 소계 열 번호
+      // 2) 채널 시트들
+      const totColOf = {};
+      withData.forEach((ch) => {
+        const ws = wb.addWorksheet(sheetName(ch));
+        const parts = VOLUME_ROW_DEFS.filter((d) => d[2] === ch.id);
+        const tc = 3 + parts.length; // 합계 열
+        totColOf[ch.id] = colL(tc);
+        ws.columns = [{ width: 13 }, { width: 6 }, ...parts.map(() => ({ width: 14 })), { width: 14 }];
+        ws.getCell("A" + R0).value = `${ch.name} 물동량 (${period})`;
+        ws.getCell("A" + R0).font = { name: XLFONT, size: 13, bold: true };
+        ["날짜", "요일", ...parts.map((d) => d[3]), "합계"].forEach((h, i) => {
+          const c = ws.getCell(colL(i + 1) + H0);
+          c.value = h;
+          headStyle(c);
+        });
+        ws.getRow(H0).height = 30;
+        days.forEach((x, k) => {
+          const r = D0 + k;
+          ws.getCell("A" + r).value = x.date;
+          ws.getCell("B" + r).value = weekdayKo(x.date);
+          let t = 0;
+          parts.forEach((d, pi) => {
+            const v = x.day && x.day.rows[d[0]] ? x.day.rows[d[0]].value : 0;
+            t += v;
+            ws.getCell(colL(3 + pi) + r).value = v;
+          });
+          ws.getCell(colL(tc) + r).value = { formula: `SUM(${colL(3)}${r}:${colL(2 + parts.length)}${r})`, result: t };
+        });
+        for (let c = 3; c <= tc; c++) sumRow(ws, c);
+        bodyStyle(ws, tc, [tc]);
+        const sn = xlSheetRef(ws.name);
+        const partsWithData = parts.map((d, pi) => ({ d, pi })).filter(({ d }) => days.some((x) => x.day && x.day.rows[d[0]] && x.day.rows[d[0]].value > 0));
+        const shades = ["#BFC7CF", "#8E9AA6", "#D9C9A8", "#A9C4B8"];
+        charts.push({
+          sheet: ws.name,
+          from: { col: 0, row: 0 },
+          to: { col: Math.max(tc, 9), row: 22 },
+          xml: xlChartXml({
+            title: `${ch.name} 물동량`,
+            cats: catVals,
+            catRef: `${sn}!$A$${D0}:$A$${DL}`,
+            bars: partsWithData.length > 1 ? partsWithData.map(({ d, pi }, k) => ({ name: d[3], nameRef: `${sn}!$${colL(3 + pi)}$${H0}`, ref: `${sn}!$${colL(3 + pi)}$${D0}:$${colL(3 + pi)}$${DL}`, vals: days.map((x) => (x.day && x.day.rows[d[0]] ? x.day.rows[d[0]].value : 0)), color: shades[k % shades.length] })) : [],
+            lines: [{ name: "합계", nameRef: `${sn}!$${colL(tc)}$${H0}`, ref: `${sn}!$${colL(tc)}$${D0}:$${colL(tc)}$${DL}`, vals: days.map((x) => trendValOf(x.day, ch.id)), color: ch.color }],
+          }),
         });
       });
-      ws2.views = [{ state: "frozen", xSplit: 2, ySplit: 1 }];
-      const buf = await wb.xlsx.writeBuffer();
-      saveXlsxBuffer(buf, `물동량추이_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
-      logUi("download_volume_trend", `${dates[0]}~${dates[dates.length - 1]}`, { range });
+      // 총량 표 채우기: 채널 칸 = 채널 시트 합계 (수식)
+      const otherIdx = chs.map((c, i) => (c.group === "other" ? i : -1)).filter((i) => i >= 0);
+      const gsIdx = chs.map((c, i) => (c.group === "gs" ? i : -1)).filter((i) => i >= 0);
+      days.forEach((x, k) => {
+        const r = D0 + k;
+        wt.getCell("A" + r).value = x.date;
+        wt.getCell("B" + r).value = weekdayKo(x.date);
+        chs.forEach((c, i) => {
+          const v = trendValOf(x.day, c.id);
+          wt.getCell(colL(3 + i) + r).value = totColOf[c.id] ? { formula: `${xlSheetRef(sheetName(c))}!${totColOf[c.id]}${r}`, result: v } : v;
+        });
+        const oT = otherIdx.reduce((a, i) => a + trendValOf(x.day, chs[i].id), 0);
+        const gT = gsIdx.reduce((a, i) => a + trendValOf(x.day, chs[i].id), 0);
+        wt.getCell(colL(nC) + r).value = { formula: otherIdx.map((i) => colL(3 + i) + r).join("+"), result: oT };
+        wt.getCell(colL(nC + 1) + r).value = { formula: gsIdx.map((i) => colL(3 + i) + r).join("+"), result: gT };
+        wt.getCell(colL(nC + 2) + r).value = { formula: `${colL(nC)}${r}+${colL(nC + 1)}${r}`, result: oT + gT };
+      });
+      for (let c = 3; c <= nC + 2; c++) sumRow(wt, c);
+      bodyStyle(wt, nC + 2, [nC + 2]);
+      const tn = xlSheetRef("총량");
+      charts.unshift({
+        sheet: "총량",
+        from: { col: 0, row: 0 },
+        to: { col: nC + 2, row: 22 },
+        xml: xlChartXml({
+          title: `총 물동량 (${period})`,
+          cats: catVals,
+          catRef: `${tn}!$A$${D0}:$A$${DL}`,
+          bars: withData.map((c) => {
+            const i = chs.indexOf(c);
+            return { name: c.name, nameRef: `${tn}!$${colL(3 + i)}$${H0}`, ref: `${tn}!$${colL(3 + i)}$${D0}:$${colL(3 + i)}$${DL}`, vals: days.map((x) => trendValOf(x.day, c.id)), color: c.color };
+          }),
+          lines: [{ name: "총합계", nameRef: `${tn}!$${colL(nC + 2)}$${H0}`, ref: `${tn}!$${colL(nC + 2)}$${D0}:$${colL(nC + 2)}$${DL}`, vals: days.map((x) => trendValOf(x.day, "total")), color: TREND_TOTAL.color }],
+        }),
+      });
+      const raw = await wb.xlsx.writeBuffer();
+      const out = await xlAddCharts(raw, charts);
+      saveXlsxBuffer(out, `물동량추이_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
+      logUi("download_volume_trend", `${dates[0]}~${dates[dates.length - 1]}`, { range, sheets: 1 + withData.length });
     } catch (e) {
       window.alert(`엑셀을 만들지 못했어요: ${e.message}`);
     } finally {
@@ -4887,11 +5044,16 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   // 물동량 추이 그래프: 기준일 앞 40일까지의 달별 일별 집계 저장값을 미리 불러옴 (금일·전일과 같은 계산)
   const trendMonths = useMemo(() => Array.from(new Set([baseDate, shiftDateStr(baseDate, -20), shiftDateStr(baseDate, -40)].map((d) => d.slice(0, 7)))), [baseDate]);
   const [trendTick, setTrendTick] = useState(0);
+  const trendKeys = useMemo(() => {
+    const keys = [];
+    trendMonths.forEach((m) => keys.push(dailyEditsKey(m), emartDailyKey(m), gsFrozenDailyKey(m), emFrozenDailyKey(m), sevenDailyKey(m), sevenFrozenDailyKey(m), bgfDailyKey(m), bgfFrozenDailyKey(m), emdeliDailyKey(m)));
+    return keys;
+  }, [trendMonths]);
+  const trendSettingsTick = useSettingsTick(trendKeys); // 일별 집계 숫자를 고치면 그래프도 같이
   useEffect(() => {
     if (!authToken) return;
     let cancelled = false;
-    const keys = [];
-    trendMonths.forEach((m) => keys.push(dailyEditsKey(m), emartDailyKey(m), gsFrozenDailyKey(m), emFrozenDailyKey(m), sevenDailyKey(m), sevenFrozenDailyKey(m), bgfDailyKey(m), bgfFrozenDailyKey(m), emdeliDailyKey(m)));
+    const keys = trendKeys;
     const need = keys.filter((k) => !(k in SETTING_CACHE));
     if (!need.length) return;
     Promise.all(
@@ -4918,7 +5080,7 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
       cache.set(date, d);
       return d;
     };
-  }, [dayToday, dayPrev, trendTick, savedMap, gsStored, baseDate, prevDate]); // eslint-disable-line
+  }, [dayToday, dayPrev, trendTick, trendSettingsTick, savedMap, gsStored, baseDate, prevDate, dailyRules, emRules, frRules, efRules, svRules, sfRules, bgRules, bfRules, dlRules]); // eslint-disable-line
 
   async function handleSave(date, data) {
     try {
@@ -15524,6 +15686,17 @@ function publishSetting(key, value) {
 function pickFormMapOf(cfg, saved) {
   const m = { ...((cfg && cfg.formDefaults) || {}), ...((saved && saved.map) || {}) };
   return new Map(Object.entries(m).filter(([k, v]) => k && v));
+}
+// 여러 설정 중 하나라도 바뀌면 숫자 하나가 올라감 (다른 화면·다른 직원이 일별 집계를 고치면 그래프도 다시 계산)
+function useSettingsTick(keys) {
+  const [t, setT] = useState(0);
+  const sig = keys.join("|");
+  useEffect(() => {
+    const sub = () => setT((x) => x + 1);
+    keys.forEach((k) => (SETTING_SUBS[k] = SETTING_SUBS[k] || new Set()).add(sub));
+    return () => keys.forEach((k) => SETTING_SUBS[k] && SETTING_SUBS[k].delete(sub));
+  }, [sig]); // eslint-disable-line
+  return t;
 }
 function useSetting(key, authToken) {
   const [value, setValue] = useState(SETTING_CACHE[key] ?? null);
