@@ -9160,7 +9160,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       await cloneEmartSheet(tpl, item.formSrc, pvName, m0);
       formPivotOf[item.formKey] = pvName;
     }
-    let pivot = item.formSrc ? formPivotOf[item.formKey] : (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] : (opts.pivotFirst && opts.pivotForVendor && opts.pivotForVendor(tpl, item.vendor, item.name)) || emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || (opts.pivotForVendor ? opts.pivotForVendor(tpl, item.vendor, item.name) : emartPivotByVendorName(tpl, item.vendor)));
+    let pivot = item.formSrc ? formPivotOf[item.formKey] : (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] || (opts.frozenPivotOf && opts.frozenPivotOf(tpl, item.vendor)) || null : (opts.pivotFirst && opts.pivotForVendor && opts.pivotForVendor(tpl, item.vendor, item.name)) || emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || (opts.pivotForVendor ? opts.pivotForVendor(tpl, item.vendor, item.name) : emartPivotByVendorName(tpl, item.vendor)));
     if (!pivot && (opts.cloneUnknownVendor || opts.cloneNewVendor) && tpl.products.length) {
       // 템플릿에 없는 공급사(이마트 냉동·세븐 새 공급사 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
       // opts.newVendorSrc: 새 공급사 틀로 쓸 공급사 피벗 (이마트: "신성베이커리" - 센터 12줄만 있는 단순한 모양, 2026-10-31)
@@ -9194,7 +9194,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (t && srcProd.pivot && t.includes(srcProd.pivot)) return t.replace(srcProd.pivot, key);
       // "데어리젠 피벗" → 시트 위 "데어리젠 - 이마트24" 에서 "데어리젠"만 바꿈
       const base = String(srcProd.pivot || "").replace(/^[★☆]\s*/, "").replace(/\([^)]*\)/g, "").replace(/(이마트)?\s*피벗/g, "").replace(/[)\s]+$/, "").trim();
-      let out = t && base.length >= 2 && t.includes(base) ? t.replace(base, key) : item.formSrc ? key : emartVendorKey(item.vendor);
+      let out = t && base.length >= 2 && t.includes(base) ? t.replace(base, key) : opts.newTitleOf ? opts.newTitleOf(key) : item.formSrc ? key : emartVendorKey(item.vendor);
       // 세븐 "<1편>" 같은 편 표시는 원래 시트 것으로
       const ownPart = /<\s*\d\s*편\s*>/.exec(item.formOwnTitle || "");
       if (item.formSrc && ownPart && /<\s*\d\s*편\s*>/.test(out)) out = out.replace(/<\s*\d\s*편\s*>/, ownPart[0]);
@@ -9213,7 +9213,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       // 다른 공급사 시트를 복사했으면 시트 위쪽 공급사 이름 글자도 이 공급사로
       if (pvRe && srcProd.sheetTitle) {
         readSheetCells(tmp, tpl.sst);
-        tmp.cells.forEach((c, ref) => !c.f && c.v === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
+        tmp.cells.forEach((c, ref) => !c.f && typeof c.v === "string" && c.v.trim() === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
       }
       setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
       const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || (item.formSrc && !(item.box > 1) && item.formOwnPack) || item.box;
@@ -9984,6 +9984,16 @@ async function analyzeGsFrozenBuffer(buf) {
 }
 // GS 냉동 공급사 이름 정리 (집계·설정 키): "(주)네이쳐앤휴먼지피" -> "네이쳐앤휴먼지피"
 const frozenSupKey = (s) => String(s || "").replace(/\(주\)|㈜|주식회사/g, "").trim() || "미지정";
+// GS 냉동: 거래처 이름으로 원본 공급사 피벗 찾기 ("(주)리치푸드" → "리치푸드 피벗"). 못 찾으면 null → 새 공급사로 시트 생성
+function gsFrozenPivotOf(tpl, vendor) {
+  const key = frozenSupKey(vendor).replace(/\s/g, "");
+  if (key.length < 2) return null;
+  const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
+  return pivots.find((pv) => {
+    const base = pv.replace(/피벗|\(냉동\)|\s/g, "");
+    return base.length >= 2 && (key.includes(base) || base.includes(key));
+  }) || null;
+}
 const frozenTitleOf = (p) => String(p.title || p.sheet).replace(/\s*\n\s*/g, "").trim();
 function gsFrozenRowsOf(orders, date, tplInfo) {
   const labelOf = (tplInfo && tplInfo.frozen && tplInfo.frozen.labelOf) || {};
@@ -10829,6 +10839,7 @@ function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(
 // ----- 템플릿 피킹지 채널 설정 (GS 냉동 / 이마트 냉동이 같은 화면·설정창을 씀) -----
 const GS_FROZEN_PICK_CFG = {
   formKey: "picking_form_gsfrozen",
+  formNewSrc: "리치푸드 피벗", // 처음 보는 공급사 기본 폼 (2026-11-02, 보이는 공급사 피벗은 전부 같은 모양)
   label: "GS 냉동",
   dailyLabel: "GS냉동",
   brand: "GSFROZEN",
@@ -10842,7 +10853,7 @@ const GS_FROZEN_PICK_CFG = {
   getBuffer: () => getGsFrozenTemplateBuffer(),
   analyze: (buf) => analyzeGsFrozenBuffer(buf),
   rowsOf: (orders, date, tplInfo) => gsFrozenRowsOf(orders, date, tplInfo),
-  buildOpts: (tplInfo, deliv) => ({ regionRe: GS_FROZEN_REGION_RE, regionOrder: (tplInfo && tplInfo.frozen.order) || [], keepVisible: true, colorKind: "gsfrozen_picking", pivotA2: deliv, dateTextOut: deliv, wideLookup: true, removeTexts: [] }),
+  buildOpts: (tplInfo, deliv) => ({ regionRe: GS_FROZEN_REGION_RE, regionOrder: (tplInfo && tplInfo.frozen.order) || [], keepVisible: true, cloneNewVendor: true, newVendorSrc: "리치푸드 피벗", frozenPivotOf: gsFrozenPivotOf, newTitleOf: (k) => `GS ${k} _냉동 □`, colorKind: "gsfrozen_picking", pivotA2: deliv, dateTextOut: deliv, wideLookup: true, removeTexts: [] }),
 };
 // 이마트 냉동: 이마트 피킹검수와 같은 모양(센터 = "원주2(저온)" 등). 전용 템플릿(emart_frozen_picking_template.xlsx)이 있으면 그 파일 그대로,
 // 아직 없으면 이마트 피킹검수 템플릿의 공급사 블록을 복사해서 냉동 공급사 피벗·상품 시트를 만들어요.
@@ -14860,6 +14871,44 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
                     </option>
                   ))}
                 </select>
+                {onZeroLines && vendorFilter !== "all" && (
+                  <button
+                    disabled={zeroBusy}
+                    onClick={async () => {
+                      // 잘못 올린 공급사(예: 냉동 공급사를 일반에 올림): 이 날짜 이 공급사 발주 줄을 전부 0으로 (다른 공급사·다른 날짜는 그대로)
+                      const pairs = [];
+                      let q = 0;
+                      const names = new Set();
+                      emartOrders.forEach((o) => {
+                        if (o.createdAt !== activeDate || !pv.rowFilter(o) || pv.supKey(o.supplier) !== vendorFilter) return;
+                        o.lines.forEach((l) => {
+                          const n = Number(l.changedQty ?? l.qty) || 0;
+                          if (n > 0) {
+                            pairs.push([o.id, l.sku]);
+                            q += n;
+                            names.add(l.name);
+                          }
+                        });
+                      });
+                      if (!pairs.length) return window.alert("지울 발주가 없어요.");
+                      if (!window.confirm(`${activeDate} ${pv.label} 발주에서 공급사 "${vendorFilter}"를 통째로 지울까요?\n상품 ${names.size}개 · ${pairs.length}줄 · 총 ${q.toLocaleString()}개\n\n이 날짜의 이 공급사만 지워져요 (다른 공급사·다른 날짜는 그대로).\n피킹지·명세서·일별 집계·대시보드에서 빠져요.\n냉동을 일반에 잘못 올렸으면, 지운 뒤 냉동에 다시 올려 주세요.`)) return;
+                      setZeroBusy(true);
+                      try {
+                        await onZeroLines(pairs);
+                        setVendorFilter("all");
+                      } catch (e) {
+                        window.alert(`지우지 못했어요: ${e.message}`);
+                      } finally {
+                        setZeroBusy(false);
+                      }
+                    }}
+                    className="ghost-btn"
+                    style={{ ...smallBtnStyle, borderColor: T.danger, color: T.danger, fontWeight: 700, opacity: zeroBusy ? 0.7 : 1 }}
+                    title="잘못 올린 공급사: 이 날짜의 이 공급사 발주만 통째로 지워요"
+                  >
+                    {zeroBusy ? "지우는 중..." : `이 날짜 "${vendorFilter}" 발주 전체 삭제`}
+                  </button>
+                )}
                 <div style={{ position: "relative" }}>
                   <Search size={14} style={{ position: "absolute", left: 9, top: 10, color: T.inkSoft }} />
                   <input style={{ ...inputStyle, width: "100%", paddingLeft: 28 }} placeholder="상품명 또는 상품코드 검색" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
@@ -17406,7 +17455,7 @@ function PickingCenter({ channel, onChannel, gsView, emartOrders, frozenOrders =
       channel={channel}
       onChannel={onChannel}
       title="피킹지시서 출력"
-      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "bgf" ? <EmartPickingView key="bgf" pv={BGF_PV_CFG} emartOrders={bgfOrders} authToken={authToken} /> : c === "bgffrozen" ? <EmartPickingView key="bgffrozen" pv={BGF_FROZEN_PV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} /> : null)}
+      renderReady={(c) => (c === "gs" ? gsView : c === "emart" ? <EmartPickingView emartOrders={emartOrders} authToken={authToken} /> : c === "gsfrozen" ? <GsFrozenPickingView key="gsfrozen" frozenOrders={frozenOrders} authToken={authToken} /> : c === "emfrozen" ? <GsFrozenPickingView key="emfrozen" cfg={EM_FROZEN_PICK_CFG} frozenOrders={emFrozenOrders} authToken={authToken} /> : c === "seven" ? <EmartPickingView key="seven" pv={SEVEN_PV_CFG} emartOrders={sevenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "sevenfrozen" ? <EmartPickingView key="sevenfrozen" pv={SEVEN_FROZEN_PV_CFG} emartOrders={sevenFrozenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "bgf" ? <EmartPickingView key="bgf" pv={BGF_PV_CFG} emartOrders={bgfOrders} authToken={authToken} onZeroLines={onZeroLines} /> : c === "bgffrozen" ? <EmartPickingView key="bgffrozen" pv={BGF_FROZEN_PV_CFG} emartOrders={bgfFrozenOrders} authToken={authToken} onZeroLines={onZeroLines} /> : null)}
       placeholderAction={(ch) => <BrandOrderSettingsButton ch={ch} authToken={authToken} detected={[]} />}
     />
   );
