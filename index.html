@@ -4415,7 +4415,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
 // 차트는 표 칸을 가리키는 진짜 엑셀 차트라서, 엑셀에서 숫자를 고치면 그래프도 같이 바뀜
 const xmlEsc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const xlSheetRef = (sheet) => `'${String(sheet).replace(/'/g, "''")}'`;
-function xlChartXml({ title, cats, catRef, bars = [], lines = [] }) {
+function xlChartXml({ title, cats, catRef, bars = [], lines = [], majorUnit = 0 }) {
   const strCache = (arr) => `<c:strCache><c:ptCount val="${arr.length}"/>${arr.map((v, i) => `<c:pt idx="${i}"><c:v>${xmlEsc(v)}</c:v></c:pt>`).join("")}</c:strCache>`;
   const numCache = (arr) => `<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${arr.length}"/>${arr.map((v, i) => `<c:pt idx="${i}"><c:v>${Number(v) || 0}</c:v></c:pt>`).join("")}</c:numCache>`;
   const tx = (s) => `<c:tx><c:strRef><c:f>${xmlEsc(s.nameRef)}</c:f>${strCache([s.name])}</c:strRef></c:tx>`;
@@ -4443,7 +4443,7 @@ function xlChartXml({ title, cats, catRef, bars = [], lines = [] }) {
     (bars.length ? `<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:varyColors val="0"/>${barSer}<c:gapWidth val="55"/><c:overlap val="100"/><c:axId val="5001"/><c:axId val="5002"/></c:barChart>` : "") +
     (lines.length ? `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${lineSer}<c:marker val="1"/><c:axId val="5001"/><c:axId val="5002"/></c:lineChart>` : "") +
     `<c:catAx><c:axId val="5001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:solidFill><a:srgbClr val="D9D6CE"/></a:solidFill></a:ln></c:spPr>${axTx}<c:crossAx val="5002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
-    `<c:valAx><c:axId val="5002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="ECEAE4"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:noFill/></a:ln></c:spPr>${axTx}<c:crossAx val="5001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>` +
+    `<c:valAx><c:axId val="5002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="ECEAE4"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:noFill/></a:ln></c:spPr>${axTx}<c:crossAx val="5001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/>${majorUnit ? `<c:majorUnit val="${majorUnit}"/>` : ""}</c:valAx>` +
     `<c:spPr><a:noFill/></c:spPr></c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/>${axTx}</c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>` +
     `<c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="D9D6CE"/></a:solidFill></a:ln></c:spPr></c:chartSpace>`
   );
@@ -4572,14 +4572,18 @@ function VolumeTrend({ baseDate, dayOf }) {
     R = 18,
     TP = 26,
     B = 34;
-  const top = niceMax(Math.max(...vals, ...(compare ? prevVals : [0]), 1) * 1.08);
+  // 세로 눈금: 10만이 넘는 그래프는 10만 단위 (40만이 넘으면 50만·60만…으로 자동으로 늘어남), 작은 채널은 자동
+  const peak = Math.max(...vals, ...(compare ? prevVals : [0]), 1);
+  const STEP = 100000;
+  const top = peak >= STEP ? Math.ceil((peak * 1.06) / STEP) * STEP : niceMax(peak * 1.08);
   const n = days.length;
   const xs = days.map((_, i) => L + ((W - L - R) * (i + 0.5)) / n);
   const Y = (v) => TP + (H - TP - B) * (1 - v / top);
   const linePts = xs.map((x, i) => `${x.toFixed(1)},${Y(vals[i]).toFixed(1)}`).join(" ");
   const areaD = n ? `M${xs[0].toFixed(1)},${Y(0).toFixed(1)} ` + xs.map((x, i) => `L${x.toFixed(1)},${Y(vals[i]).toFixed(1)}`).join(" ") + ` L${xs[n - 1].toFixed(1)},${Y(0).toFixed(1)} Z` : "";
   const prevPts = xs.map((x, i) => `${x.toFixed(1)},${Y(prevVals[i]).toFixed(1)}`).join(" ");
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(top * f));
+  const ticks = peak >= STEP ? Array.from({ length: top / STEP + 1 }, (_, i) => i * STEP) : [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(top * f));
+  const tickLabel = (t) => (!t ? "0" : peak >= STEP ? `${t / 10000}만` : fmtK(t));
   const labelEvery = n > 20 ? 3 : n > 14 ? 2 : 1;
   const gid = "trendg-" + cur.id;
   const animKey = `${cur.id}|${range}|${baseDate}`;
@@ -4682,6 +4686,7 @@ function VolumeTrend({ baseDate, dayOf }) {
           to: { col: Math.max(tc, 9), row: 22 },
           xml: xlChartXml({
             title: `${ch.name} 물동량`,
+            majorUnit: Math.max(...days.map((x) => trendValOf(x.day, ch.id))) >= 100000 ? 100000 : 0,
             cats: catVals,
             catRef: `${sn}!$A$${D0}:$A$${DL}`,
             bars: partsWithData.length > 1 ? partsWithData.map(({ d, pi }, k) => ({ name: d[3], nameRef: `${sn}!$${colL(3 + pi)}$${H0}`, ref: `${sn}!$${colL(3 + pi)}$${D0}:$${colL(3 + pi)}$${DL}`, vals: days.map((x) => (x.day && x.day.rows[d[0]] ? x.day.rows[d[0]].value : 0)), color: shades[k % shades.length] })) : [],
@@ -4715,6 +4720,7 @@ function VolumeTrend({ baseDate, dayOf }) {
         to: { col: nC + 2, row: 22 },
         xml: xlChartXml({
           title: `총 물동량 (${period})`,
+          majorUnit: Math.max(...days.map((x) => trendValOf(x.day, "total"))) >= 100000 ? 100000 : 0, // 10만 단위 (최대는 엑셀이 자동으로 늘림)
           cats: catVals,
           catRef: `${tn}!$A$${D0}:$A$${DL}`,
           bars: withData.map((c) => {
@@ -4806,7 +4812,7 @@ function VolumeTrend({ baseDate, dayOf }) {
             <g key={ti}>
               <line x1={L} x2={W - R} y1={Y(t)} y2={Y(t)} stroke="#ECEAE4" />
               <text x={L - 8} y={Y(t) + 4} fontSize="11" fill="#8A8F94" textAnchor="end">
-                {t ? fmtK(t) : 0}
+                {tickLabel(t)}
               </text>
             </g>
           ))}
@@ -4819,7 +4825,7 @@ function VolumeTrend({ baseDate, dayOf }) {
                 <circle cx={x} cy={Y(vals[i])} r={hover === i ? 5.5 : 3.8} fill="#fff" stroke={cur.color} strokeWidth="2.4" />
                 {(n <= 16 || i === n - 1 || hover === i) && vals[i] > 0 && (
                   <text x={x} y={Y(vals[i]) - 10} fontSize="10.5" fill="#3E4A57" textAnchor="middle">
-                    {fmtK(vals[i])}
+                    {peak >= STEP ? `${(vals[i] / 10000).toFixed(1)}만` : fmtK(vals[i])}
                   </text>
                 )}
               </g>
