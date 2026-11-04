@@ -9804,7 +9804,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
             const pr = splitRef(ref);
             if (!pr || (pr.c !== 2 && pr.c !== 3) || c.f || c.v !== srcProd.pack) return;
             const a = tmp.cells.get("A" + pr.r);
-            if (a && typeof a.v === "string" && tpl.regionRe.test(a.v)) setCellXml(tmp, ref, boxQ);
+            // 센터 줄 + 권역·총합계 줄(수도권 합계·영남 합계·총합계 …)의 입수도 (2026-11-04 쟈뎅: 합계 줄 입수가 복사한 데어리젠 16 그대로라 박스·낱개가 틀림)
+            if (a && typeof a.v === "string" && (tpl.regionRe.test(a.v) || /합계/.test(a.v))) setCellXml(tmp, ref, boxQ);
           });
         }
       }
@@ -10009,7 +10010,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (!s) return;
       for (let r = 1; r <= s.maxRow; r++) {
         const a = s.cells.get("A" + r);
-        if (!a || typeof a.v !== "string" || !tpl.regionRe.test(a.v)) continue;
+        if (!a || typeof a.v !== "string" || !(tpl.regionRe.test(a.v) || /합계/.test(a.v))) continue; // 권역·총합계 줄 입수도 같이
         ["B", "C"].forEach((col) => {
           const x = s.cells.get(col + r);
           if (x && !x.f && x.v === prod.pack) setCellXml(s, col + r, np);
