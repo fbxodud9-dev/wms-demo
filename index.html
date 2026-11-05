@@ -21014,6 +21014,22 @@ const DANGCHAK_PRODUCTS = {
   "리얼)쫄깃한모짜렐라치즈35G": { style: "combined", group: "데어리젠", region: "VV92" },
   "리얼)쫄깃한스트링치즈4입": { style: "combined", group: "데어리젠", region: "VV92" },
 };
+// 당착 그룹(공급사) 이름 맞추기 (2026-11-05): 신상품 당착이 "(네고)참맛나라"처럼 이름이 조금 달라 새 당착 시트가 따로 생기던 문제.
+// (네고)·띄어쓰기·"피벗"을 빼고 같은 공급사면, 이미 있는 당착 그룹 이름(기본 당착 목록 → 다른 상품에 저장된 당착 그룹 순)으로 맞춰서 그 시트에 같이 들어가게 함.
+// 수량·지역은 그대로 (그룹 이름만 맞춤)
+const dangchakGroupNorm = (g) => String(g || "").replace(/\(네고\)|\(주\)|㈜|주식회사/g, "").replace(/피벗/g, "").replace(/[\s□]+/g, "").toLowerCase();
+function canonDangchakGroup(g) {
+  const n = dangchakGroupNorm(g);
+  if (!n) return g;
+  const base = Object.values(DANGCHAK_PRODUCTS).map((x) => x.group).filter(Boolean);
+  const hit = base.find((x) => dangchakGroupNorm(x) === n);
+  if (hit) return hit;
+  const saved = Object.values(PRODUCT_INFO || {})
+    .map((v) => v && v.dangchak && v.dangchak.style === "combined" && String(v.dangchak.group || "").trim())
+    .filter(Boolean)
+    .sort((x, y) => (/\(네고\)/.test(x) ? 1 : 0) - (/\(네고\)/.test(y) ? 1 : 0) || x.localeCompare(y, "ko"));
+  return saved.find((x) => dangchakGroupNorm(x) === n) || g;
+}
 // 상품마스터에서 바꾼 당착 분류가 있으면 그것(null = 당착 아님), 없으면 기본 당착 목록
 function getDangchakInfo(name) {
   const ov = productInfoOf(name);
@@ -21022,7 +21038,7 @@ function getDangchakInfo(name) {
     if (!d || !d.style) return null;
     if (d.style === "combined") {
       const regions = (Array.isArray(d.regions) && d.regions.length ? d.regions : [d.region || "VV34"]).filter(Boolean);
-      return { style: "combined", regions, region: regions[0], group: String(d.group || "").trim() || dcVendorKey(name) || "당착" };
+      return { style: "combined", regions, region: regions[0], group: canonDangchakGroup(String(d.group || "").trim() || dcVendorKey(name) || "당착") };
     }
     return { style: "full" };
   }
@@ -21645,7 +21661,7 @@ function PickingProductSettingModal({ product, productInfo, authToken, onSaved, 
   const baseDk = getDangchakInfoBase(name);
   const partNow = detectPart(name);
   const partAuto = detectPartByName(name);
-  const group = (dk && dk.group) || dcVendorKey(name) || pickingSupplierKey(product.supplier || "") || "당착";
+  const group = (dk && dk.group) || canonDangchakGroup(dcVendorKey(name) || pickingSupplierKey(product.supplier || "") || "당착");
   const regionsNow = dk && dk.style === "combined" ? dk.regions || [dk.region] : [];
   const mode = !dk ? "none" : dk.style === "full" ? "full" : "regions";
   const sameDk = (a, b) => (!a && !b) || (a && b && a.style === b.style && (a.style === "full" || (String(a.group) === String(b.group) && [...(a.regions || [])].sort().join() === [...(b.regions || [])].sort().join())));
