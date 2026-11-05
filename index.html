@@ -13607,7 +13607,7 @@ function sevenRowsFromOrders(orders) {
 // [양식 등록]: 직원이 쓰는 세븐 편수리스트 엑셀을 한 번 올려두면(서버 설정 seven_pyeonsu_template) 그 양식 그대로 그날 공급사별 SKU 수·수량을 채운다
 //   양식에서 "공급사/거래처/업체/협력사" 칸과 "SKU/품목수/상품수" 칸(+ 있으면 "수량/물량" 칸)이 있는 머리글 줄을 찾아서, 공급사 이름이 맞는 줄에 숫자를 넣음
 // 양식이 없으면 기본 표(공급사 | 편 | SKU 수 | 총수량 | 센터 수)로 만든다
-function sevenPyeonsuSummary(orders) {
+function sevenPyeonsuSummary(orders, hideCfg) {
   const m = new Map();
   orders.forEach((o) => {
     const k = sevenSupKey(o.supplier);
@@ -13615,6 +13615,7 @@ function sevenPyeonsuSummary(orders) {
     o.lines.forEach((l) => {
       const q = Number(l.changedQty ?? l.qty) || 0;
       if (q <= 0) return;
+      if (hideCfg && isBrandHidden(hideCfg, k, String(l.name || "").trim())) return; // 피킹지 순서 설정에서 뺀 공급사·상품 (2026-11-05)
       x.skus.add(l.sku || l.name);
       x.qty += q;
       x.centers.add(o.storeCode || o.customer);
@@ -13624,7 +13625,7 @@ function sevenPyeonsuSummary(orders) {
   return Array.from(m.values()).map((x) => ({ ...x, sku: x.skus.size, part: sevenPartOf("", x.vendor) }));
 }
 async function downloadSevenPyeonsu(orders, date, tplSaved) {
-  const sum = sevenPyeonsuSummary(orders);
+  const sum = sevenPyeonsuSummary(orders, await settingNow(SEVEN_PV_CFG.orderKey));
   const wb = new ExcelJS.Workbook();
   const extras = [];
   if (tplSaved && tplSaved.b64) {
@@ -20545,15 +20546,18 @@ const PYEONSU_DC_ROWS = [
 const pyeonsuNorm = (v) => String(v || "").toLowerCase().replace(/\(네고\)|\s/g, "");
 
 // 그날 상품 목록(buildProductsForDate 결과) -> { 행번호: SKU 수 }
+// 피킹지 순서 설정에서 뺀(삭제한) 공급사·상품은 피킹지에 안 나가니 SKU 수에서도 빠짐 (2026-11-05: 추가되면 +1, 삭제되면 -1)
+const pyeonsuDkHas = (p, dk) => p.regionRows.some((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0);
+const pyeonsuDkGroup = (p, dk) => (dk.style === "combined" ? dk.group : dangchakVendorKey(p));
 function computePyeonsuCounts(products) {
+  products = products.filter((p) => !isGsPickHidden(p));
   const counts = {};
   PYEONSU_DANGCHAK_ROWS.forEach(({ row, key }) => {
     counts[row] = products.filter((p) => {
       const dk = getDangchakInfo(p.name);
       if (!dk) return false;
-      const groupKey = dk.style === "combined" ? dk.group : dangchakVendorKey(p);
-      if (pyeonsuNorm(groupKey) !== pyeonsuNorm(key)) return false;
-      return p.regionRows.some((r) => dangchakHasRegion(dk, r.key) && (r.rawQty ?? r.qty) > 0);
+      if (pyeonsuNorm(pyeonsuDkGroup(p, dk)) !== pyeonsuNorm(key)) return false;
+      return pyeonsuDkHas(p, dk);
     }).length;
   });
   PYEONSU_DC_ROWS.forEach(({ row, key, bySupplier, aliases }) => {
@@ -20568,6 +20572,60 @@ function computePyeonsuCounts(products) {
     }).length;
   });
   return counts;
+}
+// 편수리스트 당착 표에 없는 당착 공급사 (새로 당착으로 정한 공급사): [{ label, style, regions, n }] - 그날 당착 지역 발주가 있는 것만
+function pyeonsuDangchakExtras(products) {
+  const known = new Set(PYEONSU_DANGCHAK_ROWS.map((x) => pyeonsuNorm(x.key)));
+  const m = new Map();
+  products
+    .filter((p) => !isGsPickHidden(p))
+    .forEach((p) => {
+      const dk = getDangchakInfo(p.name);
+      if (!dk || !pyeonsuDkHas(p, dk)) return;
+      const g = String(pyeonsuDkGroup(p, dk) || "").trim();
+      const k = pyeonsuNorm(g);
+      if (!k || known.has(k)) return;
+      const x = m.get(k) || { label: g.replace(/^\(네고\)/, ""), style: dk.style, regions: new Set(), n: 0 };
+      x.n++;
+      (dk.regions || [dk.region]).forEach((r) => r && x.regions.add(r));
+      m.set(k, x);
+    });
+  return [...m.values()];
+}
+// 편수리스트 표에 줄 끼워 넣기 (ExcelJS insertRow는 병합·행높이를 망가뜨려서 직접 옮김)
+//   at: 넣을 자리, n: 줄 수, lastRow: 표 마지막 줄. 새 줄 서식 = 위 섹션 보통 줄, 맨 끝 줄은 섹션 마지막 줄 서식(굵은 아래 테두리)
+function pyeonsuInsertRows(ws, at, n, lastRow) {
+  // 병합(F:G)은 줄마다 같은 모양이라 그대로 두고, 값은 F(병합 첫 칸)까지·서식은 G까지 아래로 옮김. 새로 생긴 맨 아래 줄만 F:G 병합 추가
+  // (ExcelJS insertRow·unMergeCells는 병합·행높이·테두리를 망가뜨려서 쓰지 않음)
+  const cp = (o) => JSON.parse(JSON.stringify(o || {}));
+  const styleOf = (r) => ({ h: ws.getRow(r).height, s: [1, 2, 3, 4, 5, 6, 7].map((c) => cp(ws.getCell(r, c).style)) });
+  const mid = styleOf(at - 2);
+  const end = styleOf(at - 1);
+  for (let r = lastRow; r >= at; r--) {
+    const from = ws.getRow(r);
+    const to = ws.getRow(r + n);
+    to.height = from.height;
+    for (let c = 1; c <= 7; c++) {
+      if (c !== 7) to.getCell(c).value = from.getCell(c).value;
+      to.getCell(c).style = cp(from.getCell(c).style);
+    }
+  }
+  const put = (r, st) => {
+    const row = ws.getRow(r);
+    row.height = st.h;
+    for (let c = 1; c <= 7; c++) {
+      if (c !== 7) row.getCell(c).value = null;
+      row.getCell(c).style = cp(st.s[c - 1]);
+    }
+  };
+  for (let c = 1; c <= 7; c++) ws.getCell(at - 1, c).style = cp(mid.s[c - 1]); // 원래 섹션 마지막 줄은 보통 줄 테두리로
+  for (let i = 0; i < n; i++) put(at + i, i === n - 1 ? end : mid);
+  for (let r = lastRow + 1; r <= lastRow + n; r++) {
+    const g = cp(ws.getCell(r, 7).style);
+    ws.mergeCells(`F${r}:G${r}`);
+    ws.getCell(r, 7).style = g;
+  }
+  if (ws.pageSetup && ws.pageSetup.printArea) ws.pageSetup.printArea = String(ws.pageSetup.printArea).replace(/(\$?G\$?)(\d+)/, (m0, pre, d) => pre + (Number(d) + n));
 }
 
 async function downloadPyeonsuList(ordersForDate, date, setBusy) {
@@ -20596,6 +20654,27 @@ async function downloadPyeonsuList(ordersForDate, date, setBusy) {
       c.numFmt = "0"; // 발주 없는 공급사도 "-"가 아니라 0으로 보이게
       ws.getCell(`F${row}`).value = null; // 비고는 비움
     });
+    // 표에 없던 당착 공급사: 당착 표 맨 끝(데어리젠 아래)에 줄을 추가 (D·C 표는 그만큼 아래로)
+    const extras = pyeonsuDangchakExtras(products);
+    if (extras.length) {
+      const lastDk = Math.max(...PYEONSU_DANGCHAK_ROWS.map((x) => x.row));
+      const lastAll = Math.max(...PYEONSU_DC_ROWS.map((x) => x.row));
+      pyeonsuInsertRows(ws, lastDk + 1, extras.length, lastAll);
+      extras.forEach((x, i) => {
+        const r = lastDk + 1 + i;
+        const onlyCj = x.style === "combined" && [...x.regions].every((g) => g === "VV34");
+        ws.getCell(`A${r}`).value = x.label;
+        ws.getCell(`B${r}`).value = "당일오전";
+        ws.getCell(`C${r}`).value = onlyCj ? "-" : "당일오전";
+        ws.getCell(`D${r}`).value = x.style === "full" ? "-" : "냉장";
+        const c = ws.getCell(`E${r}`);
+        c.value = x.n;
+        c.alignment = center;
+        c.numFmt = "0";
+        ws.getCell(`F${r}`).value = "목록에 없던 당착 공급사";
+        counts["extra:" + x.label] = x.n;
+      });
+    }
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -20629,9 +20708,12 @@ function emartPyeonsuKeys(label) {
 async function downloadEmartPyeonsuList(ordersForDate, date, setBusy) {
   if (setBusy) setBusy(true);
   try {
+    // 피킹지 순서 설정에서 뺀(삭제한) 공급사·상품은 SKU 수에서 빠짐 (2026-11-05)
+    const hideCfg = await settingNow(EM_PV_CFG.orderKey);
     // 그날 공급사별 상품 종류 (수량 0 줄은 emartRowsFromOrders에서 이미 빠짐)
     const byVendor = new Map();
     emartRowsFromOrders(ordersForDate.filter((o) => o.createdAt === date)).forEach((r) => {
+      if (isBrandHidden(hideCfg, emartVendorKey(r.vendor), r.name)) return;
       const v = emPyNorm(emartVendorKey(r.vendor));
       if (!byVendor.has(v)) byVendor.set(v, { label: emartVendorKey(r.vendor), names: new Set() });
       byVendor.get(v).names.add(String(r.name || "").trim());
