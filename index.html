@@ -9858,9 +9858,12 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   if (opts.centerOrder && (opts.centerOrder.all || opts.centerOrder.products)) {
     report.centerReordered = [];
     const doneSheets = new Set();
-    links.forEach(({ prod, item }) => {
+    // 오늘 발주 있는 상품 시트 + (keepVisible: 발주 없어도 0으로 남는 원본 상품 시트, 냉동 채널) - 시트마다 한 번만
+    const coTargets = links.map(({ prod, item }) => ({ prod, item, names: [item.name, ...(item.names ? [...item.names] : []), prod.title, frozenTitleOf(prod)] }));
+    if (opts.keepVisible) tpl.products.forEach((prod) => !links.some((l) => l.prod.sheet === prod.sheet) && coTargets.push({ prod, item: { name: frozenTitleOf(prod) }, names: [prod.title, frozenTitleOf(prod)] }));
+    coTargets.forEach(({ prod, item, names }) => {
       if (doneSheets.has(prod.sheet)) return;
-      const want = centerOrderOf(opts.centerOrder, [item.name, ...(item.names ? [...item.names] : []), prod.title]);
+      const want = centerOrderOf(opts.centerOrder, names);
       if (!want) return;
       const ws = tpl.sheets.find((x) => x.name === prod.sheet);
       if (!ws || (opts.notProduct && opts.notProduct(ws.name))) return;
@@ -9879,6 +9882,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const labels = slots.map((x) => x.label);
       const next = centerOrderApply(labels, want);
       if (next.every((l, i) => l === labels[i])) return;
+      // 안전장치: 바뀐 뒤에도 센터 목록이 똑같아야 함 (빠지거나 겹치는 센터가 있으면 이 시트는 원본 순서 그대로)
+      if (next.some((l) => typeof l !== "string" || !l) || [...next].sort().join("\u0001") !== [...labels].sort().join("\u0001")) return;
       const eOf = new Map(slots.map((x) => [x.label, x.e]));
       slots.forEach((x, i) => {
         if (next[i] === x.label) return;
@@ -10972,6 +10977,9 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   const orderCfg = useSetting(cfg.orderKey, authToken);
   // 상품(시트)별 지역 설정: { products: { 시트이름: { zero: [VV코드], remove: [VV코드] } } }
   const pickCfg = useSetting(cfg.pickKey, authToken);
+  // 센터 순서 설정 (2026-11-05 전 채널): { all: [센터...], products: { 상품(시트) 이름: [센터...] } }
+  const centerOrderCfg = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
+  const [showCenterOrder, setShowCenterOrder] = useState(false);
   const [setFor, setSetFor] = useState(null); // 설정 창을 연 상품 (list 항목)
   useEffect(() => {
     cfg
@@ -11036,6 +11044,20 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   const filterOn = supFilter !== "all" || !!q.trim();
   const filtered = list.filter((x) => (supFilter === "all" || x.pivot === supFilter) && (!q.trim() || x.title.toLowerCase().includes(q.trim().toLowerCase()) || (x.names || []).some((n) => n.toLowerCase().includes(q.trim().toLowerCase()))));
   const selected = filtered.find((x) => (x.sheet || "new:" + x.title) === selSheet) || filtered[0] || null;
+  // 화면 미리보기도 센터 순서 설정대로 (권역 합계 줄은 제자리, 센터 줄만 자리 바꿈)
+  const selectedView = useMemo(() => {
+    if (!selected || !selected.prod || !cfg.centerOrderKey) return selected;
+    const want = centerOrderOf(centerOrderCfg, [selected.title, ...(selected.names || [])]);
+    if (!want) return selected;
+    const rr = selected.prod.regionRows || [];
+    const labs = rr.filter((r) => !r.subtotal).map((r) => r.label);
+    const next = centerOrderApply(labs, want);
+    if (next.every((l, i) => l === labs[i])) return selected;
+    const byLabel = new Map(rr.filter((r) => !r.subtotal).map((r) => [r.label, r]));
+    let k = 0;
+    const regionRows = rr.map((r) => (r.subtotal ? r : byLabel.get(next[k++])));
+    return { ...selected, prod: { ...selected.prod, regionRows } };
+  }, [selected, centerOrderCfg]); // eslint-disable-line
   const removedCount = useMemo(() => {
     if (!tplInfo) return 0;
     return tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p))).length;
@@ -11102,6 +11124,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         ...cfg.buildOpts(tplInfo, deliv),
         formMap,
         productFormMap,
+        centerOrder: cfg.centerOrderKey ? centerOrderCfg : null, // 센터 줄 자리만 바꿈 (수량은 A열 센터를 따라감)
         formSupKey: cfg.supKey, // 폼 변경 공급사 이름만 (시트 색 등은 예전 그대로)
         regionCodeOf: cfg.codeOf,
       });
@@ -11223,6 +11246,11 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정 (삭제·복구 포함)">
               <SettingsGear size={15} /> 순서 설정
             </button>
+            {cfg.centerOrderKey && (
+              <button className="no-print" onClick={() => setShowCenterOrder(true)} style={settingBtnStyle} title="피킹지 센터 줄 순서 (전체 상품 / 상품 하나)">
+                <SettingsGear size={15} /> 센터 순서
+              </button>
+            )}
             <input
               ref={tplRef}
               type="file"
@@ -11257,6 +11285,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
           </span>
         }
       />
+      {showCenterOrder && <CenterOrderModal pv={cfg} tplInfo={tplInfo} productNames={list.map((x) => x.title)} productList={list.map((x) => ({ name: x.title, vendor: x.pivot }))} authToken={authToken} onClose={() => setShowCenterOrder(false)} />}
       {showOrderSet && tplInfo && (
         <BrandOrderSettingsModal
           brand={cfg.brand}
@@ -11387,7 +11416,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
                     <Download size={14} /> {busy ? "생성 중..." : "엑셀 다운로드"}
                   </button>
                 </div>
-                <FrozenInspectionTable item={selected} pickCfg={pickCfg} codeOf={cfg.codeOf} />
+                <FrozenInspectionTable item={selectedView} pickCfg={pickCfg} codeOf={cfg.codeOf} />
               </div>
             )}
           </div>
@@ -11489,6 +11518,7 @@ function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(
 
 // ----- 템플릿 피킹지 채널 설정 (GS 냉동 / 이마트 냉동이 같은 화면·설정창을 씀) -----
 const GS_FROZEN_PICK_CFG = {
+  centerOrderKey: "gsfrozen_center_order", // 센터 순서 설정 (2026-11-05 전 채널)
   formKey: "picking_form_gsfrozen",
   formNewSrc: "리치푸드 피벗", // 처음 보는 공급사 기본 폼 (2026-11-02, 보이는 공급사 피벗은 전부 같은 모양)
   label: "GS 냉동",
@@ -11560,6 +11590,7 @@ const EM_PICK_CFG = {
 };
 // 이마트 피킹지 화면 설정 (세븐일레븐도 같은 화면을 SEVEN_PV_CFG로 씀)
 const EM_PV_CFG = {
+  centerOrderKey: "emart_center_order", // 센터 순서 설정 (2026-11-05 전 채널)
   formKey: "picking_form_emart", // 피킹지 폼 변경 (피킹지 수정 화면)
   formDefaults: { 쟈뎅: "데어리젠 피벗" }, // 2026-11-02 요청: 이마트 신규 쟈뎅 = 데어리젠 폼
   formNewSrc: "신성베이커리", // 처음 보는 공급사 기본 폼
@@ -11586,6 +11617,7 @@ const EM_PV_CFG = {
   download: (rows, date, customTpl, activeName, opts) => downloadEmartPickingFile(rows, date, customTpl, activeName, opts),
 };
 const EM_FROZEN_PICK_CFG = {
+  centerOrderKey: "emfrozen_center_order",
   formKey: "picking_form_emfrozen",
   label: "이마트 냉동",
   dailyLabel: "이마트냉동",
@@ -13344,6 +13376,7 @@ async function downloadSevenPickingFile(rows, date, customTpl, activeName, opts 
   return report;
 }
 const SEVEN_PV_CFG = {
+  centerOrderKey: "seven_center_order",
   formKey: "picking_form_seven",
   brand: "SEVEN",
   label: "세븐일레븐",
@@ -13457,6 +13490,7 @@ async function downloadSevenFrozenPickingFile(rows, date, customTpl, activeName,
   return report;
 }
 const SEVEN_FROZEN_PV_CFG = {
+  centerOrderKey: "sevenfrozen_center_order",
   formKey: "picking_form_sevenfrozen",
   brand: "SEVENFROZEN",
   label: "세븐 냉동",
@@ -14939,6 +14973,8 @@ function EmartPickReportModal({ report, tplInfo, authToken, onClose, aliasKey = 
 // want: 원하는 센터 순서. labels: 지금 자리 순서. 목록에 있는 센터들이 차지한 자리에만 원하는 순서대로 다시 넣고, 목록에 없는 센터는 제자리
 function centerOrderApply(labels, want) {
   if (!want || !want.length) return labels.slice();
+  // 같은 센터 이름이 두 줄 이상인 시트(제주권 공유 시트처럼 상품 블록마다 같은 센터)는 건드리지 않음 - 자리 바꾸면 이름이 비는 줄이 생김
+  if (new Set(labels).size !== labels.length) return labels.slice();
   const set = new Set(labels);
   const seq = want.filter((l) => set.has(l));
   const wantSet = new Set(seq);
@@ -14962,7 +14998,8 @@ function CenterOrderModal({ pv, tplInfo, productNames, productList = [], authTok
   const baseRows = useMemo(() => {
     if (!tplInfo) return [];
     const tp = scope !== "all" ? matchEmartProduct(tplInfo, scope) : null;
-    const p = tp || tplInfo.products.find((x) => (x.regionRows || []).some((r) => !r.subtotal)) || tplInfo.products[0];
+    const cnt = (x) => (x.regionRows || []).filter((r) => !r.subtotal).length;
+    const p = tp || tplInfo.products.reduce((m, x) => (cnt(x) > (m ? cnt(m) : 0) ? x : m), null) || tplInfo.products[0]; // 전체: 센터 줄이 가장 많은 시트 기준
     return (p && p.regionRows) || [];
   }, [tplInfo, scope]);
   const baseLabels = baseRows.filter((r) => !r.subtotal).map((r) => r.label);
