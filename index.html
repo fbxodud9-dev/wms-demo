@@ -9702,6 +9702,31 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       item.formOwnPack = cur ? cur.pack : 0; // 원래 시트 입수 (복사한 시트 입수 대신)
       item.formOwnTitle = cur ? cur.sheetTitle : "";
     });
+    // 상품별 폼 변경 (opts.productFormMap: 상품명 → 틀로 쓸 상품 시트, 2026-11-05): 그 상품만 고른 시트 모양으로 새로 만듦 (피벗은 원래 공급사 피벗)
+    const ownSheets = new Set();
+    if (opts.productFormMap && opts.productFormMap.size)
+      agg.forEach((item) => {
+        const nm = [item.name, ...(item.names ? [...item.names] : [])].find((n) => opts.productFormMap.has(n));
+        if (!nm) return;
+        const sh = opts.productFormMap.get(nm);
+        if (!tpl.products.some((p) => p.sheet === sh)) return;
+        const cur = item.prod || item.likeProd;
+        if (cur && cur.sheet === sh) return; // 이미 그 시트
+        if (cur) {
+          if (!item.formSrc) item.formPivotKeep = cur.pivot;
+          if (item.formOwnPack == null) item.formOwnPack = cur.pack;
+          if (!item.formOwnTitle) item.formOwnTitle = cur.sheetTitle;
+          ownSheets.add(cur.sheet);
+        }
+        item.prod = null;
+        item.likeProd = null;
+        item.formSheet = sh;
+      });
+    if (opts.keepVisible && ownSheets.size) {
+      const ex = new Set(opts.excludeSheets || []);
+      ownSheets.forEach((n) => ex.add(n));
+      opts = { ...opts, excludeSheets: ex };
+    }
     // 발주 없어도 0으로 남기는 피킹지(냉동): 그 공급사 원래 피벗·시트는 빼기
     if (opts.keepVisible && own.size) {
       const ex = new Set(opts.excludeSheets || []);
@@ -9737,7 +9762,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       await cloneEmartSheet(tpl, item.formSrc, pvName, m0);
       formPivotOf[item.formKey] = pvName;
     }
-    let pivot = item.formSrc ? formPivotOf[item.formKey] : (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] || (opts.frozenPivotOf && opts.frozenPivotOf(tpl, item.vendor)) || null : (opts.pivotFirst && opts.pivotForVendor && opts.pivotForVendor(tpl, item.vendor, item.name)) || emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || (opts.pivotForVendor ? opts.pivotForVendor(tpl, item.vendor, item.name) : emartPivotByVendorName(tpl, item.vendor)));
+    let pivot = item.formSrc ? formPivotOf[item.formKey] : item.formPivotKeep || (item.likeProd && item.likeProd.pivot) || (frozenMode ? vendorPivot[item.vendor] || (opts.frozenPivotOf && opts.frozenPivotOf(tpl, item.vendor)) || null : (opts.pivotFirst && opts.pivotForVendor && opts.pivotForVendor(tpl, item.vendor, item.name)) || emartVendorKeysOf(item.vendor).map((k) => vendorPivot[k]).find(Boolean) || (opts.pivotForVendor ? opts.pivotForVendor(tpl, item.vendor, item.name) : emartPivotByVendorName(tpl, item.vendor)));
     if (!pivot && (opts.cloneUnknownVendor || opts.cloneNewVendor) && tpl.products.length) {
       // 템플릿에 없는 공급사(이마트 냉동·세븐 새 공급사 등): 다른 공급사 피벗을 복사해서 이 공급사 피벗을 만든다 (맨 뒤에)
       // opts.newVendorSrc: 새 공급사 틀로 쓸 공급사 피벗 (이마트: "신성베이커리" - 센터 12줄만 있는 단순한 모양, 2026-10-31)
@@ -9758,7 +9783,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const sameP = tpl.products.filter((p) => p.pivot === pivot);
     const k = sameP.length ? Math.max(...sameP.map((p) => p.k)) + 1 : 2;
     const lastD = (x) => (/(\d)\s*$/.exec(String(x || "").replace(/\s*\n\s*/g, "")) || [])[1] || "";
-    const srcProd = (item.likeProd && item.likeProd.pivot === pivot && item.likeProd) || (lastD(item.name) && sameP.find((p) => lastD(p.title) === lastD(item.name))) || sameP[0] || (item.formSrc && ((lastD(item.name) && tpl.products.find((p) => p.pivot === item.formSrc && lastD(p.title) === lastD(item.name))) || tpl.products.find((p) => p.pivot === item.formSrc))) || (opts.newVendorSrc && tpl.products.find((p) => p.pivot === opts.newVendorSrc)) || tpl.products[0]; // 1편/2편 상품은 같은 편 시트 모양으로
+    const srcProd = (item.formSheet && tpl.products.find((p) => p.sheet === item.formSheet)) || (item.likeProd && item.likeProd.pivot === pivot && item.likeProd) || (lastD(item.name) && sameP.find((p) => lastD(p.title) === lastD(item.name))) || sameP[0] || (item.formSrc && ((lastD(item.name) && tpl.products.find((p) => p.pivot === item.formSrc && lastD(p.title) === lastD(item.name))) || tpl.products.find((p) => p.pivot === item.formSrc))) || (opts.newVendorSrc && tpl.products.find((p) => p.pivot === opts.newVendorSrc)) || tpl.products[0]; // 1편/2편 상품은 같은 편 시트 모양으로
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
@@ -9766,6 +9791,11 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const newName = safeEmartSheetName(wantName, usedNames);
     // 복사한 시트 위 공급사 이름: "신성베이커리 - 이마트24" → "자몽 - 이마트24" (원래 공급사 이름 부분만 바꿈)
     const newTitleOf = () => {
+      // 상품별 폼: 시트 위 공급사 글자는 원래 그 상품(없으면 같은 피벗 상품) 것 그대로
+      if (item.formSheet) {
+        const t0 = item.formOwnTitle || (tpl.products.find((p) => p.pivot === pivot && !p.isNew && p.sheetTitle) || {}).sheetTitle;
+        if (t0) return t0;
+      }
       const key = (opts.supKey || emartVendorKey)(item.vendor);
       const t = String(srcProd.sheetTitle || "");
       if (t && srcProd.pivot && t.includes(srcProd.pivot)) return t.replace(srcProd.pivot, key);
@@ -9788,13 +9818,13 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       // 상품명(머리글)과 입수
       const tmp = { doc: sheet.doc };
       // 다른 공급사 시트를 복사했으면 시트 위쪽 공급사 이름 글자도 이 공급사로
-      if (pvRe && srcProd.sheetTitle) {
+      if ((pvRe || item.formSheet) && srcProd.sheetTitle) {
         readSheetCells(tmp, tpl.sst);
         tmp.cells.forEach((c, ref) => !c.f && typeof c.v === "string" && c.v.trim() === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
       }
       setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
-      const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || (item.formSrc && !(item.box > 1) && item.formOwnPack) || item.box;
-      if (boxQ > 1 || (item.formSrc && boxQ >= 1)) {
+      const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || ((item.formSrc || item.formSheet) && !(item.box > 1) && item.formOwnPack) || item.box;
+      if (boxQ > 1 || ((item.formSrc || item.formSheet) && boxQ >= 1)) {
         const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
         if (b) setCellXml(tmp, "B4", boxQ);
         // 센터 줄의 입수 칸(원본 상품 입수 숫자)도 이 상품 입수로
@@ -9812,16 +9842,52 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     };
     mutate.pivot = pivot;
     await cloneEmartSheet(tpl, srcProd.sheet, newName, mutate);
-    const boxQ0 = (opts.packOverride && opts.packOverride.get(item.name)) || (item.formSrc && !(item.box > 1) && item.formOwnPack) || item.box;
-    const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe ? newTitleOf() : srcProd.sheetTitle, isNew: true };
+    const boxQ0 = (opts.packOverride && opts.packOverride.get(item.name)) || ((item.formSrc || item.formSheet) && !(item.box > 1) && item.formOwnPack) || item.box;
+    const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe || item.formSheet ? newTitleOf() : srcProd.sheetTitle, isNew: true };
     // 폼 변경 상품: 원래 시트 이름이 남아 있어서 "(00827)"이 붙었으면, 원래 시트가 빠진 뒤 원래 이름으로 되돌림
-    if (item.formSrc) {
+    if (item.formSrc || item.formSheet) {
       const plain = String(item.name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim();
       if (plain && plain !== newName) np.formWant = plain;
     }
     tpl.products.push(np);
     links.push({ prod: np, item });
     report.added.push({ name: item.name, code: item.code, sheet: newName, pivot });
+  }
+
+  // 센터 순서 설정 (opts.centerOrder): 상품 시트의 센터 줄 자리 바꾸기 - A열(센터)·E열(센터명)만 옮기고 수량 수식은 A열을 따라감
+  if (opts.centerOrder && (opts.centerOrder.all || opts.centerOrder.products)) {
+    report.centerReordered = [];
+    const doneSheets = new Set();
+    links.forEach(({ prod, item }) => {
+      if (doneSheets.has(prod.sheet)) return;
+      const want = centerOrderOf(opts.centerOrder, [item.name, ...(item.names ? [...item.names] : []), prod.title]);
+      if (!want) return;
+      const ws = tpl.sheets.find((x) => x.name === prod.sheet);
+      if (!ws || (opts.notProduct && opts.notProduct(ws.name))) return;
+      doneSheets.add(prod.sheet);
+      readSheetCells(ws, tpl.sst);
+      const qc = numToCol(prod.col || 3);
+      const slots = [];
+      for (let r = 1; r <= ws.maxRow; r++) {
+        const a = ws.cells.get("A" + r);
+        if (!a || a.f || typeof a.v !== "string" || /합계/.test(a.v)) continue;
+        const q = ws.cells.get(qc + r);
+        if (!q || !q.f || !new RegExp(`VLOOKUP\\(\\$?A\\$?${r}\\s*,`, "i").test(q.f)) continue; // 수량이 이 줄 A열로 찾는 줄만 (센터 줄)
+        const e = ws.cells.get("E" + r);
+        slots.push({ r, label: a.v.trim(), e: e && !e.f && typeof e.v === "string" ? e.v : null });
+      }
+      const labels = slots.map((x) => x.label);
+      const next = centerOrderApply(labels, want);
+      if (next.every((l, i) => l === labels[i])) return;
+      const eOf = new Map(slots.map((x) => [x.label, x.e]));
+      slots.forEach((x, i) => {
+        if (next[i] === x.label) return;
+        setCellXml(ws, "A" + x.r, next[i]);
+        if (x.e != null && eOf.get(next[i]) != null) setCellXml(ws, "E" + x.r, eOf.get(next[i]));
+      });
+      readSheetCells(ws, tpl.sst);
+      report.centerReordered.push({ sheet: prod.sheet, name: item.name });
+    });
   }
 
   // 순서 설정(opts.productRank: 상품명 → 순위)대로 피벗 열과 시트 탭 순서를 맞춤 (2026-11-01 BGF 딥핑·콰트로 1/2편이 설정과 다르게 나오던 문제)
@@ -10897,6 +10963,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   const isExF = (title, names) => isExcludedLine(exMapF, cfg.brand, "", title) || (names || []).some((n) => isExcludedLine(exMapF, cfg.brand, "", n));
   const formCfg = useSetting(cfg.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(cfg, formCfg), [formCfg]); // eslint-disable-line
+  const productFormMap = useMemo(() => pickProductFormMapOf(formCfg), [formCfg]);
   const [baseInfo, setBaseInfo] = useState(null);
   const [tplErr, setTplErr] = useState("");
   const [customTpl, setCustomTpl] = useState(null); // { name, buffer, info } - 디자인이 바뀐 피킹지 원본으로 이번에만 만들기
@@ -11034,6 +11101,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         hideRegionRows,
         ...cfg.buildOpts(tplInfo, deliv),
         formMap,
+        productFormMap,
         formSupKey: cfg.supKey, // 폼 변경 공급사 이름만 (시트 색 등은 예전 그대로)
         regionCodeOf: cfg.codeOf,
       });
@@ -13912,6 +13980,7 @@ async function downloadBgfPickingFile(frozen, rows, date, customTpl, activeName,
   return report;
 }
 const BGF_PV_CFG = {
+  centerOrderKey: "bgf_center_order", // 센터 순서 설정 (2026-11-05)
   formKey: "picking_form_bgf",
   brand: "BGF",
   label: "BGF",
@@ -13932,8 +14001,9 @@ const BGF_PV_CFG = {
   download: (rows, date, customTpl, activeName, opts) => downloadBgfPickingFile(false, rows, date, customTpl, activeName, opts),
 };
 const BGF_FROZEN_PV_CFG = {
-  formKey: "picking_form_bgffrozen",
   ...BGF_PV_CFG,
+  formKey: "picking_form_bgffrozen", // (...BGF_PV_CFG 뒤에 둬야 BGF 일반 키로 덮이지 않음 - 2026-11-05 수정)
+  centerOrderKey: "bgffrozen_center_order",
   brand: "BGFFROZEN",
   label: "BGF 냉동",
   channelKey: "bgffrozen",
@@ -14862,9 +14932,146 @@ function EmartPickReportModal({ report, tplInfo, authToken, onClose, aliasKey = 
     </BrandModalFrame>
   );
 }
+// ---------- 센터(지역) 순서 설정 (BGF, 2026-11-05) ----------
+// 피킹지 상품 시트의 센터 줄 순서를 바꿈 (예: 강릉 ↔ 진천). 줄의 "센터 이름(A열)·센터명(E열)"을 자리만 바꾸고,
+// 수량 칸은 그 줄 A열 센터 이름으로 피벗을 찾는 수식이라 수량이 센터를 그대로 따라감 (이름만 바뀌고 수량이 남는 일 없음).
+// 저장: settings[pv.centerOrderKey] = { all: [센터...], products: { 상품명: [센터...] } } - 상품별이 있으면 그게 우선
+// want: 원하는 센터 순서. labels: 지금 자리 순서. 목록에 있는 센터들이 차지한 자리에만 원하는 순서대로 다시 넣고, 목록에 없는 센터는 제자리
+function centerOrderApply(labels, want) {
+  if (!want || !want.length) return labels.slice();
+  const set = new Set(labels);
+  const seq = want.filter((l) => set.has(l));
+  const wantSet = new Set(seq);
+  let k = 0;
+  return labels.map((l) => (wantSet.has(l) ? seq[k++] : l));
+}
+const centerOrderOf = (cfg, names) => {
+  if (!cfg) return null;
+  const p = cfg.products || {};
+  for (const n of names || []) if (n && Array.isArray(p[n]) && p[n].length) return p[n];
+  return Array.isArray(cfg.all) && cfg.all.length ? cfg.all : null;
+};
+// 센터 순서 설정 창: 범위(전체 상품 / 상품 하나) + 센터 목록 ▲▼ (권역 합계 줄은 고정 칸막이)
+function CenterOrderModal({ pv, tplInfo, productNames, authToken, onClose }) {
+  const saved = useSetting(pv.centerOrderKey, authToken) || {};
+  const [scope, setScope] = useState("all");
+  const [list, setList] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  // 기준 줄 모양: 상품이면 그 상품 시트, 전체면 원본 첫 상품 시트
+  const baseRows = useMemo(() => {
+    if (!tplInfo) return [];
+    const tp = scope !== "all" ? matchEmartProduct(tplInfo, scope) : null;
+    const p = tp || tplInfo.products.find((x) => (x.regionRows || []).some((r) => !r.subtotal)) || tplInfo.products[0];
+    return (p && p.regionRows) || [];
+  }, [tplInfo, scope]);
+  const baseLabels = baseRows.filter((r) => !r.subtotal).map((r) => r.label);
+  const cur = useMemo(() => {
+    const want = scope === "all" ? saved.all : (saved.products || {})[scope] || saved.all;
+    return centerOrderApply(baseLabels, want);
+  }, [baseRows, saved, scope]); // eslint-disable-line
+  useEffect(() => setList(null), [scope]);
+  const labels = list || cur;
+  const shortOf = (l) => (baseRows.find((r) => r.label === l) || {}).short || l;
+  const changed = labels.some((l, i) => l !== baseLabels[i]);
+  const hasOwn = scope !== "all" && !!(saved.products || {})[scope];
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= labels.length) return;
+    const n = labels.slice();
+    [n[i], n[j]] = [n[j], n[i]];
+    setList(n);
+    setMsg("");
+  };
+  async function save(next) {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await updateSetting(pv.centerOrderKey, authToken, (v) => {
+        const o = { all: (v && v.all) || null, products: { ...((v && v.products) || {}) } };
+        if (scope === "all") o.all = next;
+        else if (next) o.products[scope] = next;
+        else delete o.products[scope];
+        return o;
+      });
+      if (r && r.ok === false) throw new Error(r.error || "저장 실패");
+      setList(null);
+      setMsg(next ? "저장했어요. 다음 피킹지 다운로드부터 이 순서로 나가요." : scope === "all" ? "원본 순서로 되돌렸어요." : "이 상품은 전체 설정을 따라가요.");
+    } catch (e) {
+      setMsg(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // 화면: 원본 줄 모양(권역 합계 칸막이 포함)에 지금 순서를 채움
+  let k = 0;
+  const rows = baseRows.map((r) => (r.subtotal ? { sub: true, label: r.label } : { label: labels[k], idx: k++, orig: r.label }));
+  const others = Array.from(new Set([...(productNames || []), ...Object.keys(saved.products || {})])).sort((a, b) => a.localeCompare(b, "ko"));
+  return (
+    <BrandModalFrame title={`센터 순서 설정 · ${pv.label}`} sub="센터 줄 자리를 바꿔요. 수량은 센터를 그대로 따라가요 (이름만 바뀌는 일 없음). 권역 합계 줄은 그대로고, 합계는 바뀐 자리 기준으로 다시 계산돼요." onClose={onClose} maxWidth={720} height="86vh">
+      <div style={{ padding: "12px 20px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderBottom: `1px solid ${T.border}` }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>적용 범위</span>
+        <select style={{ ...inputStyle, minWidth: 280 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+          <option value="all">{pv.label} 전체 상품</option>
+          {others.map((n) => (
+            <option key={n} value={n}>
+              {(saved.products || {})[n] ? "● " : ""}
+              {n}
+            </option>
+          ))}
+        </select>
+        {scope !== "all" && <span style={{ fontSize: 12, color: T.inkSoft }}>{hasOwn ? "이 상품만 따로 정해져 있어요" : "지금은 전체 설정을 따라가요"}</span>}
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: "10px 20px" }}>
+        {!tplInfo ? (
+          <div style={{ color: T.inkSoft }}>피킹지 원본 읽는 중...</div>
+        ) : (
+          rows.map((r, i) =>
+            r.sub ? (
+              <div key={"s" + i} style={{ fontSize: 11.5, fontWeight: 700, color: T.inkSoft, padding: "6px 8px", margin: "4px 0 8px", borderBottom: `2px solid ${T.border}` }}>
+                ▲ {r.label}
+              </div>
+            ) : (
+              <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, background: r.label !== r.orig ? "#FCF1DD" : "transparent", transition: "background .2s" }}>
+                <span style={{ width: 26, fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>{r.idx + 1}</span>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>
+                  {r.label} <span style={{ color: T.inkSoft, fontWeight: 400 }}>({shortOf(r.label)})</span>
+                  {r.label !== r.orig && <span style={{ fontSize: 11, color: T.amberDeep, marginLeft: 6 }}>원래 자리: {shortOf(r.orig)}</span>}
+                </span>
+                <button onClick={() => move(r.idx, -1)} disabled={r.idx === 0} style={{ ...smallBtnStyle, padding: "3px 9px" }} title="위로">
+                  ▲
+                </button>
+                <button onClick={() => move(r.idx, 1)} disabled={r.idx === labels.length - 1} style={{ ...smallBtnStyle, padding: "3px 9px" }} title="아래로">
+                  ▼
+                </button>
+              </div>
+            )
+          )
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5", flexWrap: "wrap" }}>
+        {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장하지") ? T.danger : T.teal }}>{msg}</span>}
+        <button
+          onClick={() => window.confirm(scope === "all" ? "전체 상품 센터 순서를 원본 순서로 되돌릴까요?" : "이 상품 따로 정한 순서를 지우고 전체 설정을 따라가게 할까요?") && save(null)}
+          disabled={busy}
+          style={{ ...smallBtnStyle, marginLeft: "auto" }}
+        >
+          {scope === "all" ? "원본 순서로" : "전체 설정 따라가기"}
+        </button>
+        <button onClick={() => save(labels)} disabled={busy || (!list && !(scope !== "all" && !hasOwn && changed))} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy || !list ? 0.7 : 1 }}>
+          {busy ? "저장 중..." : "저장"}
+        </button>
+      </div>
+    </BrandModalFrame>
+  );
+}
+
 function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines, editMode }) {
+  const centerOrderCfg = useSetting(pv.centerOrderKey || "center_order_none", authToken);
+  const [showCenterOrder, setShowCenterOrder] = useState(false);
   const formCfg = useSetting(pv.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(pv, formCfg), [formCfg]); // eslint-disable-line
+  const productFormMap = useMemo(() => pickProductFormMapOf(formCfg), [formCfg]);
   // pv: 채널 설정 (이마트 / 세븐일레븐 - 같은 화면·엔진, 원본 템플릿·설정 저장 이름만 다름)
   const orderCfg = useSetting(pv.orderKey, authToken);
   // 상품 연결 기억 (상품명/상품코드 → 템플릿 시트)
@@ -15128,7 +15335,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
       const productRank = sheetRank ? new Map(products.map((p, i) => [p.name, i])) : null;
       const fileName = mode ? `${pv.label}_${mode.vendor}_${mode.customer ? "고객사배포" : "수정용"}_${activeDate}.xlsx`.replace(/[\\/:*?"<>|]/g, "") : undefined;
       if (mode && !outRows.length) throw new Error("이 공급사 발주가 없어요.");
-      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, formMap, verify: mode ? null : verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets, customerCopy: !!(mode && mode.customer), fileName });
+      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, formMap, centerOrder: pv.centerOrderKey ? centerOrderCfg : null, productFormMap, verify: mode ? null : verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets, customerCopy: !!(mode && mode.customer), fileName });
       if (mode) {
         logUi(mode.customer ? "download_customer_picking" : "download_edit_picking", `${pv.label} ${mode.vendor} ${activeDate}`, { channel: pv.brand, date: activeDate, vendor: mode.vendor });
         return;
@@ -15151,7 +15358,18 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
     const seen = new Set();
     let sub = 0;
     if (selected.tpl) {
-      selected.tpl.regionRows.forEach((r) => {
+      // 센터 순서 설정 반영 (엑셀과 같은 자리)
+      const rr0 = selected.tpl.regionRows;
+      const want = pv.centerOrderKey ? centerOrderOf(centerOrderCfg, [selected.name]) : null;
+      let rrows = rr0;
+      if (want) {
+        const labs = rr0.filter((r) => !r.subtotal).map((r) => r.label);
+        const next = centerOrderApply(labs, want);
+        const byLab = new Map(rr0.filter((r) => !r.subtotal).map((r) => [r.label, r]));
+        let k = 0;
+        rrows = rr0.map((r) => (r.subtotal ? r : { ...byLab.get(next[k++]) }));
+      }
+      rrows.forEach((r) => {
         if (r.subtotal) {
           out.push({ label: r.label, qty: sub, ...bd(sub), subtotal: true });
           sub = 0;
@@ -15169,7 +15387,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
     extra.forEach((c) => out.push({ label: c, short: "", qty: selected.qty[c], ...bd(selected.qty[c]), missing: !!selected.tpl }));
     const tot = out.filter((x) => !x.subtotal).reduce((a, x) => a + x.qty, 0);
     return { rows: out, total: { qty: tot, ...bd(tot) }, missingCount: selected.tpl ? extra.length : 0 };
-  }, [selected, pickCfg]); // eslint-disable-line
+  }, [selected, pickCfg, centerOrderCfg]); // eslint-disable-line
 
   const warnBox = { background: "#FDF1DC", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 12, lineHeight: 1.6 };
   const mono = { fontFamily: "'JetBrains Mono', monospace" };
@@ -15304,6 +15522,11 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정">
               <SettingsGear size={15} /> 순서 설정
             </button>
+            {pv.centerOrderKey && (
+              <button className="no-print" onClick={() => setShowCenterOrder(true)} style={settingBtnStyle} title="피킹지 센터 줄 순서 (전체 상품 / 상품 하나)">
+                <SettingsGear size={15} /> 센터 순서
+              </button>
+            )}
             <input
               ref={tplRef}
               type="file"
@@ -15329,6 +15552,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
           </span>
         }
       />
+      {showCenterOrder && <CenterOrderModal pv={pv} tplInfo={tplInfo} productNames={products.map((p) => p.name)} authToken={authToken} onClose={() => setShowCenterOrder(false)} />}
       {showOrderSet && (
         <BrandOrderSettingsModal
           brand={pv.brand}
@@ -15730,6 +15954,10 @@ function publishSetting(key, value) {
   (SETTING_SUBS[key] || new Set()).forEach((f) => f(value));
 }
 // 피킹지 폼 변경 설정 → Map(공급사 → 틀 피벗). 코드 기본값(formDefaults) 위에 저장값, 빈 값("")은 기본으로 되돌림
+// 상품별 폼: { products: { 상품명: 상품 시트 이름 } }
+function pickProductFormMapOf(saved) {
+  return new Map(Object.entries((saved && saved.products) || {}).filter(([k, v]) => k && v));
+}
 function pickFormMapOf(cfg, saved) {
   const m = { ...((cfg && cfg.formDefaults) || {}), ...((saved && saved.map) || {}) };
   return new Map(Object.entries(m).filter(([k, v]) => k && v));
@@ -18742,8 +18970,8 @@ function PickFormSummary({ part, authToken, onOpen }) {
   );
 }
 // 피킹지 원본의 상품 시트 한 장을 표로 그려서 "이런 모양" 미리보기
-function PickFormPreview({ tpl, pivot, caption }) {
-  const prod = tpl && pivot ? tpl.products.find((p) => p.pivot === pivot) : null;
+function PickFormPreview({ tpl, pivot, sheet, caption }) {
+  const prod = tpl && sheet ? tpl.products.find((p) => p.sheet === sheet) : tpl && pivot ? tpl.products.find((p) => p.pivot === pivot) : null;
   const sh = prod ? tpl.sheets.find((s) => s.name === prod.sheet) : null;
   if (!sh || !sh.cells) return <div style={{ ...cardStyle, fontSize: 13, color: T.inkSoft, minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>미리보기할 시트가 없어요</div>;
   let maxR = 0,
@@ -18792,6 +19020,88 @@ function PickFormPreview({ tpl, pivot, caption }) {
       <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 4 }}>
         원본 시트 "{prod.sheet}" ({pivot})
       </div>
+    </div>
+  );
+}
+// 상품별 폼 (2026-11-05): 공급사 안의 상품 하나만 다른 상품 시트 모양으로 (피벗은 원래 공급사 그대로, 수량·입수는 그 상품 것)
+function PickProductForms({ cfg, tpl, saved, names, authToken }) {
+  const pmap = (saved && saved.products) || {};
+  const [sel, setSel] = useState(null);
+  const [choice, setChoice] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const list = Array.from(new Set([...names, ...Object.keys(pmap).filter((n) => names.includes(n))])).sort((a, b) => a.localeCompare(b, "ko"));
+  const pivots = useMemo(() => Array.from(new Set(tpl.products.map((p) => p.pivot))), [tpl]);
+  if (!list.length) return null;
+  const own = sel ? matchEmartProduct(tpl, sel) : null;
+  const curSheet = sel ? pmap[sel] || (own && own.sheet) || null : null;
+  const picked = choice === null ? curSheet : choice || (own && own.sheet) || null;
+  async function save() {
+    setBusy(true);
+    setMsg("");
+    try {
+      const val = choice === null ? pmap[sel] || "" : choice;
+      const r = await updateSetting(cfg.formKey, authToken, (v) => {
+        const products = { ...((v && v.products) || {}) };
+        if (val) products[sel] = val;
+        else delete products[sel];
+        return { ...(v || {}), map: (v && v.map) || {}, products };
+      });
+      if (r && r.ok === false) throw new Error(r.error || "저장 실패");
+      setMsg(val ? `저장했어요: ${sel} → "${val}" 모양` : `저장했어요: ${sel}은(는) 공급사 폼을 따라가요`);
+      setChoice(null);
+    } catch (e) {
+      setMsg(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 12 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>상품별 폼</div>
+      <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>상품 하나만 다른 상품 시트 모양으로 바꿔요. 피벗(공급사)·수량·입수는 그 상품 것 그대로예요.</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        {list.map((n) => (
+          <button
+            key={n}
+            onClick={() => (setSel(n), setChoice(null), setMsg(""))}
+            style={{ ...smallBtnStyle, padding: "5px 10px", fontSize: 12, borderColor: sel === n ? T.amber : pmap[n] ? T.teal : T.border, background: sel === n ? "#FCF1DD" : T.surface, fontWeight: sel === n ? 700 : 500 }}
+          >
+            {pmap[n] ? "● " : ""}
+            {n}
+          </button>
+        ))}
+      </div>
+      {sel && (
+        <div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{sel}</span>
+            <span style={{ fontSize: 12, color: T.inkSoft }}>지금: {pmap[sel] ? `"${pmap[sel]}" 모양 (상품별로 정함)` : own ? "원본 자기 시트" : "공급사 폼 따라감"}</span>
+            <select style={{ ...inputStyle, minWidth: 300 }} value={choice === null ? pmap[sel] || "" : choice} onChange={(e) => (setChoice(e.target.value), setMsg(""))}>
+              <option value="">{own ? "원본 자기 시트 / 공급사 폼 따라가기" : "공급사 폼 따라가기"}</option>
+              {pivots.map((pv) => (
+                <optgroup key={pv} label={pv}>
+                  {tpl.products
+                    .filter((p) => p.pivot === pv)
+                    .map((p) => (
+                      <option key={p.sheet} value={p.sheet}>
+                        {p.sheet}
+                      </option>
+                    ))}
+                </optgroup>
+              ))}
+            </select>
+            <button onClick={save} disabled={busy} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.7 : 1 }}>
+              {busy ? "저장 중..." : "저장"}
+            </button>
+            {msg && <span style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("저장했") ? T.teal : T.danger }}>{msg}</span>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
+            <PickFormPreview tpl={tpl} sheet={curSheet} caption="지금 모양" />
+            <PickFormPreview tpl={tpl} sheet={picked} caption={choice === null ? "바꿀 모양 (선택하면 여기 보여요)" : "바꿀 모양"} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -18845,7 +19155,7 @@ function PickFormModal({ part, chLabel, orders, authToken, onClose }) {
     setMsg("");
     try {
       const val = choice === null ? map.get(cur.key) || "" : choice;
-      const r = await updateSetting(cfg.formKey, authToken, (v) => ({ map: { ...((v && v.map) || {}), [cur.key]: val } }));
+      const r = await updateSetting(cfg.formKey, authToken, (v) => ({ ...(v || {}), map: { ...((v && v.map) || {}), [cur.key]: val } })); // 상품별 폼(products)은 그대로 둠
       if (r && r.ok === false) throw new Error(r.error || "저장 실패");
       setMsg(val ? `저장했어요: ${cur.key} → ${val} 폼. 다음 피킹지 다운로드부터 적용돼요.` : `저장했어요: ${cur.key}는 원본 그대로 나가요.`);
       setChoice(null);
@@ -18932,6 +19242,7 @@ function PickFormModal({ part, chLabel, orders, authToken, onClose }) {
                 <PickFormPreview tpl={tpl} pivot={picked} caption={choice === null ? "바꿀 폼 (선택하면 여기 보여요)" : "바꿀 폼"} />
               </div>
               <div style={{ fontSize: 11.5, color: T.inkSoft }}>※ 미리보기는 원본 피킹지의 그 공급사 첫 상품 시트예요. 실제 파일은 이 모양으로 상품명·입수·수량만 바뀌어서 나가요.</div>
+              <PickProductForms cfg={cfg} tpl={tpl} saved={saved} names={[...cur.names]} authToken={authToken} />
             </div>
           )}
         </div>
