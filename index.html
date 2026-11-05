@@ -14952,7 +14952,7 @@ const centerOrderOf = (cfg, names) => {
   return Array.isArray(cfg.all) && cfg.all.length ? cfg.all : null;
 };
 // 센터 순서 설정 창: 범위(전체 상품 / 상품 하나) + 센터 목록 ▲▼ (권역 합계 줄은 고정 칸막이)
-function CenterOrderModal({ pv, tplInfo, productNames, authToken, onClose }) {
+function CenterOrderModal({ pv, tplInfo, productNames, productList = [], authToken, onClose }) {
   const saved = useSetting(pv.centerOrderKey, authToken) || {};
   const [scope, setScope] = useState("all");
   const [list, setList] = useState(null);
@@ -15007,20 +15007,43 @@ function CenterOrderModal({ pv, tplInfo, productNames, authToken, onClose }) {
   let k = 0;
   const rows = baseRows.map((r) => (r.subtotal ? { sub: true, label: r.label } : { label: labels[k], idx: k++, orig: r.label }));
   const others = Array.from(new Set([...(productNames || []), ...Object.keys(saved.products || {})])).sort((a, b) => a.localeCompare(b, "ko"));
+  // 공급사별로 묶어서 보여줌 (오늘 발주 공급사 → 없으면 원본 피킹지 피벗 이름)
+  const vendorOfName = new Map(productList.map((p) => [p.name, p.vendor]));
+  const vendorOf = (n) => {
+    if (vendorOfName.has(n)) return vendorOfName.get(n) || "기타";
+    const tp = tplInfo ? matchEmartProduct(tplInfo, n) : null;
+    return tp ? String(tp.pivot).replace(/^[★☆]\s*/, "").replace(/\s*피벗.*$/, "").trim() || "기타" : "기타";
+  };
+  const groups = [];
+  others.forEach((n) => {
+    const v = vendorOf(n);
+    let g = groups.find((x) => x.vendor === v);
+    if (!g) groups.push((g = { vendor: v, names: [] }));
+    g.names.push(n);
+  });
+  groups.sort((a, b) => a.vendor.localeCompare(b.vendor, "ko"));
   return (
     <BrandModalFrame title={`센터 순서 설정 · ${pv.label}`} sub="센터 줄 자리를 바꿔요. 수량은 센터를 그대로 따라가요 (이름만 바뀌는 일 없음). 권역 합계 줄은 그대로고, 합계는 바뀐 자리 기준으로 다시 계산돼요." onClose={onClose} maxWidth={720} height="86vh">
       <div style={{ padding: "12px 20px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderBottom: `1px solid ${T.border}` }}>
         <span style={{ fontSize: 13, fontWeight: 700 }}>적용 범위</span>
         <select style={{ ...inputStyle, minWidth: 280 }} value={scope} onChange={(e) => setScope(e.target.value)}>
           <option value="all">{pv.label} 전체 상품</option>
-          {others.map((n) => (
-            <option key={n} value={n}>
-              {(saved.products || {})[n] ? "● " : ""}
-              {n}
-            </option>
+          {groups.map((g) => (
+            <optgroup key={g.vendor} label={`${g.vendor} (${g.names.length})`}>
+              {g.names.map((n) => (
+                <option key={n} value={n}>
+                  {(saved.products || {})[n] ? "● " : ""}
+                  {n}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
-        {scope !== "all" && <span style={{ fontSize: 12, color: T.inkSoft }}>{hasOwn ? "이 상품만 따로 정해져 있어요" : "지금은 전체 설정을 따라가요"}</span>}
+        {scope !== "all" && (
+          <span style={{ fontSize: 12, color: T.inkSoft }}>
+            공급사 <b style={{ color: T.ink }}>{vendorOf(scope)}</b> · {hasOwn ? "이 상품만 따로 정해져 있어요" : "지금은 전체 설정을 따라가요"}
+          </span>
+        )}
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: "10px 20px" }}>
         {!tplInfo ? (
@@ -15552,7 +15575,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
           </span>
         }
       />
-      {showCenterOrder && <CenterOrderModal pv={pv} tplInfo={tplInfo} productNames={products.map((p) => p.name)} authToken={authToken} onClose={() => setShowCenterOrder(false)} />}
+      {showCenterOrder && <CenterOrderModal pv={pv} tplInfo={tplInfo} productNames={products.map((p) => p.name)} productList={products} authToken={authToken} onClose={() => setShowCenterOrder(false)} />}
       {showOrderSet && (
         <BrandOrderSettingsModal
           brand={pv.brand}
