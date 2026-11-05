@@ -12466,16 +12466,17 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     if (lay === INV_LAYOUT_GSFROZEN || lay.key === "G4") return; // GS 냉동은 원본 그대로 (2026-10-31 되돌림)
     readSheetCells(ws, tpl.sst);
     let changed = false;
-    const setMirror = (ref, f) => {
+    const setMirror = (ref, f, stOverride) => {
       if (!changed) emInvUnshare(ws, tpl.sst);
       changed = true;
       const c = ws.cells.get(ref);
-      const st = c ? c.el.getAttribute("s") : null;
+      const st = stOverride != null ? stOverride : c ? c.el.getAttribute("s") : null;
       if (c) {
         const fEl = c.el.getElementsByTagName("f")[0];
         if (fEl) c.el.removeChild(fEl);
       }
-      emInvSetFormula(ws, ref, f, st);
+      const el = emInvSetFormula(ws, ref, f, st);
+      if (stOverride != null && el) el.setAttribute("s", stOverride); // 이미 있던 칸은 서식이 안 바뀌어서 직접 바꿈
     };
     const mirrorCols = (lay.cols || []).filter((c) => c !== "E");
     const qc = lay.qty || "Q";
@@ -12518,6 +12519,10 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     }
     const pairs = [];
     if (off != null && topTotal) for (let r = 13; r < topTotal; r++) pairs.push([r, r + off]);
+    // 아래 보관용 비고(소비기한) 칸 서식: 첫 줄(=AA13) 칸 서식으로 통일. 원본 맨 끝 빈 줄은 숫자(회계) 서식이라
+    // 그 줄에 상품이 들어가면 날짜가 46,336처럼 숫자로 보였음 (2026-11-05 BGF 강릉 찍먹버팔로윙감자1) - 위쪽은 10/26에 고쳤고 이번에 아래쪽
+    const aaFirst = off != null ? ws.cells.get("AA" + (13 + off)) : null;
+    const aaStyle = aaFirst ? aaFirst.el.getAttribute("s") : null;
     for (const [r, m] of pairs) {
       if (isTotal(m)) break;
       const e = ws.cells.get("E" + m);
@@ -12525,7 +12530,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       mirrorCols.forEach((col) => {
         const lo = ws.cells.get(col + m);
         const want = mirrorF(col, r);
-        if (!(lo && lo.f && lo.f.replace(/\s+/g, "") === want.replace(/\s+/g, ""))) setMirror(col + m, want);
+        const fixSt = col === "AA" && aaStyle != null && lo && lo.el.getAttribute("s") !== aaStyle ? aaStyle : null;
+        if (!(lo && lo.f && lo.f.replace(/\s+/g, "") === want.replace(/\s+/g, "")) || fixSt != null) setMirror(col + m, want, fixSt);
         const tf = ws.cells.get(col + r);
         pairsOut.push({ sheet: ws.name, col, r, m, kind: calcCols.has(col) && topTotal && tf && tf.f ? "calc" : kindOf(col), qc });
       });
