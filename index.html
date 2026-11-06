@@ -7431,7 +7431,32 @@ function buildBrandDailyTable(month, days, partOf, edits, rules) {
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
   const cols = new Map();
   Object.values(days).forEach((d) => (d.products || []).forEach((p) => !cols.has(p.name) && cols.set(p.name, { name: p.name, supplier: p.supplier || "미지정" })));
-  const columns = Array.from(cols.values()).sort((a, b) => a.supplier.localeCompare(b.supplier, "ko") || partOf(a.name, a.supplier) - partOf(b.name, b.supplier) || a.name.localeCompare(b.name, "ko"));
+  const sorted = Array.from(cols.values()).sort((a, b) => a.supplier.localeCompare(b.supplier, "ko") || partOf(a.name, a.supplier) - partOf(b.name, b.supplier) || a.name.localeCompare(b.name, "ko"));
+  // 같은 상품의 1편·2편(이름 끝 숫자만 다름, 예: 도)깐풍기&표고탕수1 / 2)은 나란히 (2026-11-06 대신): 2편 칸을 짝 1편 칸 바로 뒤로 옮김
+  //  - 칸 순서만 바뀌고 수량은 상품 이름으로 찾아 넣으니 그대로 따라감. 짝이 없는 상품은 원래 자리 그대로
+  const pairBase = (n) => String(n).replace(/\s*[12]\s*$/, "");
+  const pairKey = (c) => c.supplier + "\u0001" + pairBase(c.name);
+  const firstOf = new Map();
+  sorted.forEach((c) => {
+    if (partOf(c.name, c.supplier) !== 1 || !/[12]\s*$/.test(c.name)) return;
+    if (!firstOf.has(pairKey(c))) firstOf.set(pairKey(c), c);
+  });
+  const follow = new Map(); // 1편 칸 → 뒤에 붙일 2편 칸들
+  const moved = new Set();
+  sorted.forEach((c) => {
+    if (partOf(c.name, c.supplier) !== 2 || !/[12]\s*$/.test(c.name)) return;
+    const head = firstOf.get(pairKey(c));
+    if (!head || head === c) return;
+    if (!follow.has(head)) follow.set(head, []);
+    follow.get(head).push(c);
+    moved.add(c);
+  });
+  const columns = [];
+  sorted.forEach((c) => {
+    if (moved.has(c)) return;
+    columns.push(c);
+    (follow.get(c) || []).forEach((x) => columns.push(x));
+  });
   const rows = dates.map((date) => {
     const d = days[date];
     const all = (d && d.products) || [];
