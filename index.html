@@ -7542,7 +7542,7 @@ async function downloadGsDailyExcel(table, setBusy) {
       let start = 0;
       sh.columns.forEach((col, i) => {
         const cell = ws.getCell(5, 10 + i);
-        cell.value = col.name;
+        cell.value = displayNameOf(col.name); // 상품마스터 표시 상품명 (2026-11-07)
         cell.font = { ...font, size: 9 };
         cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
         cell.border = box;
@@ -7823,7 +7823,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   // 상품 검색: 이름에 검색어가 들어간 상품 열만 보여줌 (지우면 전체)
   const colIdx = useMemo(() => {
     const qn = String(colQ || "").replace(/\s/g, "").toUpperCase();
-    return sh.columns.map((c, i) => i).filter((i) => !qn || String(sh.columns[i].name).replace(/\s/g, "").toUpperCase().includes(qn) || String(sh.columns[i].supplier || "").replace(/\s/g, "").toUpperCase().includes(qn));
+    return sh.columns.map((c, i) => i).filter((i) => !qn || (String(sh.columns[i].name) + displayNameOf(sh.columns[i].name)).replace(/\s/g, "").toUpperCase().includes(qn) || String(sh.columns[i].supplier || "").replace(/\s/g, "").toUpperCase().includes(qn));
   }, [sh, colQ]);
   const clearAllEdits = async () => {
     if (!confirm(`${month.replace("-", "년 ")}월에 직접 고친 칸 ${editCount}개를 모두 원래 값으로 되돌릴까요?`)) return;
@@ -7957,7 +7957,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
                 return (
                   <th key={c.name} style={{ ...th, textAlign: "right", minWidth: 96, whiteSpace: "normal", lineHeight: 1.3 }}>
                     {(k === 0 || sh.columns[colIdx[k - 1]].supplier !== c.supplier) && <div style={{ color: T.teal, fontSize: 11 }}>{c.supplier}</div>}
-                    <div>{c.name}</div>
+                    <div>{displayNameOf(c.name)}</div>
                   </th>
                 );
               })}
@@ -9812,7 +9812,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
-    const wantName = item.code && usedNames.has(String(item.name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(item.name).slice(0, 24)}(${item.code.slice(-5)})` : item.name;
+    const showName = displayNameOf(item.name); // 상품마스터에서 바꾼 이름 (2026-11-07)
+    const wantName = item.code && usedNames.has(String(showName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(showName).slice(0, 24)}(${item.code.slice(-5)})` : showName;
     const newName = safeEmartSheetName(wantName, usedNames);
     // 복사한 시트 위 공급사 이름: "신성베이커리 - 이마트24" → "자몽 - 이마트24" (원래 공급사 이름 부분만 바꿈)
     const newTitleOf = () => {
@@ -9847,7 +9848,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         readSheetCells(tmp, tpl.sst);
         tmp.cells.forEach((c, ref) => !c.f && typeof c.v === "string" && c.v.trim() === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
       }
-      setCellXml(tmp, numToCol(srcProd.col || 3) + "3", item.name);
+      setCellXml(tmp, numToCol(srcProd.col || 3) + "3", displayNameOf(item.name));
       const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || ((item.formSrc || item.formSheet) && !(item.box > 1) && item.formOwnPack) || item.box;
       if (boxQ > 1 || ((item.formSrc || item.formSheet) && boxQ >= 1)) {
         const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
@@ -9871,7 +9872,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe || item.formSheet ? newTitleOf() : srcProd.sheetTitle, isNew: true };
     // 폼 변경 상품: 원래 시트 이름이 남아 있어서 "(00827)"이 붙었으면, 원래 시트가 빠진 뒤 원래 이름으로 되돌림
     if (item.formSrc || item.formSheet) {
-      const plain = String(item.name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim();
+      const plain = String(displayNameOf(item.name)).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim();
       if (plain && plain !== newName) np.formWant = plain;
     }
     tpl.products.push(np);
@@ -9976,7 +9977,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // 피벗 다시 쓰기
   const byPivot = {};
   links.forEach(({ prod, item }) => {
-    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: item.name, qty: item.qty });
+    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: displayNameOf(item.name), qty: item.qty }); // 상품마스터 표시 상품명 (2026-11-07)
     const regSet = new Set(prod.regions);
     Object.entries(item.qty).forEach(([reg, q]) => {
       if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
@@ -9990,7 +9991,8 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (arr.some((c) => c.k === p.k)) return;
       const pvS = tpl.sheets.find((s) => s.name === p.pivot);
       const h = pvS && pvS.cells && pvS.cells.get(numToCol(p.k) + "2");
-      arr.push({ k: p.k, header: (h && typeof h.v === "string" && h.v.trim()) || String(p.title || p.sheet).replace(/\s*\n\s*/g, ""), qty: {} });
+      const h0 = (h && typeof h.v === "string" && h.v.trim()) || String(p.title || p.sheet).replace(/\s*\n\s*/g, "");
+      arr.push({ k: p.k, header: displayNameOf(h0), qty: {} });
     });
   }
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
@@ -10059,7 +10061,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const m0 = () => {};
     m0.pivot = pivot;
     const sh = await cloneEmartSheet(tpl, pivot, nm, m0);
-    const cols = dk.items.map((it, i) => ({ k: 2 + i, header: it.header, qty: it.qty }));
+    const cols = dk.items.map((it, i) => ({ k: 2 + i, header: displayNameOf(it.header), qty: it.qty }));
     rewritePivot(sh, date, cols, dk.centers, cols.length + 1);
     setCellXml(sh, "B1", "당착(오전현장)");
     dangchakKeep.push(nm);
@@ -10326,11 +10328,28 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     dangchakKeep.forEach((n) => keep.add(n)); // 이마트 당착 시트
     if (opts.keepVisible) {
       // 원본에서 보이는 시트는 발주가 없어도 그대로(수량 0) - 상품 시트면 그 피벗도 같이
+      // opts.dropUnordered (이마트 냉동, 2026-11-07): 발주 없는 상품 시트는 안 남김. 발주 있는 상품 시트는 위 links에서 이미 남김
+      const productSheetSet = new Set(tpl.products.map((p) => p.sheet));
       tpl.sheets.forEach((s) => {
         if (s.el.getAttribute("state") === "hidden" || s.el.getAttribute("state") === "veryHidden") return;
+        if (opts.dropUnordered && productSheetSet.has(s.name) && !keep.has(s.name)) return;
         keep.add(s.name);
         tpl.products.filter((p) => p.sheet === s.name).forEach((p) => keep.add(p.pivot));
       });
+      // 남는 다른 시트(요약 시트 등)가 수식으로 가리키는 상품 시트는 같이 남김 (#REF 막기)
+      if (opts.dropUnordered)
+        tpl.sheets.forEach((s) => {
+          if (!keep.has(s.name) || productSheetSet.has(s.name)) return;
+          const fs = Array.from(s.doc.getElementsByTagName("f")).map((f) => f.textContent || "").join("\n");
+          if (!fs) return;
+          tpl.sheets.forEach((t) => {
+            if (keep.has(t.name) || !productSheetSet.has(t.name)) return;
+            if (fs.includes("'" + t.name.replace(/'/g, "''") + "'!") || fs.includes(t.name + "!")) {
+              keep.add(t.name);
+              tpl.products.filter((p) => p.sheet === t.name).forEach((p) => keep.add(p.pivot));
+            }
+          });
+        });
       // 숨겨져 있던 상품 시트라도 발주가 있으면 보이게
       links.forEach(({ prod }) => {
         const sh = tpl.sheets.find((x) => x.name === prod.sheet);
@@ -10505,6 +10524,83 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         if (rowEl) rowEl.setAttribute("hidden", "1");
       });
     });
+  }
+
+  // 상품마스터에서 상품명을 바꾼 상품 (2026-11-07): 원본 상품 시트의 상품명 칸과 시트 탭 이름도 새 이름으로
+  //  - 수량·연결은 원래 이름(발주 이름)으로 다 끝낸 뒤 마지막에 글자만 바꿈 → 수량에는 영향 없음
+  //  - 시트 탭: 탭 이름이 원래 상품명일 때만 바꾸고, 그 탭을 가리키는 수식·정의된 이름도 같이 바꿈
+  //  - 여러 상품이 한 시트에 있는 시트(제주권 공유 등)는 탭 이름은 그대로
+  if (opts.displayNames !== false) {
+    const nm = (x) => String(x == null ? "" : x).replace(/\s+/g, "").toLowerCase();
+    const dnTargets = links.map(({ prod, item }) => ({ prod, names: [item.name, ...(item.names ? [...item.names] : []), prod.title] }));
+    if (opts.keepVisible) tpl.products.forEach((prod) => !links.some((l) => l.prod.sheet === prod.sheet) && dnTargets.push({ prod, names: [prod.title, frozenTitleOf(prod)] }));
+    const usedTab = new Set(tpl.sheets.map((x) => x.name.toLowerCase()));
+    const doneSheet = new Set();
+    const tabRenames = [];
+    dnTargets.forEach(({ prod, names }) => {
+      if (doneSheet.has(prod.sheet)) return;
+      const sh = tpl.sheets.find((x) => x.name === prod.sheet);
+      if (!sh) return;
+      const oldN = names.map((n) => String(n || "").replace(/\s*\n\s*/g, "").trim()).find((n) => n && displayNameOf(n) !== n);
+      if (!oldN) return;
+      const newN = String(displayNameOf(oldN)).trim();
+      if (!newN || newN === oldN) return;
+      doneSheet.add(prod.sheet);
+      const shared = tpl.products.filter((p) => p.sheet === prod.sheet).length > 1;
+      // 상품명 칸 (3행 상품 열): 글자 칸이고 원래 이름일 때만
+      readSheetCells(sh, tpl.sst);
+      const ref = numToCol(prod.col || 3) + "3";
+      const c = sh.cells.get(ref);
+      if (c && !c.f && typeof c.v === "string" && names.some((n) => nm(n) === nm(c.v))) setCellXml(sh, ref, newN);
+      if (shared) return;
+      // 상품 하나짜리 시트 탭은 새 상품명으로 (상품코드로 나눈 시트의 "(00827)" 꼬리표는 그대로 붙임)
+      const tail = (/\(\d{5}\)$/.exec(sh.name) || [""])[0];
+      usedTab.delete(sh.name.toLowerCase());
+      const tab = safeEmartSheetName(tail ? String(newN).replace(/[\\/?*[\]:]/g, " ").slice(0, 31 - tail.length).trim() + tail : newN, usedTab);
+      if (tab === sh.name) return;
+      tabRenames.push([sh.name, tab]);
+    });
+    // 상품 시트·피벗이 아닌 시트(제주권 AZ공유처럼 상품 블록이 모인 시트): 원래 상품명과 똑같은 글자 칸만 새 이름으로
+    const nameMap = new Map();
+    dnTargets.forEach(({ names }) =>
+      names.forEach((n) => {
+        const t = String(n || "").replace(/\s*\n\s*/g, "").trim();
+        if (t && displayNameOf(t) !== t) nameMap.set(nm(t), String(displayNameOf(t)).trim());
+      })
+    );
+    if (nameMap.size) {
+      const pvSet = new Set(tpl.products.map((p) => p.pivot));
+      tpl.sheets.forEach((x) => {
+        if (pvSet.has(x.name) || tpl.products.some((p) => p.sheet === x.name && tpl.products.filter((q2) => q2.sheet === x.name).length === 1)) return;
+        readSheetCells(x, tpl.sst);
+        x.cells.forEach((c, ref) => {
+          if (c.f || typeof c.v !== "string") return;
+          const to = nameMap.get(nm(c.v));
+          if (to) setCellXml(x, ref, to);
+        });
+      });
+    }
+    if (tabRenames.length) {
+      const q = (n) => "'" + n.replace(/'/g, "''") + "'";
+      const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
+      const fixF = (txt, oldT, newT) =>
+        txt.replace(new RegExp(escRe(q(oldT)) + "!", "g"), q(newT) + "!").replace(new RegExp("(^|[^A-Za-z0-9_.가-힣'])" + escRe(oldT) + "!", "g"), (m0, pre) => pre + q(newT) + "!");
+      tabRenames.forEach(([oldT, newT]) => {
+        const sh = tpl.sheets.find((x) => x.name === oldT);
+        sh.el.setAttribute("name", newT);
+        sh.name = newT;
+        tpl.sheets.forEach((x) =>
+          Array.from(x.doc.getElementsByTagName("f")).forEach((f) => {
+            if (f.textContent && f.textContent.includes(oldT)) f.textContent = fixF(f.textContent, oldT, newT);
+          })
+        );
+        Array.from(tpl.wbXml.getElementsByTagName("definedName")).forEach((d) => d.textContent.includes(oldT) && (d.textContent = fixF(d.textContent, oldT, newT)));
+        (tpl.definedNames || []).forEach((d) => d.sheet === oldT && (d.sheet = newT));
+        [report.added, report.matched, report.centerReordered].forEach((arr) => (arr || []).forEach((x) => x && x.sheet === oldT && (x.sheet = newT)));
+        tpl.products.forEach((p) => p.sheet === oldT && (p.sheet = newT));
+      });
+      report.renamedSheets = tabRenames.map(([from, to]) => ({ from, to }));
+    }
   }
 
   // 저장: 바뀐 XML 다시 쓰기 + 엑셀이 열 때 전체 재계산
@@ -11411,7 +11507,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: x.isNew ? "#FCF1DD" : "#E6F0FA", color: x.isNew ? T.amberDeep : "#1F4E79" }}>{x.isNew ? (tplInfo.frozen.fallback ? "냉동" : "새 상품") : "냉동"}</span>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{x.title}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameOf(x.title)}</div>
                         {(c.zero || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B26A00" }}>0처리 {(c.zero || []).length}</span>}
                         {(c.remove || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B03A2E" }}>빼기 {(c.remove || []).length}</span>}
                       </div>
@@ -11469,7 +11565,7 @@ function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(
   return (
     <div>
       <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{item.title}</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{displayNameOf(item.title)}</div>
         <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
           {item.pivot || item.vendor || "-"} · 입수 {pack || "-"}
           {item.isNew ? " · 템플릿에 없는 상품 (같은 공급사 시트를 복사해서 추가돼요)" : ""}
@@ -11657,7 +11753,7 @@ const EM_FROZEN_PICK_CFG = {
   getBuffer: async (tplInfo) => (await getEmFrozenTemplateBuffer()).buf,
   analyze: (buf) => analyzeEmFrozenBuffer(buf, false),
   rowsOf: (orders, date) => emartRowsFromOrders(orders.filter((o) => o.createdAt === date)).map((r) => ({ name: r.name, vendor: r.vendor, box: r.box, qty: r.qty, center: r.center, code: r.center })),
-  buildOpts: (tplInfo) => ({ regionOrder: EMART_STD_REGIONS, keepVisible: !(tplInfo && tplInfo.frozen.fallback), cloneUnknownVendor: true, colorKind: "emfrozen_picking", wideLookup: true, pivotA2Auto: true }),
+  buildOpts: (tplInfo) => ({ regionOrder: EMART_STD_REGIONS, keepVisible: !(tplInfo && tplInfo.frozen.fallback), dropUnordered: true, cloneUnknownVendor: true, colorKind: "emfrozen_picking", wideLookup: true, pivotA2Auto: true }),
   fallbackSub: "이마트 냉동 전용 피킹지 원본(emart_frozen_picking_template.xlsx)이 아직 없어서, 이마트 피킹검수 양식으로 그날 발주 상품만 만들어요. 실물 원본을 받으면 그 파일 그대로 (발주 없는 시트도 0으로) 나가요.",
 };
 /* ================= 이마트24 거래명세서 (실물 엑셀 "이마트24 거래명세서" 파일을 그대로 템플릿으로) ================= */
@@ -12313,9 +12409,9 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     const pv = byName.get(p.pivot);
     const cols = Array.from(p.products.values()).map((prod) => {
       const h = pv.cells.get(numToCol(prod.k) + "2");
-      return { k: prod.k, header: h && typeof h.v === "string" && h.v.trim() ? h.v : prod.name, qty: x.byK[prod.k] || {} };
+      return { k: prod.k, header: displayNameOf(h && typeof h.v === "string" && h.v.trim() ? h.v.trim() : prod.name), qty: x.byK[prod.k] || {} }; // 상품마스터 표시 상품명
     });
-    x.added.forEach((a) => cols.push({ k: a.k, header: a.name, qty: a.qty }));
+    x.added.forEach((a) => cols.push({ k: a.k, header: displayNameOf(a.name), qty: a.qty }));
     const RO = inv.regionOrder || EMART_STD_REGIONS;
     const regs = [...RO, ...Object.keys(x.centerQty).filter((c) => !RO.includes(c))];
     rewritePivot(pv, date, cols, regs, Math.max(1, ...cols.map((c) => c.k)));
@@ -12404,6 +12500,12 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (hidRows.includes(row)) return;
         const o = ps[prod.name] || ps[row.name] || {};
         if (o.displayName) setCellXml(ws, "E" + row.r, o.displayName);
+        else {
+          // 상품마스터에서 바꾼 이름 (2026-11-07): 명세서 상품명 칸이 글자일 때만 (수식이면 피벗 머리글을 따라감)
+          const dn = displayNameOf(prod.name) !== prod.name ? displayNameOf(prod.name) : displayNameOf(row.name) !== row.name ? displayNameOf(row.name) : null;
+          const ec = ws.cells.get("E" + row.r);
+          if (dn && !(ec && ec.f)) setCellXml(ws, "E" + row.r, dn);
+        }
         if (o.packQty > 0) setCellXml(ws, "M" + row.r, Number(o.packQty));
         else {
           // 원본 명세서에 입수가 비어 있는 줄(대신 1편 딥핑치즈맵닭강정1 등): 상품 정보 관리 → 발주 입수 → 다른 편 같은 상품 입수
@@ -12442,7 +12544,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const prods = x.added.map((a) => {
           const o = ps[a.name] || {};
           const pack = Number(o.packQty) > 0 ? Number(o.packQty) : invPackFallback(a.name) || a.box || 0;
-          return { name: o.displayName || a.name, k: a.k, pack, raw: a, o };
+          return { name: o.displayName || displayNameOf(a.name), k: a.k, pack, raw: a, o };
         });
         const expiryOf = (pr) => {
           const ov = pr.o.expiryDays;
@@ -15832,7 +15934,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FDF1DC", color: T.amberDeep }}>{pv.label}</span>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameOf(p.name)}</div>
                         {(() => {
                           // 신제품 표시: 상품코드를 처음 본 날부터 3일. 첫날만 빨간색, 그다음 이틀은 회색 글자
                           const d = firstSeen.get(String(p.code || p.name).trim());
@@ -15906,7 +16008,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
                       <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
                     </button>
                   </div>
-                  <div style={{ fontWeight: 700, fontSize: 15.5 }}>{selected.name}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15.5 }}>{displayNameOf(selected.name)}</div>
                   <div style={{ fontSize: 11.5, color: T.inkSoft, ...mono, marginBottom: 10 }}>
                     {selected.tpl ? `${selected.tpl.sheetTitle || selected.vendor} · 시트 "${selected.tpl.sheet}"` : `${selected.vendor} · 템플릿에 없는 상품`} · 입수 {selected.pack || "-"}
                   </div>
@@ -16616,7 +16718,7 @@ function verifyEmartPicking({ emartOrders, date, bytes, report, rows, allRows, i
     const pv = pvReadPivot(pvSheetRows(wb, d.sheet));
     if (!pv) return res.errors.push({ type: "시트", text: `[${d.sheet}] 당착 시트를 읽지 못했어요.` });
     d.items.forEach((it) => {
-      const col = pv.data[pvNorm(it.header)] || {};
+      const col = pv.data[pvNorm(displayNameOf(it.header))] || pv.data[pvNorm(it.header)] || {};
       d.centers.forEach((c) => {
         const a = it.qty[c] || 0;
         const b = col[c] || 0;
