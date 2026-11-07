@@ -9609,6 +9609,120 @@ async function cloneEmartSheet(tpl, srcName, newName, mutate) {
   return sheet;
 }
 
+// ---------- 상품마스터 표시 상품명 (2026-11-07) ----------
+// 이름 후보(발주 상품명·합쳐진 이름·원본 시트 상품명) 중 상품마스터에서 바꾼 이름이 있으면 그 이름, 없으면 null
+function displayNameAmong(names) {
+  for (const n of names || []) {
+    const t = String(n == null ? "" : n).replace(/\s*\n\s*/g, "").trim();
+    if (t && displayNameOf(t) !== t) return String(displayNameOf(t)).trim();
+  }
+  return null;
+}
+// ---------- 글자가 칸에 들어가게 (2026-11-07) ----------
+// 칸(병합 칸이면 합친 크기) 너비·높이에 비해 글자가 길면, 그 칸만 줄바꿈을 켜고 글자 크기를 들어갈 만큼 줄임 (다른 칸 서식은 그대로)
+async function xlStylesCtx(zip) {
+  const f = zip.file("xl/styles.xml");
+  if (!f) return null;
+  const doc = new DOMParser().parseFromString(await f.async("string"), "application/xml");
+  return { doc, cache: new Map(), dirty: false };
+}
+function xlStylesSave(zip, ctx) {
+  if (!ctx || !ctx.dirty) return;
+  let x = new XMLSerializer().serializeToString(ctx.doc);
+  if (!x.startsWith("<?xml")) x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + x;
+  zip.file("xl/styles.xml", x);
+}
+// 글자 폭(11pt 기준 "0" 글자 하나 = 1): 한글·한자 약 1.9, 나머지 약 1
+const xlTextUnits = (t) => [...String(t || "")].reduce((a, ch) => a + (/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af\u4e00-\u9fff]/.test(ch) ? 1.9 : /[A-Z%@#&]/.test(ch) ? 1.2 : 1), 0);
+function xlFitCellText(sheet, ref, text, ctx) {
+  if (!ctx || !text) return false;
+  const doc = sheet.doc;
+  const c = Array.from(doc.getElementsByTagName("c")).find((x) => x.getAttribute("r") === ref);
+  if (!c) return false;
+  const S = ctx.doc;
+  const cellXfs = S.getElementsByTagName("cellXfs")[0];
+  const fontsEl = S.getElementsByTagName("fonts")[0];
+  if (!cellXfs || !fontsEl) return false;
+  const kids = (el, tag) => Array.from(el.childNodes).filter((n) => n.nodeType === 1 && n.localName === tag);
+  const xfs = kids(cellXfs, "xf");
+  const fonts = kids(fontsEl, "font");
+  const sIdx = Number(c.getAttribute("s") || 0);
+  const xf = xfs[sIdx];
+  if (!xf) return false;
+  const font = fonts[Number(xf.getAttribute("fontId") || 0)];
+  if (!font) return false;
+  const szEl = font.getElementsByTagName("sz")[0];
+  const sz = Number((szEl && szEl.getAttribute("val")) || 11);
+  const al = xf.getElementsByTagName("alignment")[0];
+  const wrap0 = !!al && al.getAttribute("wrapText") === "1";
+  // 칸 크기 (병합 칸이면 합침)
+  const p = splitRef(ref);
+  let c1 = p.c, c2 = p.c, r1 = p.r, r2 = p.r;
+  Array.from(doc.getElementsByTagName("mergeCell")).forEach((m) => {
+    const [a, b] = String(m.getAttribute("ref") || "").split(":");
+    const pa = a && splitRef(a), pb = b && splitRef(b);
+    if (pa && pb && pa.c <= p.c && p.c <= pb.c && pa.r <= p.r && p.r <= pb.r) [c1, c2, r1, r2] = [pa.c, pb.c, pa.r, pb.r];
+  });
+  const fmt = doc.getElementsByTagName("sheetFormatPr")[0];
+  const defW = Number((fmt && fmt.getAttribute("defaultColWidth")) || 8.43);
+  const defH = Number((fmt && fmt.getAttribute("defaultRowHeight")) || 15);
+  const colEls = Array.from(doc.getElementsByTagName("col"));
+  const colW = (k) => {
+    const e = colEls.find((x) => Number(x.getAttribute("min")) <= k && k <= Number(x.getAttribute("max")));
+    return e && e.getAttribute("width") ? Number(e.getAttribute("width")) : defW;
+  };
+  const rowEls = Array.from(doc.getElementsByTagName("row"));
+  const rowH = (k) => {
+    const e = rowEls.find((x) => Number(x.getAttribute("r")) === k);
+    return e && e.getAttribute("ht") ? Number(e.getAttribute("ht")) : defH;
+  };
+  let width = 0, height = 0;
+  for (let k = c1; k <= c2; k++) width += colW(k);
+  for (let k = r1; k <= r2; k++) height += rowH(k);
+  const need = xlTextUnits(text);
+  const fits = (z, wrap) => {
+    const perLine = Math.max(1, (width - 0.8) * (11 / z) * 0.92); // 여유 8%
+    if (!wrap) return need <= perLine;
+    const lines = Math.max(1, Math.floor(height / (z * 1.45))); // 줄 간격 여유
+    return Math.ceil(need / perLine) <= lines;
+  };
+  if (fits(sz, wrap0)) return false;
+  let z = sz;
+  while (z > 6 && !fits(z, true)) z -= 0.5;
+  const key = sIdx + "|" + z;
+  let ns = ctx.cache.get(key);
+  if (ns == null) {
+    const nf = font.cloneNode(true);
+    let nsz = nf.getElementsByTagName("sz")[0];
+    if (!nsz) {
+      nsz = S.createElementNS(S.documentElement.namespaceURI, "sz");
+      nf.insertBefore(nsz, nf.firstChild);
+    }
+    nsz.setAttribute("val", String(z));
+    fontsEl.appendChild(nf);
+    fontsEl.setAttribute("count", String(fonts.length + 1));
+    const nx = xf.cloneNode(true);
+    nx.setAttribute("fontId", String(fonts.length));
+    nx.setAttribute("applyFont", "1");
+    nx.setAttribute("applyAlignment", "1");
+    let na = nx.getElementsByTagName("alignment")[0];
+    if (!na) {
+      na = S.createElementNS(S.documentElement.namespaceURI, "alignment");
+      nx.insertBefore(na, nx.firstChild);
+    }
+    na.setAttribute("wrapText", "1");
+    na.removeAttribute("shrinkToFit");
+    if (!na.getAttribute("vertical")) na.setAttribute("vertical", "center");
+    cellXfs.appendChild(nx);
+    cellXfs.setAttribute("count", String(xfs.length + 1));
+    ns = xfs.length;
+    ctx.cache.set(key, ns);
+  }
+  c.setAttribute("s", String(ns));
+  ctx.dirty = true;
+  return true;
+}
+
 function safeEmartSheetName(name, used) {
   let base = String(name).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim() || "새 상품";
   let n = base, i = 2;
@@ -9812,7 +9926,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
-    const showName = displayNameOf(item.name); // 상품마스터에서 바꾼 이름 (2026-11-07)
+    const showName = displayNameAmong([item.name, ...(item.names ? [...item.names] : [])]) || item.name; // 상품마스터에서 바꾼 이름 (2026-11-07)
     const wantName = item.code && usedNames.has(String(showName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(showName).slice(0, 24)}(${item.code.slice(-5)})` : showName;
     const newName = safeEmartSheetName(wantName, usedNames);
     // 복사한 시트 위 공급사 이름: "신성베이커리 - 이마트24" → "자몽 - 이마트24" (원래 공급사 이름 부분만 바꿈)
@@ -9848,7 +9962,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         readSheetCells(tmp, tpl.sst);
         tmp.cells.forEach((c, ref) => !c.f && typeof c.v === "string" && c.v.trim() === srcProd.sheetTitle && setCellXml(tmp, ref, newTitleOf()));
       }
-      setCellXml(tmp, numToCol(srcProd.col || 3) + "3", displayNameOf(item.name));
+      setCellXml(tmp, numToCol(srcProd.col || 3) + "3", showName);
       const boxQ = (opts.packOverride && opts.packOverride.get(item.name)) || ((item.formSrc || item.formSheet) && !(item.box > 1) && item.formOwnPack) || item.box;
       if (boxQ > 1 || ((item.formSrc || item.formSheet) && boxQ >= 1)) {
         const b = Array.from(sheet.doc.getElementsByTagName("c")).find((c) => c.getAttribute("r") === "B4" && !c.getElementsByTagName("f")[0]);
@@ -9872,7 +9986,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const np = { sheet: newName, pivot, k, col: srcProd.col, title: item.name, keys: [emartNorm(item.name)], regions: srcProd.regions, regionRows: srcProd.regionRows, pack: boxQ0 > 1 ? boxQ0 : srcProd.pack, sheetTitle: pvRe || item.formSheet ? newTitleOf() : srcProd.sheetTitle, isNew: true };
     // 폼 변경 상품: 원래 시트 이름이 남아 있어서 "(00827)"이 붙었으면, 원래 시트가 빠진 뒤 원래 이름으로 되돌림
     if (item.formSrc || item.formSheet) {
-      const plain = String(displayNameOf(item.name)).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim();
+      const plain = String(showName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim();
       if (plain && plain !== newName) np.formWant = plain;
     }
     tpl.products.push(np);
@@ -9977,7 +10091,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // 피벗 다시 쓰기
   const byPivot = {};
   links.forEach(({ prod, item }) => {
-    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: displayNameOf(item.name), qty: item.qty }); // 상품마스터 표시 상품명 (2026-11-07)
+    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: displayNameAmong([item.name, ...(item.names ? [...item.names] : []), prod.title]) || item.name, qty: item.qty }); // 상품마스터 표시 상품명 (2026-11-07)
     const regSet = new Set(prod.regions);
     Object.entries(item.qty).forEach(([reg, q]) => {
       if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
@@ -9992,7 +10106,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const pvS = tpl.sheets.find((s) => s.name === p.pivot);
       const h = pvS && pvS.cells && pvS.cells.get(numToCol(p.k) + "2");
       const h0 = (h && typeof h.v === "string" && h.v.trim()) || String(p.title || p.sheet).replace(/\s*\n\s*/g, "");
-      arr.push({ k: p.k, header: displayNameOf(h0), qty: {} });
+      arr.push({ k: p.k, header: displayNameAmong([h0, p.title]) || h0, qty: {} });
     });
   }
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
@@ -10536,6 +10650,17 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     if (opts.keepVisible) tpl.products.forEach((prod) => !links.some((l) => l.prod.sheet === prod.sheet) && dnTargets.push({ prod, names: [prod.title, frozenTitleOf(prod)] }));
     const usedTab = new Set(tpl.sheets.map((x) => x.name.toLowerCase()));
     const doneSheet = new Set();
+    const fitCells = []; // 글자 크기 맞출 칸 [시트, 칸, 글자]
+    // 새로 복사해 만든 상품 시트 상품명 칸도 (이름이 길면 칸에 맞게)
+    links.forEach(({ prod, item }) => {
+      if (!prod.isNew && !report.added.some((a) => a.sheet === prod.sheet)) return;
+      const sh = tpl.sheets.find((x) => x.name === prod.sheet);
+      if (!sh) return;
+      readSheetCells(sh, tpl.sst);
+      const ref = numToCol(prod.col || 3) + "3";
+      const c = sh.cells.get(ref);
+      if (c && !c.f && typeof c.v === "string") fitCells.push([sh, ref, c.v]);
+    });
     const tabRenames = [];
     dnTargets.forEach(({ prod, names }) => {
       if (doneSheet.has(prod.sheet)) return;
@@ -10543,7 +10668,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (!sh) return;
       const oldN = names.map((n) => String(n || "").replace(/\s*\n\s*/g, "").trim()).find((n) => n && displayNameOf(n) !== n);
       if (!oldN) return;
-      const newN = String(displayNameOf(oldN)).trim();
+      const newN = displayNameAmong(names);
       if (!newN || newN === oldN) return;
       doneSheet.add(prod.sheet);
       const shared = tpl.products.filter((p) => p.sheet === prod.sheet).length > 1;
@@ -10551,7 +10676,11 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       readSheetCells(sh, tpl.sst);
       const ref = numToCol(prod.col || 3) + "3";
       const c = sh.cells.get(ref);
-      if (c && !c.f && typeof c.v === "string" && names.some((n) => nm(n) === nm(c.v))) setCellXml(sh, ref, newN);
+      // 상품명 칸 (3행 상품 열 = 원본 양식의 상품명 자리): 글자 칸이면 새 이름, 칸에 맞게 글자 크기 조절
+      if (c && !c.f && (shared ? typeof c.v === "string" && names.some((n) => nm(n) === nm(c.v)) : true)) {
+        setCellXml(sh, ref, newN);
+        fitCells.push([sh, ref, newN]);
+      }
       if (shared) return;
       // 상품 하나짜리 시트 탭은 새 상품명으로 (상품코드로 나눈 시트의 "(00827)" 꼬리표는 그대로 붙임)
       const tail = (/\(\d{5}\)$/.exec(sh.name) || [""])[0];
@@ -10576,7 +10705,10 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         x.cells.forEach((c, ref) => {
           if (c.f || typeof c.v !== "string") return;
           const to = nameMap.get(nm(c.v));
-          if (to) setCellXml(x, ref, to);
+          if (to) {
+            setCellXml(x, ref, to);
+            fitCells.push([x, ref, to]);
+          }
         });
       });
     }
@@ -10600,6 +10732,12 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         tpl.products.forEach((p) => p.sheet === oldT && (p.sheet = newT));
       });
       report.renamedSheets = tabRenames.map(([from, to]) => ({ from, to }));
+    }
+    if (fitCells.length) {
+      const sctx = await xlStylesCtx(tpl.zip);
+      fitCells.forEach(([sh, ref, text]) => xlFitCellText(sh, ref, text, sctx));
+      xlStylesSave(tpl.zip, sctx);
+      report.fittedCells = fitCells.length;
     }
   }
 
@@ -11128,8 +11266,10 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     });
     const out = [];
     const used = new Set();
+    const dropUn = !!(cfg.buildOpts && cfg.buildOpts(tplInfo).dropUnordered); // 이마트 냉동: 발주 있는 상품만 시트로 (2026-11-07)
     tplInfo.products.forEach((p) => {
       if (!tplInfo.frozen.visible.has(p.sheet) && ![...byName.keys()].some((n) => matchEmartProduct(tplInfo, n) === p)) return;
+      if (dropUn && ![...byName.keys()].some((n) => matchEmartProduct(tplInfo, n) === p)) return; // 그날 발주 없는 상품은 목록에서도 뺌
       const hits = [...byName.values()].filter((x) => matchEmartProduct(tplInfo, x.name) === p);
       hits.forEach((h) => used.add(h.name));
       const total = hits.reduce((a, h) => a + h.total, 0);
@@ -11165,6 +11305,20 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   const filterOn = supFilter !== "all" || !!q.trim();
   const filtered = list.filter((x) => (supFilter === "all" || x.pivot === supFilter) && (!q.trim() || x.title.toLowerCase().includes(q.trim().toLowerCase()) || (x.names || []).some((n) => n.toLowerCase().includes(q.trim().toLowerCase()))));
   const selected = filtered.find((x) => (x.sheet || "new:" + x.title) === selSheet) || filtered[0] || null;
+  // 엑셀 버튼 시트 수 (2026-11-07): 이마트 냉동은 실제 엑셀에 나가는 시트 = 발주 남는 상품 시트 + 그 피벗
+  //  (피킹지 설정에서 모든 센터를 0/빼기 한 상품은 시트가 안 나가서 빼고 셈)
+  const dropUnordered = !!(tplInfo && cfg.buildOpts && cfg.buildOpts(tplInfo).dropUnordered);
+  const sheetCountLabel = (arr, isFilter) => {
+    if (!dropUnordered) return isFilter ? `필터 결과만 엑셀 (${arr.length}개 시트)` : `엑셀 (${arr.length}개 시트)`;
+    const regOf = (x) => ((pickCfg && pickCfg.products) || {})[x.sheet || "new:" + x.title] || {};
+    const live = arr.filter((x) => {
+      const c = regOf(x);
+      const off = new Set([...(c.zero || []), ...(c.remove || [])]);
+      return Object.entries(x.byCode || {}).some(([code, q]) => q > 0 && !off.has(code));
+    });
+    const pv = new Set(live.map((x) => x.pivot)).size;
+    return `${isFilter ? "필터 결과만 엑셀" : "엑셀"} (상품 ${live.length}개 + 피벗 ${pv}개 = ${live.length + pv}개 시트)`;
+  };
   // 화면 미리보기도 센터 순서 설정대로 (권역 합계 줄은 제자리, 센터 줄만 자리 바꿈)
   const selectedView = useMemo(() => {
     if (!selected || !selected.prod || !cfg.centerOrderKey) return selected;
@@ -11360,7 +11514,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     <div>
       <PageHeader
         title={`피킹지시서 출력 · ${cfg.label}`}
-        sub={tplInfo && tplInfo.frozen.fallback ? cfg.fallbackSub : `실물 ${cfg.label} 피킹지 파일 그대로 만들어요. 그날 발주가 없는 상품도 시트는 그대로 남고 수량은 0으로 나가요.`}
+        sub={tplInfo && tplInfo.frozen.fallback ? cfg.fallbackSub : cfg.buildOpts && tplInfo && cfg.buildOpts(tplInfo).dropUnordered ? `실물 ${cfg.label} 피킹지 파일 그대로 만들어요. 그날 발주가 있는 상품 시트만 나가요.` : `실물 ${cfg.label} 피킹지 파일 그대로 만들어요. 그날 발주가 없는 상품도 시트는 그대로 남고 수량은 0으로 나가요.`}
         action={
           <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <SheetColorButton kind={cfg.colorKind} authToken={authToken} suppliers={Array.from(new Set([...frozenOrders.map((o) => cfg.supKey(o.supplier)), ...((tplInfo && tplInfo.products.map((p) => p.pivot)) || [])]))} />
@@ -11445,7 +11599,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
             </option>
           ))}
         </select>
-        <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 {cfg.label} 발주만 집계합니다 · 발주 {totalQty.toLocaleString()}개 · 발주가 없는 상품도 시트는 0으로 남아요</span>
+        <span style={{ fontSize: 12, color: T.inkSoft }}>※ 선택한 날짜의 {cfg.label} 발주만 집계합니다 · 발주 {totalQty.toLocaleString()}개 · {dropUnordered ? "발주 있는 상품만 시트로 나가요" : "발주가 없는 상품도 시트는 0으로 남아요"}</span>
       </div>
       {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.includes("⚠") ? T.amberDeep : T.teal, marginBottom: 10 }}>{msg}</div>}
       {err && <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger, marginBottom: 10 }}>{err}</div>}
@@ -11463,7 +11617,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
                 className="primary-btn"
                 style={{ ...primaryBtnStyle, flex: 1, justifyContent: "center", opacity: busy || filtered.length === 0 ? 0.7 : 1 }}
               >
-                <Download size={15} /> {busy ? "생성 중..." : filterOn ? `필터 결과만 엑셀 (${filtered.length}개 시트)` : `엑셀 (${list.length}개 시트)`}
+                <Download size={15} /> {busy ? "생성 중..." : sheetCountLabel(filterOn ? filtered : list, filterOn)}
               </button>
               <button disabled title="인쇄/PDF 디자인을 다듬는 중이에요. 지금은 엑셀 다운로드를 이용해주세요." className="ghost-btn" style={{ ...smallBtnStyle, flex: 1, justifyContent: "center", opacity: 0.5, cursor: "not-allowed" }}>
                 🚧 전체 출력 (공사중)
@@ -12409,7 +12563,8 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     const pv = byName.get(p.pivot);
     const cols = Array.from(p.products.values()).map((prod) => {
       const h = pv.cells.get(numToCol(prod.k) + "2");
-      return { k: prod.k, header: displayNameOf(h && typeof h.v === "string" && h.v.trim() ? h.v.trim() : prod.name), qty: x.byK[prod.k] || {} }; // 상품마스터 표시 상품명
+      const h0 = h && typeof h.v === "string" && h.v.trim() ? h.v.trim() : prod.name;
+      return { k: prod.k, header: displayNameAmong([h0, prod.name]) || h0, qty: x.byK[prod.k] || {} }; // 상품마스터 표시 상품명
     });
     x.added.forEach((a) => cols.push({ k: a.k, header: displayNameOf(a.name), qty: a.qty }));
     const RO = inv.regionOrder || EMART_STD_REGIONS;
