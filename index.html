@@ -9142,9 +9142,13 @@ async function loadEmartTemplate(arrayBuffer) {
   const relMap = {};
   Array.from(relsXml.getElementsByTagName("Relationship")).forEach((r) => (relMap[r.getAttribute("Id")] = r.getAttribute("Target")));
   const sst = [];
+  const sstEls = []; // 공유 문자열 원본 (글자마다 크기·굵기가 다른 "서식 있는 글자" 읽기용)
   if (zip.file("xl/sharedStrings.xml")) {
     const sx = await readXml("xl/sharedStrings.xml");
-    Array.from(sx.getElementsByTagName("si")).forEach((si) => sst.push(Array.from(si.getElementsByTagName("t")).map((t) => t.textContent).join("")));
+    Array.from(sx.getElementsByTagName("si")).forEach((si) => {
+      sst.push(Array.from(si.getElementsByTagName("t")).map((t) => t.textContent).join(""));
+      sstEls.push(si);
+    });
   }
   const sheets = [];
   for (const el of Array.from(wbXml.getElementsByTagName("sheet"))) {
@@ -9154,7 +9158,7 @@ async function loadEmartTemplate(arrayBuffer) {
     const doc = await readXml(path);
     sheets.push({ name: el.getAttribute("name"), path, doc, el });
   }
-  return { zip, parser, wbXml, relsXml, sst, sheets };
+  return { zip, parser, wbXml, relsXml, sst, sstEls, sheets };
 }
 
 // 시트의 셀 목록 읽기: ref -> { el, v, f(펼친 수식) }
@@ -9659,6 +9663,87 @@ function xlStylesSave(zip, ctx) {
 }
 // 글자 폭(11pt 기준 "0" 글자 하나 = 1): 한글·한자 약 1.9, 나머지 약 1
 const xlTextUnits = (t) => [...String(t || "")].reduce((a, ch) => a + (/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af\u4e00-\u9fff]/.test(ch) ? 1.9 : /[A-Z%@#&]/.test(ch) ? 1.2 : 1), 0);
+// ---------- 서식 있는 글자(한 칸 안에서 글자마다 크기·굵기가 다름) 유지하며 이름 바꾸기 (2026-11-08) ----------
+// 예: "두바이)흑임자두쫀쿠"에서 "흑임자"·"두"만 크고 굵게 → 이름이 "파파-두바이)흑임자두쫀쿠"로 바뀌어도 그 글자들은 그대로 크고 굵게
+function xlRichRunsOf(tpl, sheet, ref) {
+  const c = Array.from(sheet.doc.getElementsByTagName("c")).find((x) => x.getAttribute("r") === ref);
+  if (!c) return null;
+  let holder = null;
+  if (c.getAttribute("t") === "s") {
+    const v = c.getElementsByTagName("v")[0];
+    holder = v && tpl.sstEls ? tpl.sstEls[Number(v.textContent)] : null;
+  } else if (c.getAttribute("t") === "inlineStr") holder = c.getElementsByTagName("is")[0] || null;
+  if (!holder) return null;
+  const rs = Array.from(holder.childNodes).filter((n) => n.nodeType === 1 && n.localName === "r");
+  if (rs.length < 2) return null;
+  return rs.map((r) => {
+    const rPr = Array.from(r.childNodes).find((n) => n.nodeType === 1 && n.localName === "rPr") || null;
+    const t = Array.from(r.childNodes).filter((n) => n.nodeType === 1 && n.localName === "t").map((x) => x.textContent).join("");
+    return { rPr, text: t };
+  });
+}
+function xlSetRichText(sheet, ref, runs) {
+  const doc = sheet.doc;
+  setCellXml(sheet, ref, runs.map((r) => r.text).join("")); // 칸 만들기(서식 s 그대로)
+  const c = Array.from(doc.getElementsByTagName("c")).find((x) => x.getAttribute("r") === ref);
+  while (c.firstChild) c.removeChild(c.firstChild);
+  c.setAttribute("t", "inlineStr");
+  const is = doc.createElementNS(XL_NS, "is");
+  runs.forEach((run) => {
+    if (!run.text) return;
+    const r = doc.createElementNS(XL_NS, "r");
+    if (run.rPr) {
+      const rp = doc.createElementNS(XL_NS, "rPr");
+      Array.from(run.rPr.childNodes).forEach((n) => {
+        if (n.nodeType !== 1) return;
+        const e = doc.createElementNS(XL_NS, n.localName);
+        Array.from(n.attributes).forEach((a) => e.setAttribute(a.name, a.value));
+        rp.appendChild(e);
+      });
+      r.appendChild(rp);
+    }
+    const t = doc.createElementNS(XL_NS, "t");
+    t.setAttribute("xml:space", "preserve");
+    t.textContent = run.text;
+    r.appendChild(t);
+    is.appendChild(r);
+  });
+  c.appendChild(is);
+}
+// 새 이름을 칸에 쓰기: 원래 칸이 서식 있는 글자면 같은 글자끼리 짝지어(LCS) 원래 글자 서식을 그대로, 새로 생긴 글자는 보통 글자 서식
+function xlRenameCellText(tpl, sheet, ref, newText) {
+  const runs = xlRichRunsOf(tpl, sheet, ref);
+  if (!runs) return setCellXml(sheet, ref, newText);
+  const oldChars = [];
+  runs.forEach((r, i) => [...r.text].forEach((ch) => oldChars.push({ ch, i })));
+  const nw = [...String(newText)];
+  const n = oldChars.length, m = nw.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let a = n - 1; a >= 0; a--) for (let b = m - 1; b >= 0; b--) dp[a][b] = oldChars[a].ch === nw[b] ? dp[a + 1][b + 1] + 1 : Math.max(dp[a + 1][b], dp[a][b + 1]);
+  const runOfNew = new Array(m).fill(-1);
+  for (let a = 0, b = 0; a < n && b < m; ) {
+    if (oldChars[a].ch === nw[b]) {
+      runOfNew[b] = oldChars[a].i;
+      a++;
+      b++;
+    } else if (dp[a + 1][b] >= dp[a][b + 1]) a++;
+    else b++;
+  }
+  // 보통 글자 서식 = 크기·굵기 강조가 없는 조각(없으면 글자 수가 가장 많은 조각). 새로 생긴 글자(예: "파파-")는 이 서식
+  const plainRun = runs.findIndex((r) => !r.rPr || (!r.rPr.getElementsByTagName("b")[0] && !r.rPr.getElementsByTagName("sz")[0]));
+  const cnt = new Map();
+  oldChars.forEach((o) => /\S/.test(o.ch) && cnt.set(o.i, (cnt.get(o.i) || 0) + 1));
+  const base = plainRun >= 0 ? plainRun : [...cnt].sort((x, y) => y[1] - x[1])[0][0];
+  const out = [];
+  nw.forEach((ch, b) => {
+    const i = runOfNew[b] >= 0 ? runOfNew[b] : base;
+    const last = out[out.length - 1];
+    if (last && last.i === i) last.text += ch;
+    else out.push({ i, rPr: runs[i].rPr, text: ch });
+  });
+  xlSetRichText(sheet, ref, out);
+}
+
 function xlFitCellText(sheet, ref, text, ctx) {
   if (!ctx || !text) return false;
   const doc = sheet.doc;
@@ -9704,11 +9789,19 @@ function xlFitCellText(sheet, ref, text, ctx) {
   let width = 0, height = 0;
   for (let k = c1; k <= c2; k++) width += colW(k);
   for (let k = r1; k <= r2; k++) height += rowH(k);
-  const need = xlTextUnits(text);
+  // 서식 있는 글자: 글자 크기가 다른 부분은 그 크기만큼 넓게 셈
+  const isEl = c.getAttribute("t") === "inlineStr" ? c.getElementsByTagName("is")[0] : null;
+  const richRs = isEl ? Array.from(isEl.getElementsByTagName("r")) : [];
+  const runSz = (r) => {
+    const e = r.getElementsByTagName("sz")[0];
+    return e ? Number(e.getAttribute("val")) || sz : sz;
+  };
+  const need = richRs.length > 1 ? richRs.reduce((a, r) => a + xlTextUnits(Array.from(r.getElementsByTagName("t")).map((t) => t.textContent).join("")) * (runSz(r) / sz), 0) : xlTextUnits(text);
+  const maxRatio = richRs.length > 1 ? Math.max(1, ...richRs.map((r) => runSz(r) / sz)) : 1;
   const fits = (z, wrap) => {
     const perLine = Math.max(1, (width - 0.8) * (11 / z) * 0.92); // 여유 8%
     if (!wrap) return need <= perLine;
-    const lines = Math.max(1, Math.floor(height / (z * 1.45))); // 줄 간격 여유
+    const lines = Math.max(1, Math.floor(height / (z * maxRatio * 1.45))); // 줄 간격 여유 (크게 한 글자가 있으면 그 크기 기준)
     return Math.ceil(need / perLine) <= lines;
   };
   if (fits(sz, wrap0)) return false;
@@ -9744,6 +9837,12 @@ function xlFitCellText(sheet, ref, text, ctx) {
     ctx.cache.set(key, ns);
   }
   c.setAttribute("s", String(ns));
+  // 서식 있는 글자는 글자 조각마다 크기가 따로 있어서 같은 비율로 줄임 (크게 한 글자는 계속 더 크게)
+  if (richRs.length > 1 && z < sz)
+    richRs.forEach((r) => {
+      const e = r.getElementsByTagName("sz")[0];
+      if (e) e.setAttribute("val", String(Math.max(6, Math.round(((Number(e.getAttribute("val")) || sz) * z) / sz * 2) / 2)));
+    });
   ctx.dirty = true;
   return true;
 }
@@ -10706,7 +10805,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const c = sh.cells.get(ref);
       // 상품명 칸 (3행 상품 열 = 원본 양식의 상품명 자리): 글자 칸이면 새 이름, 칸에 맞게 글자 크기 조절
       if (c && !c.f && (shared ? typeof c.v === "string" && names.some((n) => nm(n) === nm(c.v)) : true)) {
-        setCellXml(sh, ref, newN);
+        xlRenameCellText(tpl, sh, ref, newN); // 원래 글자 서식(크게·굵게 한 글자) 그대로
         fitCells.push([sh, ref, newN]);
       }
       if (shared) return;
@@ -10734,7 +10833,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
           if (c.f || typeof c.v !== "string") return;
           const to = nameMap.get(nm(c.v));
           if (to) {
-            setCellXml(x, ref, to);
+            xlRenameCellText(tpl, x, ref, to);
             fitCells.push([x, ref, to]);
           }
         });
