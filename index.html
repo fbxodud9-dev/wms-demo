@@ -7495,6 +7495,12 @@ const DAILY_SHEETS = [
   { name: "이마트델리", head: "이마트델리", cold: false, noParts: true }, // 편 구분 없음: 일일물동량 + 상품 수량만
 ];
 
+// 일별 집계 시트 → 그 채널 상품 정보(표시 상품명) 설정 키. null = GS 상품 정보 (2026-11-08)
+const DAILY_DN_KEY = { 세븐일레븐: "product_info_seven", BGF: "product_info_bgf", GS냉동: "product_info_gsfrozen", GS슈퍼: "product_info_gssuper", 이마트: "product_info_emart", 이마트냉동: "product_info_emartfrozen", 세븐냉동: "product_info_sevenfrozen", BGF냉동: "product_info_bgffrozen", 이마트델리: "product_info_none" };
+const dailyDnFnOf = (sheetName, infoOf) => {
+  const k = DAILY_DN_KEY[sheetName];
+  return k ? makeDisplayNameFn(infoOf(k) || {}) : displayNameOf;
+};
 async function downloadGsDailyExcel(table, setBusy) {
   if (setBusy) setBusy(true);
   try {
@@ -7507,10 +7513,13 @@ async function downloadGsDailyExcel(table, setBusy) {
     const gray = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
     const font = { name: "맑은 고딕", size: 10 };
     const bold = { ...font, bold: true };
+    const dnInfos = {};
+    for (const k of new Set(Object.values(DAILY_DN_KEY))) dnInfos[k] = (await settingNow(k)) || {};
     DAILY_SHEETS.forEach((meta) => {
       const sheetName = meta.name;
       const sh = table.sheets[sheetName];
       if (!sh) return;
+      const dnF = dailyDnFnOf(sheetName, (k) => dnInfos[k]);
       const ws = wb.addWorksheet(sheetName, { views: [{ state: "frozen", xSplit: 9, ySplit: 5 }] });
       ws.getColumn(1).width = 3;
       [2, 3, 4, 5].forEach((c) => (ws.getColumn(c).width = 12));
@@ -7542,7 +7551,7 @@ async function downloadGsDailyExcel(table, setBusy) {
       let start = 0;
       sh.columns.forEach((col, i) => {
         const cell = ws.getCell(5, 10 + i);
-        cell.value = displayNameOf(col.name); // 상품마스터 표시 상품명 (2026-11-07)
+        cell.value = dnF(col.name); // 상품마스터(이 채널) 표시 상품명
         cell.font = { ...font, size: 9 };
         cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
         cell.border = box;
@@ -7650,6 +7659,9 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [sheet, setSheet] = useState("GS");
+  // 지금 시트 채널의 상품 정보(표시 상품명)
+  const dayDnInfo = useSetting(DAILY_DN_KEY[sheet] || "product_info_none", authToken);
+  const dayDn = useMemo(() => dailyDnFnOf(sheet, () => dayDnInfo), [sheet, dayDnInfo]); // eslint-disable-line
   const [busy, setBusy] = useState(false);
   const [settingOpen, setSettingOpen] = useState(false);
   const rulesSaved = useSetting(GS_DAILY_RULES_KEY, authToken);
@@ -7823,7 +7835,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   // 상품 검색: 이름에 검색어가 들어간 상품 열만 보여줌 (지우면 전체)
   const colIdx = useMemo(() => {
     const qn = String(colQ || "").replace(/\s/g, "").toUpperCase();
-    return sh.columns.map((c, i) => i).filter((i) => !qn || (String(sh.columns[i].name) + displayNameOf(sh.columns[i].name)).replace(/\s/g, "").toUpperCase().includes(qn) || String(sh.columns[i].supplier || "").replace(/\s/g, "").toUpperCase().includes(qn));
+    return sh.columns.map((c, i) => i).filter((i) => !qn || (String(sh.columns[i].name) + dayDn(sh.columns[i].name)).replace(/\s/g, "").toUpperCase().includes(qn) || String(sh.columns[i].supplier || "").replace(/\s/g, "").toUpperCase().includes(qn));
   }, [sh, colQ]);
   const clearAllEdits = async () => {
     if (!confirm(`${month.replace("-", "년 ")}월에 직접 고친 칸 ${editCount}개를 모두 원래 값으로 되돌릴까요?`)) return;
@@ -7957,7 +7969,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
                 return (
                   <th key={c.name} style={{ ...th, textAlign: "right", minWidth: 96, whiteSpace: "normal", lineHeight: 1.3 }}>
                     {(k === 0 || sh.columns[colIdx[k - 1]].supplier !== c.supplier) && <div style={{ color: T.teal, fontSize: 11 }}>{c.supplier}</div>}
-                    <div>{displayNameOf(c.name)}</div>
+                    <div>{dayDn(c.name)}</div>
                   </th>
                 );
               })}
@@ -9611,12 +9623,25 @@ async function cloneEmartSheet(tpl, srcName, newName, mutate) {
 
 // ---------- 상품마스터 표시 상품명 (2026-11-07) ----------
 // 이름 후보(발주 상품명·합쳐진 이름·원본 시트 상품명) 중 상품마스터에서 바꾼 이름이 있으면 그 이름, 없으면 null
-function displayNameAmong(names) {
+function displayNameAmong(names, dnFn = displayNameOf) {
   for (const n of names || []) {
     const t = String(n == null ? "" : n).replace(/\s*\n\s*/g, "").trim();
-    if (t && displayNameOf(t) !== t) return String(displayNameOf(t)).trim();
+    if (t && dnFn(t) !== t) return String(dnFn(t)).trim();
   }
   return null;
+}
+// 채널(브랜드)별 상품 정보(product_info_<브랜드>)에서 표시 상품명 찾기. info가 없으면(GS) 예전처럼 GS 상품 정보
+//  - 이름으로 찾고, 없으면 상품코드로 (상품 정보 관리에 코드가 저장된 상품)
+function makeDisplayNameFn(info) {
+  if (!info) return displayNameOf;
+  const byCode = {};
+  Object.values(info).forEach((e) => e && e.sku && !byCode[String(e.sku).trim()] && (byCode[String(e.sku).trim()] = e));
+  return (name, code) => {
+    const t = String(name == null ? "" : name).replace(/\s*\n\s*/g, "").trim();
+    const o = info[t] || (code && byCode[String(code).trim()]) || null;
+    const d = o && String(o.displayName || "").trim();
+    return d || name;
+  };
 }
 // ---------- 글자가 칸에 들어가게 (2026-11-07) ----------
 // 칸(병합 칸이면 합친 크기) 너비·높이에 비해 글자가 길면, 그 칸만 줄바꿈을 켜고 글자 크기를 들어갈 만큼 줄임 (다른 칸 서식은 그대로)
@@ -9733,6 +9758,8 @@ function safeEmartSheetName(name, used) {
 
 // ---------- 메인: 발주 줄들 -> 피킹검수 엑셀 ----------
 async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, activeName, opts = {}) {
+  // 상품마스터 표시 상품명: opts.dnInfo(그 채널 상품 정보) 또는 opts.dnKey(설정 키)로 찾음. 둘 다 없으면 GS 상품 정보 (2026-11-08)
+  const DN = makeDisplayNameFn(opts.dnInfo || (opts.dnKey ? (await settingNow(opts.dnKey)) || {} : null));
   // opts.regionRe: 지역(센터) 줄 알아보는 규칙 (기본: 이마트 "(저온)" 등), opts.regionOrder: 피벗 지역 순서,
   // opts.keepVisible: 원본에서 보이는 시트는 발주가 없어도 0으로 남김 (GS 냉동), opts.colorKind: 시트 색 설정 종류,
   // opts.pivotA2 / opts.dateTextOut: 피벗 A2·"10/15 납품" 같은 날짜 글자, opts.wideLookup: VLOOKUP 범위를 열 전체로
@@ -9926,7 +9953,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const escRe = (x) => x.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
     const pvRe = srcProd.pivot !== pivot ? new RegExp("('" + escRe(srcProd.pivot.replace(/'/g, "''")) + "'|" + escRe(srcProd.pivot) + ")!", "g") : null;
     // 상품명이 같은데 코드만 다른 상품이면 시트 이름 뒤에 상품코드 끝자리를 붙여 구분
-    const showName = displayNameAmong([item.name, ...(item.names ? [...item.names] : [])]) || item.name; // 상품마스터에서 바꾼 이름 (2026-11-07)
+    const showName = displayNameAmong([item.name, ...(item.names ? [...item.names] : [])], DN) || item.name; // 상품마스터에서 바꾼 이름 (2026-11-07)
     const wantName = item.code && usedNames.has(String(showName).replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim().toLowerCase()) ? `${String(showName).slice(0, 24)}(${item.code.slice(-5)})` : showName;
     const newName = safeEmartSheetName(wantName, usedNames);
     // 복사한 시트 위 공급사 이름: "신성베이커리 - 이마트24" → "자몽 - 이마트24" (원래 공급사 이름 부분만 바꿈)
@@ -10091,7 +10118,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   // 피벗 다시 쓰기
   const byPivot = {};
   links.forEach(({ prod, item }) => {
-    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: displayNameAmong([item.name, ...(item.names ? [...item.names] : []), prod.title]) || item.name, qty: item.qty }); // 상품마스터 표시 상품명 (2026-11-07)
+    (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({ k: prod.k, header: displayNameAmong([item.name, ...(item.names ? [...item.names] : []), prod.title], DN) || (item.code && DN(item.name, item.code) !== item.name ? DN(item.name, item.code) : null) || item.name, qty: item.qty }); // 상품마스터 표시 상품명 (2026-11-07)
     const regSet = new Set(prod.regions);
     Object.entries(item.qty).forEach(([reg, q]) => {
       if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({ name: item.name, sheet: prod.sheet, region: reg, qty: q });
@@ -10106,7 +10133,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       const pvS = tpl.sheets.find((s) => s.name === p.pivot);
       const h = pvS && pvS.cells && pvS.cells.get(numToCol(p.k) + "2");
       const h0 = (h && typeof h.v === "string" && h.v.trim()) || String(p.title || p.sheet).replace(/\s*\n\s*/g, "");
-      arr.push({ k: p.k, header: displayNameAmong([h0, p.title]) || h0, qty: {} });
+      arr.push({ k: p.k, header: displayNameAmong([h0, p.title], DN) || h0, qty: {} });
     });
   }
   const pivots = Array.from(new Set(tpl.products.map((p) => p.pivot)));
@@ -10175,7 +10202,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     const m0 = () => {};
     m0.pivot = pivot;
     const sh = await cloneEmartSheet(tpl, pivot, nm, m0);
-    const cols = dk.items.map((it, i) => ({ k: 2 + i, header: displayNameOf(it.header), qty: it.qty }));
+    const cols = dk.items.map((it, i) => ({ k: 2 + i, header: DN(it.header), qty: it.qty }));
     rewritePivot(sh, date, cols, dk.centers, cols.length + 1);
     setCellXml(sh, "B1", "당착(오전현장)");
     dangchakKeep.push(nm);
@@ -10646,7 +10673,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
   //  - 여러 상품이 한 시트에 있는 시트(제주권 공유 등)는 탭 이름은 그대로
   if (opts.displayNames !== false) {
     const nm = (x) => String(x == null ? "" : x).replace(/\s+/g, "").toLowerCase();
-    const dnTargets = links.map(({ prod, item }) => ({ prod, names: [item.name, ...(item.names ? [...item.names] : []), prod.title] }));
+    const dnTargets = links.map(({ prod, item }) => ({ prod, code: item.code, names: [item.name, ...(item.names ? [...item.names] : []), prod.title] }));
     if (opts.keepVisible) tpl.products.forEach((prod) => !links.some((l) => l.prod.sheet === prod.sheet) && dnTargets.push({ prod, names: [prod.title, frozenTitleOf(prod)] }));
     const usedTab = new Set(tpl.sheets.map((x) => x.name.toLowerCase()));
     const doneSheet = new Set();
@@ -10662,13 +10689,14 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
       if (c && !c.f && typeof c.v === "string") fitCells.push([sh, ref, c.v]);
     });
     const tabRenames = [];
-    dnTargets.forEach(({ prod, names }) => {
+    dnTargets.forEach(({ prod, names, code }) => {
       if (doneSheet.has(prod.sheet)) return;
       const sh = tpl.sheets.find((x) => x.name === prod.sheet);
       if (!sh) return;
-      const oldN = names.map((n) => String(n || "").replace(/\s*\n\s*/g, "").trim()).find((n) => n && displayNameOf(n) !== n);
+      const byCodeN = code && names[0] && DN(names[0], code) !== names[0] ? String(DN(names[0], code)).trim() : null; // 상품코드로 찾은 이름
+      const oldN = names.map((n) => String(n || "").replace(/\s*\n\s*/g, "").trim()).find((n) => n && DN(n) !== n) || (byCodeN ? names[0] : null);
       if (!oldN) return;
-      const newN = displayNameAmong(names);
+      const newN = displayNameAmong(names, DN) || byCodeN;
       if (!newN || newN === oldN) return;
       doneSheet.add(prod.sheet);
       const shared = tpl.products.filter((p) => p.sheet === prod.sheet).length > 1;
@@ -10694,7 +10722,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
     dnTargets.forEach(({ names }) =>
       names.forEach((n) => {
         const t = String(n || "").replace(/\s*\n\s*/g, "").trim();
-        if (t && displayNameOf(t) !== t) nameMap.set(nm(t), String(displayNameOf(t)).trim());
+        if (t && DN(t) !== t) nameMap.set(nm(t), String(DN(t)).trim());
       })
     );
     if (nameMap.size) {
@@ -10826,7 +10854,7 @@ async function getEmartTemplateInfo() {
 async function downloadEmartPickingFile(rows, date, customTpl, activeName, opts = {}) {
   const buf = await getEmartTemplateBuffer(customTpl);
   // 원본에 없는 새 공급사(예: 자몽)는 다른 공급사 피벗을 복사해서 "자몽 피벗"과 상품 시트를 새로 만든다 (2026-10-31, 세븐·BGF와 같은 방식)
-  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, { cloneNewVendor: true, newVendorSrc: "신성베이커리", ...opts });
+  const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, { cloneNewVendor: true, newVendorSrc: "신성베이커리", dnKey: "product_info_emart", ...opts });
   const filename = opts.fileName || `이마트24-피킹검수-${date.slice(5, 7)}${date.slice(8, 10)}.xlsx`;
   if (opts.verify) {
     let ok = true;
@@ -11239,6 +11267,9 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   // 센터 순서 설정 (2026-11-05 전 채널): { all: [센터...], products: { 상품(시트) 이름: [센터...] } }
   const centerOrderCfg = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
   const [showCenterOrder, setShowCenterOrder] = useState(false);
+  // 상품 정보 관리(이 채널)에서 바꾼 표시 상품명 → 화면·엑셀 (2026-11-08)
+  const dnInfoF = useSetting(brandSettingKey("product_info", cfg.brand), authToken);
+  const DNf = useMemo(() => makeDisplayNameFn(dnInfoF || {}), [dnInfoF]);
   const [setFor, setSetFor] = useState(null); // 설정 창을 연 상품 (list 항목)
   useEffect(() => {
     cfg
@@ -11393,6 +11424,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         delivOfName: delivOfName.size ? new Map([...delivOfName].map(([n, v]) => [n, mdOf(v)])) : null,
         excludeSheets: hiddenSheets,
         sheetRank,
+        dnInfo: dnInfoF || {},
         // 순서 설정대로 피벗 열·시트 탭 순서 (GS 냉동은 예전 그대로 - 2026-11-01)
         productRank: sheetRank && cfg.colorKind !== "gsfrozen_picking" ? new Map(list.flatMap((x, i) => (x.names || [x.title]).map((n) => [n, i]))) : null,
         hideRegionRows,
@@ -11661,7 +11693,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: x.isNew ? "#FCF1DD" : "#E6F0FA", color: x.isNew ? T.amberDeep : "#1F4E79" }}>{x.isNew ? (tplInfo.frozen.fallback ? "냉동" : "새 상품") : "냉동"}</span>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameOf(x.title)}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameAmong([x.title, ...(x.names || [])], DNf) || x.title}</div>
                         {(c.zero || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B26A00" }}>0처리 {(c.zero || []).length}</span>}
                         {(c.remove || []).length > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "#B03A2E" }}>빼기 {(c.remove || []).length}</span>}
                       </div>
@@ -11691,7 +11723,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
                     <Download size={14} /> {busy ? "생성 중..." : "엑셀 다운로드"}
                   </button>
                 </div>
-                <FrozenInspectionTable item={selectedView} pickCfg={pickCfg} codeOf={cfg.codeOf} />
+                <FrozenInspectionTable item={selectedView} pickCfg={pickCfg} codeOf={cfg.codeOf} dnFn={DNf} />
               </div>
             )}
           </div>
@@ -11702,7 +11734,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
 }
 
 // GS 냉동 상품 하나의 지역별 표 (GS 피킹지시서 출력 화면과 같은 모양). 0 처리·지역 빼기 설정을 반영해서 보여줌
-function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(0, 4) }) {
+function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(0, 4), dnFn = null }) {
   const p = item.prod;
   const ckey = item.sheet || (item.prod && item.prod.sheet);
   const c = (ckey && ((pickCfg && pickCfg.products) || {})[ckey]) || {};
@@ -11719,7 +11751,7 @@ function FrozenInspectionTable({ item, pickCfg, codeOf = (l) => String(l).slice(
   return (
     <div>
       <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{displayNameOf(item.title)}</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{(dnFn && displayNameAmong([item.title, ...(item.names || [])], dnFn)) || item.title}</div>
         <div style={{ fontSize: 11.5, color: T.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
           {item.pivot || item.vendor || "-"} · 입수 {pack || "-"}
           {item.isNew ? " · 템플릿에 없는 상품 (같은 공급사 시트를 복사해서 추가돼요)" : ""}
@@ -11947,10 +11979,10 @@ const emInvDot = (serial) => {
 };
 
 // 명세서 양식(레이아웃): 이마트·이마트 냉동 = 센터 이름 B1, 수량 Q열 / GS 냉동 = 센터(납품처) G4, 수량 R열, 박스 V열
-const INV_LAYOUT_EMART = { key: "B1", qty: "Q", cols: ["E", "M", "Q", "T", "W", "AA"], regionOrder: EMART_STD_REGIONS, centerName: "L6", centerAddr: "G8", newCenterName: (short) => `${short.replace(/\d+$/, "")}센터(저온)`, srcSupplier: "신성베이커리", shortOf: (c) => String(c).replace(/\(.*$/, "") };
-const INV_LAYOUT_GSFROZEN = { key: "G4", qty: "R", cols: ["E", "M", "R", "V", "AA"], regionOrder: null, centerName: "G6", centerAddr: "G8", dateOffset: 1, pivotA2: "납품", newCenterName: (short) => `${short}센터`, supplierOf: (pivot, info) => frozenSupKey(info && info.name), shortOf: (c) => dailyRegionName(String(c).slice(0, 4)) || String(c).slice(0, 4) };
+const INV_LAYOUT_EMART = { dnKey: "product_info_emart", key: "B1", qty: "Q", cols: ["E", "M", "Q", "T", "W", "AA"], regionOrder: EMART_STD_REGIONS, centerName: "L6", centerAddr: "G8", newCenterName: (short) => `${short.replace(/\d+$/, "")}센터(저온)`, srcSupplier: "신성베이커리", shortOf: (c) => String(c).replace(/\(.*$/, "") };
+const INV_LAYOUT_GSFROZEN = { dnKey: "product_info_gsfrozen", key: "G4", qty: "R", cols: ["E", "M", "R", "V", "AA"], regionOrder: null, centerName: "G6", centerAddr: "G8", dateOffset: 1, pivotA2: "납품", newCenterName: (short) => `${short}센터`, supplierOf: (pivot, info) => frozenSupKey(info && info.name), shortOf: (c) => dailyRegionName(String(c).slice(0, 4)) || String(c).slice(0, 4) };
 // 이마트 냉동: 이마트와 같은 양식, 명세서 날짜(B13)는 납품일(발주일 + 1)
-const INV_LAYOUT_EMFROZEN = { ...INV_LAYOUT_EMART, dateOffset: 1, pivotA2: " 납품", srcSupplier: "삼진" };
+const INV_LAYOUT_EMFROZEN = { ...INV_LAYOUT_EMART, dateOffset: 1, pivotA2: " 납품", srcSupplier: "삼진", dnKey: "product_info_emartfrozen" };
 const invKeyRe = (lay) => lay.key.replace(/^([A-Z]+)(\d+)$/, "\\$?$1\\$?$2");
 function analyzeEmartInvoiceTemplate(tpl, lay = INV_LAYOUT_EMART) {
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
@@ -12386,6 +12418,8 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial, lay = INV_
 }
 
 async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settings, onlySuppliers, lay = INV_LAYOUT_EMART, chLabel = "이마트") {
+  // 상품 정보 관리(채널별)에서 바꾼 표시 상품명 (2026-11-08): lay.dnMap(미리 읽은 것) > 설정 캐시 > GS 상품 정보
+  const invDN = makeDisplayNameFn((lay && (lay.dnMap || (lay.dnKey && SETTING_CACHE[lay.dnKey]) || lay.infoMap || (lay.infoKey && SETTING_CACHE[lay.infoKey]))) || null);
   const tpl = analyzeEmartInvoiceTemplate(await loadEmartTemplate(templateBuffer), lay);
   let inv = tpl.inv;
   tpl.newParts = [];
@@ -12564,9 +12598,9 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     const cols = Array.from(p.products.values()).map((prod) => {
       const h = pv.cells.get(numToCol(prod.k) + "2");
       const h0 = h && typeof h.v === "string" && h.v.trim() ? h.v.trim() : prod.name;
-      return { k: prod.k, header: displayNameAmong([h0, prod.name]) || h0, qty: x.byK[prod.k] || {} }; // 상품마스터 표시 상품명
+      return { k: prod.k, header: displayNameAmong([h0, prod.name], invDN) || h0, qty: x.byK[prod.k] || {} }; // 상품마스터 표시 상품명
     });
-    x.added.forEach((a) => cols.push({ k: a.k, header: displayNameOf(a.name), qty: a.qty }));
+    x.added.forEach((a) => cols.push({ k: a.k, header: displayNameAmong([a.name], invDN) || a.name, qty: a.qty }));
     const RO = inv.regionOrder || EMART_STD_REGIONS;
     const regs = [...RO, ...Object.keys(x.centerQty).filter((c) => !RO.includes(c))];
     rewritePivot(pv, date, cols, regs, Math.max(1, ...cols.map((c) => c.k)));
@@ -12657,7 +12691,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         if (o.displayName) setCellXml(ws, "E" + row.r, o.displayName);
         else {
           // 상품마스터에서 바꾼 이름 (2026-11-07): 명세서 상품명 칸이 글자일 때만 (수식이면 피벗 머리글을 따라감)
-          const dn = displayNameOf(prod.name) !== prod.name ? displayNameOf(prod.name) : displayNameOf(row.name) !== row.name ? displayNameOf(row.name) : null;
+          const dn = displayNameAmong([prod.name, row.name], invDN);
           const ec = ws.cells.get("E" + row.r);
           if (dn && !(ec && ec.f)) setCellXml(ws, "E" + row.r, dn);
         }
@@ -12699,7 +12733,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const prods = x.added.map((a) => {
           const o = ps[a.name] || {};
           const pack = Number(o.packQty) > 0 ? Number(o.packQty) : invPackFallback(a.name) || a.box || 0;
-          return { name: o.displayName || displayNameOf(a.name), k: a.k, pack, raw: a, o };
+          return { name: o.displayName || displayNameAmong([a.name], invDN) || a.name, k: a.k, pack, raw: a, o };
         });
         const expiryOf = (pr) => {
           const ov = pr.o.expiryDays;
@@ -13001,6 +13035,8 @@ async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers, cfg
   // 상품 정보 관리(채널별) 입수를 명세서에도 쓰기: 원본·발주파일에 입수가 없는 새 상품 (BGF 딥핑치즈맵닭강정 등)
   let lay = cfg.lay;
   if (lay && lay.infoKey) lay = { ...lay, infoMap: (await settingNow(lay.infoKey)) || {} };
+  // 표시 상품명: 이 채널 상품 정보 관리 (2026-11-08)
+  if (lay && (lay.dnKey || lay.infoKey)) lay = { ...lay, dnMap: lay.dnKey ? (await settingNow(lay.dnKey)) || {} : lay.infoMap };
   const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers, lay, cfg.label);
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
@@ -13639,6 +13675,7 @@ const SEVEN_PICK_CFG = {
 async function downloadSevenPickingFile(rows, date, customTpl, activeName, opts = {}) {
   const buf = customTpl ? customTpl.buffer.slice(0) : await getSevenPickingTemplateBuffer();
   const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, {
+    dnKey: "product_info_seven",
     ...opts,
     regionRe: SEVEN_REGION_RE,
     regionOrder: SEVEN_STD_REGIONS,
@@ -13750,6 +13787,7 @@ const SEVEN_FROZEN_PICK_CFG = {
 async function downloadSevenFrozenPickingFile(rows, date, customTpl, activeName, opts = {}) {
   const buf = customTpl ? customTpl.buffer.slice(0) : await getSevenFrozenPickingTemplateBuffer();
   const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, {
+    dnKey: "product_info_sevenfrozen",
     ...opts,
     regionRe: SEVEN_FROZEN_REGION_RE,
     regionOrder: SEVEN_FROZEN_STD_REGIONS,
@@ -14267,6 +14305,7 @@ const BGF_FROZEN_PICK_CFG = { ...BGF_PICK_CFG, label: "BGF 냉동", dailyLabel: 
 async function downloadBgfPickingFile(frozen, rows, date, customTpl, activeName, opts = {}) {
   const buf = customTpl ? customTpl.buffer.slice(0) : await fetchBgfTemplate(frozen ? BGF_FROZEN_PICKING_TEMPLATE_URL : BGF_PICKING_TEMPLATE_URL, frozen ? "BGF 냉동" : "BGF 냉장");
   const { bytes, report } = await buildEmartPickingWorkbook(buf, rows, date, activeName, {
+    dnKey: frozen ? "product_info_bgffrozen" : "product_info_bgf",
     ...opts,
     regionRe: BGF_REGION_RE,
     regionOrder: BGF_STD_REGIONS,
@@ -15487,6 +15526,11 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
     return m;
   }, [emInfo, emartOrders]);
   const infoOf = (name, tp, code) => emInfo[name] || (code && emInfoByCode[String(code).trim()]) || (tp ? emInfo[String(tp.title || "").replace(/\s*\n\s*/g, "").trim()] : null) || null;
+  // 화면에 보일 상품명: 상품 정보 관리(이 채널)에서 바꾼 표시 상품명 > 발주 상품명 (2026-11-08)
+  const emShowName = (p) => {
+    const ov = p ? infoOf(p.name, p.tpl || (tplInfo ? matchEmartProduct(tplInfo, p.name, p.code) : null), p.code) : null;
+    return (ov && String(ov.displayName || "").trim()) || (p && p.name) || "";
+  };
   const allRows = useMemo(() => emartRowsFromOrders(emartOrders.filter((o) => o.createdAt === activeDate && pv.rowFilter(o))), [emartOrders, activeDate]);
   const rows = useMemo(
     () =>
@@ -15687,7 +15731,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
       const productRank = sheetRank ? new Map(products.map((p, i) => [p.name, i])) : null;
       const fileName = mode ? `${pv.label}_${mode.vendor}_${mode.customer ? "고객사배포" : "수정용"}_${activeDate}.xlsx`.replace(/[\\/:*?"<>|]/g, "") : undefined;
       if (mode && !outRows.length) throw new Error("이 공급사 발주가 없어요.");
-      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { packOverride, sheetRank, productRank, formMap, centerOrder: pv.centerOrderKey ? centerOrderCfg : null, productFormMap, verify: mode ? null : verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets, customerCopy: !!(mode && mode.customer), fileName });
+      const rep = await pv.download(outRows, activeDate, customTpl, activeName, { dnInfo: emInfo, packOverride, sheetRank, productRank, formMap, centerOrder: pv.centerOrderKey ? centerOrderCfg : null, productFormMap, verify: mode ? null : verifyFn, hideRegionRows, regionCodeOf: (l) => String(l).trim(), dangchakSheets, customerCopy: !!(mode && mode.customer), fileName });
       if (mode) {
         logUi(mode.customer ? "download_customer_picking" : "download_edit_picking", `${pv.label} ${mode.vendor} ${activeDate}`, { channel: pv.brand, date: activeDate, vendor: mode.vendor });
         return;
@@ -16089,7 +16133,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#FDF1DC", color: T.amberDeep }}>{pv.label}</span>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameOf(p.name)}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{emShowName(p)}</div>
                         {(() => {
                           // 신제품 표시: 상품코드를 처음 본 날부터 3일. 첫날만 빨간색, 그다음 이틀은 회색 글자
                           const d = firstSeen.get(String(p.code || p.name).trim());
@@ -16163,7 +16207,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
                       <Download size={14} /> {exporting ? "생성 중..." : "엑셀 다운로드"}
                     </button>
                   </div>
-                  <div style={{ fontWeight: 700, fontSize: 15.5 }}>{displayNameOf(selected.name)}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15.5 }}>{emShowName(selected)}</div>
                   <div style={{ fontSize: 11.5, color: T.inkSoft, ...mono, marginBottom: 10 }}>
                     {selected.tpl ? `${selected.tpl.sheetTitle || selected.vendor} · 시트 "${selected.tpl.sheet}"` : `${selected.vendor} · 템플릿에 없는 상품`} · 입수 {selected.pack || "-"}
                   </div>
