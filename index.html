@@ -7482,7 +7482,7 @@ function buildBrandDailyTable(month, days, partOf, edits, rules) {
 // 엑셀 시트 순서 (전산팀 "편의점 일별 발주 내역" 파일과 같은 순서)
 const DAILY_SHEETS = [
   { name: "세븐일레븐", head: "세븐", cold: false },
-  { name: "BGF", head: "bgf", cold: false },
+  { name: "BGF", head: "bgf", cold: false, dkHead: "당착", dkRe: /조인앤조인|참조은/, dkUi: true }, // BGF 당착 공급사 수량 (2026-11-10 요청, 일일물동량에는 더하지 않음 - 이미 1편/2편에 들어 있음)
   { name: "GS", head: "GS", cold: true },
   { name: "GS재고", head: "GS재고", cold: true },
   { name: "GS냉동", head: "GS냉동", cold: false },
@@ -7856,7 +7856,9 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
   const nf = (v) => (v ? v.toLocaleString() : "-");
   const th = { position: "sticky", top: 0, background: "#F7F6F2", zIndex: 1 };
   const noParts = sheet === "이마트델리"; // 이마트 델리: 편 구분 없음 → 일일물동량 + 상품 수량만
-  const summaryHead = hasCold ? ["일일물동량", "1편수량", "2편수량", "냉장"] : noParts ? ["일일물동량"] : ["일일물동량", "1편수량", "2편수량"];
+  const dkMeta = DAILY_SHEETS.find((m) => m.name === sheet && m.dkUi && m.dkRe); // 화면에도 당착 칸 (BGF: 조인앤조인·참조은)
+  const dkIdxUi = dkMeta ? sh.columns.map((c, i) => (dkMeta.dkRe.test(String(c.supplier || "")) ? i : -1)).filter((i) => i >= 0) : [];
+  const summaryHead = hasCold ? ["일일물동량", "1편수량", "2편수량", "냉장"] : noParts ? ["일일물동량"] : dkMeta ? ["일일물동량", "1편수량", "2편수량", dkMeta.dkHead] : ["일일물동량", "1편수량", "2편수량"];
 
   return (
     <div>
@@ -7985,6 +7987,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
                 {!noParts && <td style={{ textAlign: "right" }}>{nf(r.p1)}</td>}
                 {!noParts && <td style={{ textAlign: "right" }}>{nf(r.p2)}</td>}
                 {hasCold && <td style={{ textAlign: "right" }}>{nf(r.cold)}</td>}
+                {dkMeta && <td style={{ textAlign: "right" }}>{nf(dkIdxUi.reduce((a, i) => a + (Number(r.cells[i]) || 0), 0))}</td>}
                 {colIdx.map((i) => {
                   const v = r.cells[i];
                   const isEd = r.orig && r.orig[i] !== undefined;
@@ -8046,6 +8049,7 @@ function GsDailyPage({ orders, emartOrders = [], frozenOrders = [], emFrozenOrde
               {!noParts && <td style={{ textAlign: "right" }}>{nf(sh.totals.p1)}</td>}
               {!noParts && <td style={{ textAlign: "right" }}>{nf(sh.totals.p2)}</td>}
               {hasCold && <td style={{ textAlign: "right" }}>{nf(sh.totals.cold)}</td>}
+              {dkMeta && <td style={{ textAlign: "right" }}>{nf(dkIdxUi.reduce((a, i) => a + (Number(sh.totals.cells[i]) || 0), 0))}</td>}
               {colIdx.map((i) => (
                 <td key={i} style={{ textAlign: "right" }}>
                   {nf(sh.totals.cells[i])}
