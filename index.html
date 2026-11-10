@@ -11474,6 +11474,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
     setErr("");
     setMsg("");
     try {
+      await ensureFreshSettings([EXCLUDED_ITEMS_KEY, cfg.formKey, cfg.orderKey, cfg.pickKey, cfg.centerOrderKey, brandSettingKey("product_info", cfg.brand)], authToken);
       const buf = customTpl ? customTpl.buffer.slice(0) : await cfg.getBuffer(tplInfo);
       // 삭제한 상품: 발주 줄도 빼고, 시트도 뺌
       const hiddenSheets = new Set(tplInfo.products.filter((p) => isBrandHidden(orderCfg, p.pivot, frozenTitleOf(p)) || isExF(frozenTitleOf(p))).map((p) => p.sheet));
@@ -15715,6 +15716,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
     setExporting(mode ? mode.vendor + (mode.customer ? "|c" : "|e") : true);
     setErr("");
     try {
+      await ensureFreshSettings([pv.infoKey, pv.pick && pv.pick.pickKey, pv.formKey, pv.orderKey, pv.centerOrderKey], authToken); // 상품 연결 기억(alias)은 화면이 스스로 저장하는 값이라 대상에서 뺌
       const names = new Set((mode && mode.vendor ? products.filter((p) => p.vendor === mode.vendor) : filterOn ? filtered : products).map((p) => p.name));
       // 템플릿 입수와 다른 입수(상품 정보 관리 값 또는 발주파일 입수)는 엑셀 시트 입수 칸에도 넣는다
       const packOverride = new Map(products.filter((p) => p.pack > 0 && (!p.tpl || p.pack !== p.tpl.pack)).map((p) => [p.name, p.pack]));
@@ -16491,6 +16493,39 @@ function useSetting(key, authToken) {
     return () => SETTING_SUBS[key].delete(sub);
   }, [key, authToken]);
   return value;
+}
+// 피킹지 변환 직전: 화면이 쓰는 설정(상품 정보·입수·지역·순서 등)을 서버에서 다시 받아 확인 (2026-11-10)
+// - 서버에서 못 받아오면 막음 (설정 없이 피킹지가 나가는 일 방지)
+// - 화면 값과 서버 값이 다르면 화면을 최신으로 바꾸고 "한 번 더 눌러주세요" (예전 값으로 만들지 않음)
+function settingSig(v) {
+  const norm = (x) => (Array.isArray(x) ? x.map(norm) : x && typeof x === "object" ? Object.keys(x).sort().reduce((o, k) => ((o[k] = norm(x[k])), o), {}) : x === undefined ? null : x);
+  try {
+    return JSON.stringify(norm(v ?? null));
+  } catch (e) {
+    return String(Math.random());
+  }
+}
+async function ensureFreshSettings(keys, authToken) {
+  const list = Array.from(new Set((keys || []).filter((k) => k && !/_none$/.test(k))));
+  if (!authToken || !list.length) return;
+  const got = await Promise.all(
+    list.map((k) =>
+      apiFetch(`/settings/${k}`, authToken).then(
+        (r) => ({ k, ok: true, v: r ? r.value ?? null : null }),
+        (e) => (/\(404\)/.test((e && e.message) || "") ? { k, ok: true, v: null } : { k, ok: false, e })
+      )
+    )
+  );
+  const bad = got.filter((g) => !g.ok);
+  if (bad.length) throw new Error(`설정(상품 정보·입수 등)을 서버에서 불러오지 못했어요. 새로고침(F5) 후 다시 해주세요. (${(bad[0].e && bad[0].e.message) || "연결 실패"})`);
+  const changed = got.filter((g) => !(g.k in SETTING_CACHE) || settingSig(SETTING_CACHE[g.k]) !== settingSig(g.v));
+  if (changed.length) {
+    changed.forEach((g) => publishSetting(g.k, g.v));
+    try {
+      logUi("picking_settings_refreshed", changed.map((g) => g.k).join(","), { keys: changed.map((g) => g.k) });
+    } catch (e) {}
+    throw new Error("화면의 설정(상품 정보·입수 등)이 최신이 아니라서 방금 새로 불러왔어요. 화면을 확인하고 한 번 더 눌러주세요.");
+  }
 }
 // 최신 값을 서버에서 다시 읽어 updater로 고친 뒤 저장 (다른 직원이 동시에 바꾼 값 보존)
 async function updateSetting(key, authToken, updater) {
