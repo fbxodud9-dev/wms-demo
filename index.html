@@ -12416,10 +12416,20 @@ function emInvCaptureCaps(ws, lay = INV_LAYOUT_EMART) {
     }
   }
   if (!totalRow) return null;
-  const caps = { row: 13, totalRow, cells: {} };
+  // 틀로 쓸 줄 = 총수량 칸이 피벗을 찾는(VLOOKUP) 첫 상품 줄 (2026-11-14: 첫 줄 상품이 "발행 안 함"으로 비워져(="") 있으면
+  // 그 빈 수식을 틀로 써서 새 상품 총수량이 빈칸으로 나왔음 - 이마트24 대광 생초콜릿찹쌀떡)
+  let src = 13;
+  for (let r = 13; r < totalRow; r++) {
+    const q = cellOf(lay.qty + r);
+    if (q && q.f && /VLOOKUP\(/.test(q.f)) {
+      src = r;
+      break;
+    }
+  }
+  const caps = { row: src, totalRow, cells: {} };
   lay.cols.forEach((col) => {
-    const c = cellOf(col + "13");
-    caps.cells[col] = { f: c ? c.f : null, v: c ? c.v : null, s: sOf(col + "13") };
+    const c = cellOf(col + src);
+    caps.cells[col] = { f: c ? c.f : null, v: c ? c.v : null, s: sOf(col + src) };
   });
   // 아래쪽 공급자 보관용: E 칸이 =E13 인 줄
   for (let r = totalRow + 1; r <= ws.maxRow; r++) {
@@ -12460,7 +12470,7 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial, lay = INV_
   prods.forEach((p, i) => {
     const r = spares[i];
     if (!r) return;
-    const dr = r - 13;
+    const dr = r - (caps.row || 13); // 틀 줄 기준으로 줄 번호 옮김
     setCellXml(ws, "E" + r, p.name);
     setCellXml(ws, "M" + r, p.pack > 0 ? p.pack : null);
     const CQ = C[lay.qty];
@@ -12721,6 +12731,7 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       keep.add(sh.name);
       kept++;
       const ws = byName.get(sh.name);
+      const capsEarly = sh.caps ? null : emInvCaptureCaps(ws, lay); // 줄을 비우기 전 틀 (모든 상품 줄이 비워졌을 때 대비)
       // lay.dateFromDue: 명세서 날짜 = 그 공급사·센터 발주의 납품예정일자 (BGF 냉동). 없으면 작업일
       const dueOf = lay.dateFromDue ? invDueOf(x.supplier, sh.center) : null;
       const sheetSerial = dueOf ? xlSerialOf(dueOf) : dateSerial + (lay.dateOffset || 0) + (sh.b13Offset || 0); // 냉동은 납품일(발주일 + 1)
@@ -12833,7 +12844,9 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
       // 새 상품 줄 (명세서 파일에 없던 상품)
       if (x.added.length) {
         emInvUnshare(ws, tpl.sst);
-        const caps = sh.caps || emInvCaptureCaps(ws, lay);
+        let caps = sh.caps || emInvCaptureCaps(ws, lay);
+        const isLookup = (c) => !!(c && c.cells[lay.qty] && c.cells[lay.qty].f && /VLOOKUP\(/.test(c.cells[lay.qty].f));
+        if (!sh.caps && !isLookup(caps) && isLookup(capsEarly)) caps = { ...capsEarly, totalRow: caps ? caps.totalRow : capsEarly.totalRow, mirror: caps ? caps.mirror : capsEarly.mirror };
         const prods = x.added.map((a) => {
           const o = ps[a.name] || {};
           const pack = Number(o.packQty) > 0 ? Number(o.packQty) : invPackFallback(a.name) || a.box || 0;
