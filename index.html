@@ -1566,6 +1566,133 @@ const buildRegionOrderMap = (table) => {
 const REGION_ORDER_MAP = buildRegionOrderMap(REGION_ORDER_TABLE);
 const REGION_ORDER_MAP_2 = buildRegionOrderMap(REGION_ORDER_TABLE_2);
 
+// ===== GS 센터 설정 (2026-11-19 요청: 신센터(평택 VV29 등)를 직원이 직접 추가·순서 변경) =====
+// 서버 설정 gs_centers = { centers: { [VV코드]: { added?, name(시트·피킹지 짧은 이름), centerName, vvLabel, address, realZone } },
+//                         orders: { pick1, pick2: [{code, zone, checkpoint}], dangchak, inv1, inv2, pivot: [VV코드] } }
+// 기본값과 같은 목록은 저장하지 않음. 저장된 목록에 없는 기본 센터는 맨 뒤에 자동으로 붙음 (센터가 빠지는 일 없게).
+// 아래 표·목록(REGION_ORDER_TABLE 등)을 그 자리에서 바꿔서, 피킹지·거래명세서·편수·일별 집계가 모두 같은 센터 정보를 씀.
+const GS_CENTER_KEY = "gs_centers";
+const GS_CENTER_DEFAULT = {};
+let GS_CENTER_CFG = {};
+function gsCenterDefaults() {
+  const D = GS_CENTER_DEFAULT;
+  if (!D.ready) {
+    D.pick1 = REGION_ORDER_TABLE.map((r) => ({ ...r }));
+    D.pick2 = REGION_ORDER_TABLE_2.map((r) => ({ ...r }));
+    D.inv1 = [...INVOICE_SHEET_ORDER_1];
+    D.inv2 = [...INVOICE_SHEET_ORDER_2];
+    D.pivot = [...INVOICE_PIVOT_ORDER];
+    D.dangchak = [...DANGCHAK_REGION_ORDER];
+    D.addr = JSON.parse(JSON.stringify(REGION_ADDRESS_MAP));
+    D.realZone = { ...REGION_REAL_ZONE };
+    D.ready = true;
+  }
+  return D;
+}
+const GS_ORDER_LISTS = [
+  { key: "pick1", label: "1편 피킹지", kind: "table" },
+  { key: "pick2", label: "2편 피킹지", kind: "table" },
+  { key: "dangchak", label: "당착 피킹지 (전 지역 당착)", kind: "list" },
+  { key: "inv1", label: "1편 거래명세서 시트", kind: "list" },
+  { key: "inv2", label: "2편·DC·당착 거래명세서 시트", kind: "list" },
+  { key: "pivot", label: "거래명세서 발주량 요약표 줄", kind: "list" },
+];
+// 설정값 → 실제 목록 (기본 센터 + 추가 센터, 빠진 센터는 뒤에 붙임)
+function gsCenterResolve(cfg) {
+  const D = gsCenterDefaults();
+  const c = cfg && typeof cfg === "object" ? cfg : {};
+  const centers = c.centers && typeof c.centers === "object" ? c.centers : {};
+  const isCode = (x) => /^[A-Za-z0-9]{2,10}$/.test(String(x || ""));
+  const added = Object.keys(centers).filter((k) => centers[k] && centers[k].added && isCode(k) && !D.addr[k] && !D.pick1.some((r) => r.code === k));
+  const defName = (code) => ((D.pick1.find((r) => r.code === code) || {}).name || (D.addr[code] || {}).sheetName || code);
+  const nameOf = (code) => (centers[code] && String(centers[code].name || "").trim()) || defName(code);
+  const known = (code) => D.pick1.some((r) => r.code === code) || added.includes(code);
+  const orders = c.orders || {};
+  const table = (def, saved) => {
+    const seen = new Set();
+    const own = (code) => (centers[code] && String(centers[code].name || "").trim()) || ((def.find((r) => r.code === code) || {}).name) || nameOf(code);
+    let rows = [];
+    if (Array.isArray(saved) && saved.length)
+      saved.forEach((r) => {
+        if (!r || !known(r.code) || seen.has(r.code)) return;
+        seen.add(r.code);
+        rows.push({ code: r.code, name: own(r.code), zone: r.zone === "B" ? "B" : "A", checkpoint: !!r.checkpoint });
+      });
+    def.forEach((r) => !seen.has(r.code) && (seen.add(r.code), rows.push({ ...r, name: own(r.code) })));
+    added.forEach((k) => !seen.has(k) && (seen.add(k), rows.push({ code: k, name: nameOf(k), zone: "B", checkpoint: false })));
+    // A구역이 앞, B구역이 뒤 (피킹지 모양 유지)
+    return [...rows.filter((r) => r.zone === "A"), ...rows.filter((r) => r.zone !== "A")];
+  };
+  const list = (def, saved) => {
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(saved) && saved.length ? saved : def).forEach((k) => known(k) && !seen.has(k) && (seen.add(k), out.push(k)));
+    def.forEach((k) => !seen.has(k) && (seen.add(k), out.push(k)));
+    added.forEach((k) => !seen.has(k) && (seen.add(k), out.push(k)));
+    return out;
+  };
+  const addr = JSON.parse(JSON.stringify(D.addr));
+  const realZone = { ...D.realZone };
+  [...Object.keys(D.addr), ...added].forEach((k) => {
+    const o = centers[k];
+    if (!o) return;
+    const base = addr[k] || { vvLabel: k, centerName: `${nameOf(k)}센터`, address: "", sheetName: nameOf(k) };
+    const t = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    addr[k] = { ...base, vvLabel: t(o.vvLabel) || base.vvLabel, centerName: t(o.centerName) || base.centerName, address: t(o.address) ?? base.address, sheetName: t(o.name) || base.sheetName };
+    if (o.realZone && ["수도권", "영남", "호남"].includes(o.realZone)) {
+      if (o.realZone === "수도권") delete realZone[k];
+      else realZone[k] = o.realZone;
+    }
+  });
+  return {
+    added,
+    pick1: table(D.pick1, orders.pick1),
+    pick2: table(D.pick2, orders.pick2),
+    dangchak: list(D.dangchak, orders.dangchak),
+    inv1: list(D.inv1, orders.inv1),
+    inv2: list(D.inv2, orders.inv2),
+    pivot: list(D.pivot, orders.pivot),
+    addr,
+    realZone,
+  };
+}
+function applyGsCenterCfg(v) {
+  const R = gsCenterResolve(v);
+  GS_CENTER_CFG = v && typeof v === "object" ? v : {};
+  const fill = (arr, items) => {
+    arr.length = 0;
+    items.forEach((x) => arr.push(x));
+  };
+  const fillObj = (obj, src) => {
+    Object.keys(obj).forEach((k) => delete obj[k]);
+    Object.assign(obj, src);
+  };
+  fill(REGION_ORDER_TABLE, R.pick1);
+  fill(REGION_ORDER_TABLE_2, R.pick2);
+  fillObj(REGION_ORDER_MAP, buildRegionOrderMap(R.pick1));
+  fillObj(REGION_ORDER_MAP_2, buildRegionOrderMap(R.pick2));
+  fill(INVOICE_SHEET_ORDER_1, R.inv1);
+  fill(INVOICE_SHEET_ORDER_2, R.inv2);
+  fill(INVOICE_PIVOT_ORDER, R.pivot);
+  fill(DANGCHAK_REGION_ORDER, R.dangchak);
+  fillObj(REGION_ADDRESS_MAP, R.addr);
+  fillObj(REGION_REAL_ZONE, R.realZone);
+  return R;
+}
+// 발주에 있는데 등록 안 된 GS 센터 코드 → { code, label, qty }
+function gsUnknownCenters(orders) {
+  const m = new Map();
+  (orders || []).forEach((o) => {
+    const code = String(o.storeCode || "").trim();
+    if (!code || code === "VV00" || REGION_ORDER_MAP[code] || REGION_ORDER_MAP_2[code]) return;
+    const x = m.get(code) || { code, label: `${code} ${o.customer || ""}`.trim(), customer: o.customer || "", qty: 0, dates: new Set() };
+    (o.lines || []).forEach((l) => (x.qty += Number(l.changedQty ?? l.qty) || 0));
+    if (o.createdAt) x.dates.add(o.createdAt);
+    m.set(code, x);
+  });
+  return Array.from(m.values());
+}
+
 function seedStores() {
   return STORE_NAMES.map((name, i) => ({ id: `st${i + 1}`, name, vehicleId: i < 2 ? `v${i + 1}` : null }));
 }
@@ -2934,6 +3061,38 @@ function WMSApp() {
     };
   }, [authToken, applyInvoiceSettings]);
 
+  // GS 센터 설정 (신센터 추가·순서) - 로그인 후 한 번 불러오고, 바뀌면 화면을 다시 그린다 (2026-11-19)
+  const [centerVer, setCenterVer] = useState(0);
+  const [centerModal, setCenterModal] = useState(false);
+  const applyCenterCfg = useCallback((value) => {
+    applyGsCenterCfg(value);
+    SETTING_CACHE[GS_CENTER_KEY] = value ?? null;
+    setCenterVer((x) => x + 1);
+  }, []);
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    (async () => {
+      let value = null;
+      try {
+        value = (await apiFetch(`/settings/${GS_CENTER_KEY}`, authToken)).value ?? null;
+        try {
+          localStorage.setItem("wms-gs-centers", JSON.stringify(value));
+        } catch (e) {}
+      } catch (e) {
+        try {
+          value = JSON.parse(localStorage.getItem("wms-gs-centers") || "null");
+        } catch (e2) {
+          value = null;
+        }
+      }
+      if (!cancelled) applyCenterCfg(value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, applyCenterCfg]);
+
   // 전산팀이 저장해 둔 피킹지 순서 설정을 로그인 후 한 번 불러온다 (저장된 게 없으면 기본 순서)
   const [orderCfg, setOrderCfg] = useState({ suppliers: null, products: {} });
   const applyOrderCfg = useCallback((value) => {
@@ -2978,7 +3137,9 @@ function WMSApp() {
       if (key === "picking_order") applyOrderCfg(value);
       else if (key === "product_info") applyProductInfo(value);
       else if (key === "invoice_settings") applyInvoiceSettings(value);
-      else if (key in SETTING_CACHE) publishSetting(key, value);
+      else if (key === GS_CENTER_KEY) {
+        if (settingSig(value) !== settingSig(GS_CENTER_CFG)) applyCenterCfg(value);
+      } else if (key in SETTING_CACHE) publishSetting(key, value);
     };
     const tick = async () => {
       if (busy || document.hidden) return;
@@ -3821,7 +3982,7 @@ function WMSApp() {
       </div>
 
       {/* content */}
-      <div className="wms-main" style={{ flex: 1, padding: "24px 28px", overflow: "auto", minWidth: 0 }}>
+      <div className="wms-main" key={"centers-" + centerVer} style={{ flex: 1, padding: "24px 28px", overflow: "auto", minWidth: 0 }}>
         {apiErr && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "#FBEAEA", border: `1px solid ${T.danger}55`, borderRadius: 6, padding: "10px 12px", marginBottom: 16, fontSize: 12.5, color: T.danger, fontWeight: 600 }}>
             <AlertTriangle size={14} style={{ marginTop: 1, flexShrink: 0 }} />
@@ -3952,7 +4113,7 @@ function WMSApp() {
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={vEmartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
+        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} onOpenCenters={() => setCenterModal(true)} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
         {tab === "pickinginspection" && (
           <PickingCenter
             channel={pickChannel}
@@ -4002,6 +4163,7 @@ function WMSApp() {
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
         )}
       </div>
+      {centerModal && <GsCenterSettingsModal authToken={authToken} orders={orders} onSaved={applyCenterCfg} onInvoiceSaved={applyInvoiceSettings} onClose={() => setCenterModal(false)} />}
     </div>
   );
 }
@@ -17412,6 +17574,8 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
     const dayAll = allOrders.filter((o) => o.createdAt === date);
     const dayNew = newOrders.filter((o) => o.createdAt === date);
     if (channel === "GS") {
+      // 등록 안 된 센터 코드: 피킹지·명세서에서 빠지니 먼저 알려줌 (2026-11-19 신센터)
+      gsUnknownCenters(dayNew).forEach((u) => push(date, "센터", `${u.label}`, u.qty, "warn", `등록 안 된 센터 코드(${u.code})라 피킹지·거래명세서에 안 나가요. [피킹지 수정 > 센터 설정]에서 이 센터를 추가하면 바로 들어가요`));
       const products = buildProductsForDate(dayAll, date);
       const bySku = new Map(products.map((p) => [p.sku, p]));
       const agg = new Map();
@@ -19436,7 +19600,616 @@ const PICK_FORM_CHANNELS = [
   { brand: "SEVEN", label: "세븐일레븐", parts: [{ key: "seven", label: "일반", cfg: () => SEVEN_PV_CFG }, { key: "sevenfrozen", label: "냉동", cfg: () => SEVEN_FROZEN_PV_CFG }] },
   { brand: "EMART", label: "이마트24", parts: [{ key: "emart", label: "일반", cfg: () => EM_PV_CFG }, { key: "emfrozen", label: "냉동", cfg: () => EM_FROZEN_PICK_CFG }] },
 ];
-function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInfoSaved, chOrders = {} }) {
+/* ================= 피킹지 수정 > 센터 설정 (GS 신센터 추가·센터 정보·순서) 2026-11-19 ================= */
+// 끌어서 순서 바꾸는 목록. items: 코드 배열 (표 모양이면 "|B|" = B구역 시작 줄)
+function GsDragList({ items, onChange, renderItem, highlight }) {
+  const [dragCode, setDragCode] = useState(null);
+  const [over, setOver] = useState(null);
+  const drag = dragCode == null ? null : items.indexOf(dragCode);
+  const move = (from, to) => {
+    if (from == null || to == null || from === to) return;
+    const a = [...items];
+    const [x] = a.splice(from, 1);
+    a.splice(to > from ? to - 1 : to, 0, x);
+    onChange(a);
+  };
+  const step = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= items.length) return;
+    const a = [...items];
+    [a[i], a[j]] = [a[j], a[i]];
+    onChange(a);
+  };
+  return (
+    <div onDragOver={(e) => e.preventDefault()} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {items.map((it, i) => (
+        <div
+          key={it}
+          draggable
+          onDragStart={(e) => {
+            setDragCode(it);
+            e.dataTransfer.effectAllowed = "move";
+            try {
+              e.dataTransfer.setData("text/plain", String(it));
+            } catch (er) {}
+          }}
+          onDragEnd={() => (setDragCode(null), setOver(null))}
+          onDragOver={(e) => {
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            setOver(e.clientY < r.top + r.height / 2 ? i : i + 1);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            let from = drag;
+            try {
+              const c = e.dataTransfer.getData("text/plain");
+              if (c && items.includes(c)) from = items.indexOf(c);
+            } catch (er) {}
+            move(from, over);
+            setDragCode(null);
+            setOver(null);
+          }}
+          data-code={it}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: it === "|B|" ? "6px 10px" : "6px 8px",
+            borderRadius: 8,
+            border: `1px solid ${it === "|B|" ? T.steel : highlight && highlight.includes(it) ? T.teal : T.border}`,
+            background: it === "|B|" ? T.steel : drag === i ? "#EEF1F4" : highlight && highlight.includes(it) ? "#E4F2EE" : T.surface,
+            color: it === "|B|" ? "#fff" : T.ink,
+            opacity: drag === i ? 0.5 : 1,
+            boxShadow: over === i ? `0 -3px 0 ${T.teal}` : over === i + 1 && i === items.length - 1 ? `0 3px 0 ${T.teal}` : "none",
+            cursor: "grab",
+            userSelect: "none",
+            fontSize: 13,
+          }}
+        >
+          <span style={{ color: it === "|B|" ? "#fff" : T.inkSoft, fontSize: 15, lineHeight: 1 }} title="꾹 눌러서 끌어 옮기세요">⠿</span>
+          <span style={{ flex: 1, minWidth: 0 }}>{renderItem(it, i)}</span>
+          <button onClick={() => step(i, -1)} disabled={i === 0} style={{ ...smallBtnStyle, padding: "1px 7px", fontSize: 12 }} title="위로">
+            ▲
+          </button>
+          <button onClick={() => step(i, 1)} disabled={i === items.length - 1} style={{ ...smallBtnStyle, padding: "1px 7px", fontSize: 12 }} title="아래로">
+            ▼
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onClose }) {
+  const R0 = useMemo(() => gsCenterResolve(GS_CENTER_CFG), []);
+  const D = gsCenterDefaults();
+  const [centers, setCenters] = useState(() => JSON.parse(JSON.stringify((GS_CENTER_CFG && GS_CENTER_CFG.centers) || {})));
+  // 순서 목록 (표 모양은 A구역 코드들, "|B|", B구역 코드들) + 체크포인트
+  const toItems = (rows) => [...rows.filter((r) => r.zone === "A").map((r) => r.code), "|B|", ...rows.filter((r) => r.zone !== "A").map((r) => r.code)];
+  const [lists, setLists] = useState(() => ({ pick1: toItems(R0.pick1), pick2: toItems(R0.pick2), dangchak: [...R0.dangchak], inv1: [...R0.inv1], inv2: [...R0.inv2], pivot: [...R0.pivot] }));
+  const [cps, setCps] = useState(() => ({ pick1: R0.pick1.filter((r) => r.checkpoint).map((r) => r.code), pick2: R0.pick2.filter((r) => r.checkpoint).map((r) => r.code) }));
+  const [tab, setTab] = useState("info");
+  const [listKey, setListKey] = useState("pick1");
+  const [editCode, setEditCode] = useState(null);
+  const [form, setForm] = useState(null); // 새 센터 입력
+  const [newCodes, setNewCodes] = useState([]); // 이번에 추가한 센터 (강조)
+  const [invAdd, setInvAdd] = useState({}); // "공급사|편" -> true (발행 지역 '선택한 지역만'에 새 센터 넣기)
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const unknown = useMemo(() => gsUnknownCenters(orders).filter((u) => !centers[u.code]), [orders, centers]);
+
+  const allCodes = useMemo(() => lists.pick1.filter((c) => c !== "|B|"), [lists.pick1]);
+  const isAdded = (code) => !!(centers[code] && centers[code].added) && !D.addr[code];
+  const infoOf = (code) => {
+    const o = centers[code] || {};
+    const base = D.addr[code] || { vvLabel: code, centerName: "", address: "", sheetName: "" };
+    const nm = (o.name && o.name.trim()) || (D.pick1.find((r) => r.code === code) || {}).name || base.sheetName || code;
+    return { name: nm, vvLabel: (o.vvLabel && o.vvLabel.trim()) || base.vvLabel, centerName: (o.centerName && o.centerName.trim()) || base.centerName || `${nm}센터`, address: o.address != null && o.address !== "" ? o.address : base.address, realZone: o.realZone || (D.realZone[code] || "수도권") };
+  };
+  const nameOf = (code) => infoOf(code).name;
+  const setCenter = (code, patch) => setCenters((c) => ({ ...c, [code]: { ...(c[code] || {}), ...patch } }));
+
+  // 거래명세서 설정에서 발행 지역을 "선택한 지역만"으로 둔 공급사·편
+  const selectedRegionCfgs = useMemo(() => {
+    const out = [];
+    Object.entries((INVOICE_SETTINGS && INVOICE_SETTINGS.suppliers) || {}).forEach(([sup, st]) =>
+      Object.entries((st && st.regions) || {}).forEach(([part, cfg]) => cfg && cfg.mode === "selected" && Array.isArray(cfg.codes) && out.push({ sup, part, codes: cfg.codes }))
+    );
+    return out;
+  }, []);
+  const partName = (p) => (p === "1" ? "1편" : p === "2" ? "2편" : p);
+
+  function startAdd(pre) {
+    setTab("info");
+    setEditCode(null);
+    setForm({ code: (pre && pre.code) || "", name: "", centerName: "", vvLabel: (pre && pre.label) || "", address: "", realZone: "수도권", after: "VV03" });
+  }
+  function addCenter() {
+    const f = form;
+    const code = String(f.code || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{2,10}$/.test(code)) return setMsg("센터 코드를 발주파일의 납품처코드 그대로 넣어주세요 (예: VV29).");
+    if (allCodes.includes(code)) return setMsg(`${code}는 이미 있는 센터예요.`);
+    const name = String(f.name || "").trim();
+    if (!name) return setMsg("시트 이름(짧은 이름, 예: 평택)을 넣어주세요.");
+    setMsg("");
+    setCenter(code, { added: true, name, centerName: String(f.centerName || "").trim() || `${name}센터`, vvLabel: String(f.vvLabel || "").trim() || code, address: String(f.address || "").trim(), realZone: f.realZone || "수도권" });
+    // 모든 목록에서 고른 센터 바로 다음에 넣기 (피킹지 표는 그 센터와 같은 구역)
+    setLists((L) => {
+      const ins = (arr) => {
+        const a = arr.filter((x) => x !== code);
+        const i = a.indexOf(f.after);
+        a.splice(i === -1 ? a.length : i + 1, 0, code);
+        return a;
+      };
+      const n = {};
+      Object.keys(L).forEach((k) => (n[k] = ins(L[k])));
+      return n;
+    });
+    setNewCodes((x) => [...x, code]);
+    setForm(null);
+    setEditCode(code);
+  }
+  function removeCenter(code) {
+    if (!window.confirm(`${nameOf(code)}(${code}) 센터를 지울까요? 저장하면 피킹지·거래명세서에서 이 센터가 빠져요.`)) return;
+    setCenters((c) => {
+      const n = { ...c };
+      delete n[code];
+      return n;
+    });
+    setLists((L) => {
+      const n = {};
+      Object.keys(L).forEach((k) => (n[k] = L[k].filter((x) => x !== code)));
+      return n;
+    });
+    setNewCodes((x) => x.filter((y) => y !== code));
+    setEditCode(null);
+  }
+
+  // 저장할 값 (기본과 같은 목록은 빼고)
+  function buildValue() {
+    const rowsOf = (k) => {
+      const out = [];
+      let zone = "A";
+      lists[k].forEach((c) => {
+        if (c === "|B|") zone = "B";
+        else out.push({ code: c, zone, checkpoint: cps[k].includes(c) });
+      });
+      return out;
+    };
+    const sameTable = (a, d) => a.length === d.length && a.every((r, i) => r.code === d[i].code && r.zone === d[i].zone && !!r.checkpoint === !!d[i].checkpoint);
+    const sameList = (a, d) => a.length === d.length && a.every((x, i) => x === d[i]);
+    const ordersV = {};
+    ["pick1", "pick2"].forEach((k) => {
+      const r = rowsOf(k);
+      if (!sameTable(r, D[k])) ordersV[k] = r;
+    });
+    ["dangchak", "inv1", "inv2", "pivot"].forEach((k) => !sameList(lists[k], D[k]) && (ordersV[k] = lists[k]));
+    const cleanCenters = {};
+    Object.entries(centers).forEach(([k, o]) => {
+      if (!o) return;
+      const c = {};
+      ["name", "centerName", "vvLabel", "address", "realZone"].forEach((f) => o[f] != null && String(o[f]).trim() !== "" && (c[f] = String(o[f]).trim()));
+      if (o.added) c.added = true;
+      if (Object.keys(c).length) cleanCenters[k] = c;
+    });
+    return { centers: cleanCenters, orders: ordersV };
+  }
+  async function save() {
+    const v = buildValue();
+    const R = gsCenterResolve(v);
+    const added = R.added.filter((c) => !R0.added.includes(c));
+    const removed = R0.added.filter((c) => !R.added.includes(c));
+    const lines = [];
+    if (added.length) lines.push(`새 센터: ${added.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
+    if (removed.length) lines.push(`지우는 센터: ${removed.join(", ")}`);
+    GS_ORDER_LISTS.forEach((L) => {
+      const a = L.kind === "table" ? R[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R[L.key].join();
+      const b = L.kind === "table" ? R0[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R0[L.key].join();
+      if (a !== b) lines.push(`${L.label} 순서 바뀜`);
+    });
+    const invPicks = selectedRegionCfgs.filter((x) => invAdd[x.sup + "|" + x.part]);
+    if (invPicks.length && newCodes.length) lines.push(`발행 지역에 새 센터 추가: ${invPicks.map((x) => `${x.sup} ${partName(x.part)}`).join(", ")}`);
+    if (!lines.length && settingSig(v) === settingSig(GS_CENTER_CFG)) return setMsg("바뀐 게 없어요.");
+    if (!window.confirm(`센터 설정을 저장할까요?\n\n${lines.join("\n") || "센터 정보 변경"}\n\n저장하면 피킹지·거래명세서에 바로 반영돼요 (이미 올린 발주도 다시 올릴 필요 없어요).`)) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await apiFetch(`/settings/${GS_CENTER_KEY}`, authToken, { method: "PUT", body: { value: v } });
+      try {
+        localStorage.setItem("wms-gs-centers", JSON.stringify(v));
+      } catch (e) {}
+      // 발행 지역 "선택한 지역만" 공급사에 새 센터 넣기 (고른 것만)
+      if (invPicks.length && newCodes.length) {
+        let latest = INVOICE_SETTINGS;
+        try {
+          const r = await apiFetch("/settings/invoice_settings", authToken);
+          if (r && r.value && r.value.suppliers) latest = r.value;
+        } catch (e) {}
+        const nextInv = JSON.parse(JSON.stringify(latest || { suppliers: {} }));
+        invPicks.forEach(({ sup, part }) => {
+          const cfg = nextInv.suppliers && nextInv.suppliers[sup] && nextInv.suppliers[sup].regions && nextInv.suppliers[sup].regions[part];
+          if (!cfg || cfg.mode !== "selected" || !Array.isArray(cfg.codes)) return;
+          newCodes.forEach((code) => {
+            if (cfg.codes.includes(code)) return;
+            const after = form && form.after ? form.after : "VV03";
+            const ord = part === "1" ? R.inv1 : R.inv2;
+            // 시트 순서상 바로 앞 센터 다음에 넣기
+            const pos = ord.indexOf(code);
+            let i = -1;
+            for (let j = pos - 1; j >= 0 && i === -1; j--) i = cfg.codes.indexOf(ord[j]);
+            cfg.codes.splice(i === -1 ? cfg.codes.indexOf(after) + 1 || cfg.codes.length : i + 1, 0, code);
+          });
+        });
+        await apiFetch("/settings/invoice_settings", authToken, { method: "PUT", body: { value: nextInv } });
+        if (onInvoiceSaved) onInvoiceSaved(nextInv);
+      }
+      onSaved(v);
+      setMsg("저장했어요. 피킹지·거래명세서에 바로 반영돼요.");
+      setNewCodes([]);
+      setInvAdd({});
+    } catch (e) {
+      setMsg(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---------- 미리보기 ----------
+  const sampleQty = useMemo(() => {
+    const m = {};
+    (orders || []).forEach((o) => (o.lines || []).forEach((l) => o.storeCode && (m[o.storeCode] = (m[o.storeCode] || 0) + (Number(l.changedQty ?? l.qty) || 0))));
+    return m;
+  }, [orders]);
+  const curList = GS_ORDER_LISTS.find((x) => x.key === listKey);
+  const pickPreview = (k) => {
+    let zone = "A";
+    const rows = [];
+    lists[k].forEach((c) => {
+      if (c === "|B|") return (zone = "B");
+      rows.push({ code: c, zone, cp: cps[k].includes(c) });
+    });
+    const cell = { padding: "3px 6px", border: "1px solid #BFC5CA", fontSize: 11.5, whiteSpace: "nowrap" };
+    let band = 0;
+    return (
+      <table style={{ borderCollapse: "collapse", width: "100%", background: "#fff" }}>
+        <thead>
+          <tr style={{ background: "#FFF2CC" }}>
+            {["지역(발주파일 이름)", "입수", "수량", "박스", "지역", "낱개", "체크"].map((h) => (
+              <th key={h} style={{ ...cell, fontWeight: 700, textAlign: "center" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {["A", "B"].map((z) => [
+            <tr key={"z" + z}>
+              <td colSpan={7} style={{ ...cell, fontWeight: 800, background: "#E6EAEE" }}>{z}구역</td>
+            </tr>,
+            ...rows
+              .filter((r) => r.zone === z)
+              .map((r) => {
+                const gray = band++ % 2 === 0;
+                const nw = newCodes.includes(r.code) || isAdded(r.code);
+                return (
+                  <tr key={r.code} style={{ background: nw ? "#E4F2EE" : gray ? "#F2F2F2" : "#fff", borderBottom: r.cp ? "3px solid #1B1D1A" : undefined }}>
+                    <td style={{ ...cell, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{infoOf(r.code).vvLabel}</td>
+                    <td style={{ ...cell, textAlign: "center" }}>12</td>
+                    <td style={{ ...cell, textAlign: "right" }}>{sampleQty[r.code] ? "●" : "-"}</td>
+                    <td style={{ ...cell, textAlign: "center" }}>-</td>
+                    <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{nameOf(r.code)}{nw ? " (새)" : ""}</td>
+                    <td style={{ ...cell, textAlign: "center" }}>-</td>
+                    <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{r.cp ? "체크" : ""}</td>
+                  </tr>
+                );
+              }),
+          ])}
+        </tbody>
+      </table>
+    );
+  };
+  const tabsPreview = (k) => (
+    <div>
+      <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>엑셀 아래쪽 시트 탭이 이 순서로 나가요 (발주 없는 센터는 빠짐, '선택한 지역만'인 공급사는 고른 센터만)</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 2, background: "#E6E6E6", padding: 4, borderRadius: 4 }}>
+        <span style={{ fontSize: 11.5, padding: "3px 8px", background: "#fff", border: "1px solid #BBB", fontWeight: 700 }}>{k === "inv1" ? "1편발주량" : "2편발주량"}</span>
+        {lists[k].map((c) => (
+          <span key={c} style={{ fontSize: 11.5, padding: "3px 8px", background: newCodes.includes(c) || isAdded(c) ? "#C9EBDD" : "#F7F7F7", border: "1px solid #BBB" }}>
+            {nameOf(c)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+  const invoicePreview = (i) => {
+    const b = { border: "1.5px solid #1F3FD6", padding: "4px 6px", fontSize: 11.5, color: "#1F3FD6" };
+    return (
+      <div style={{ border: "2px solid #1F3FD6", background: "#fff", padding: 8 }}>
+        <div style={{ textAlign: "center", color: "#1F3FD6", fontSize: 20, fontWeight: 700, letterSpacing: 8 }}>거래명세표 <span style={{ fontSize: 11, letterSpacing: 0 }}>(공급받는자 보관용)</span></div>
+        <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 6 }}>
+          <tbody>
+            <tr>
+              <td rowSpan={3} style={{ ...b, width: 18, textAlign: "center" }}>공급받는자</td>
+              <td style={{ ...b, width: 70 }}>등록번호</td>
+              <td style={{ ...b, color: "#000" }}>{i.vvLabel || <span style={{ color: T.danger }}>(비어 있음)</span>}</td>
+            </tr>
+            <tr>
+              <td style={b}>상호</td>
+              <td style={{ ...b, color: "#000" }}>{i.centerName || <span style={{ color: T.danger }}>(비어 있음)</span>}</td>
+            </tr>
+            <tr>
+              <td style={b}>사업장 주소</td>
+              <td style={{ ...b, color: "#000", whiteSpace: "pre-line" }}>{i.address || <span style={{ color: T.danger }}>(주소 없음)</span>}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "#1F3FD6" }}>
+          <span>시트 이름: <b style={{ color: "#000" }}>{i.name}</b></span>
+          <span>아래 오른쪽 칸: <b style={{ color: "#000", whiteSpace: "pre-line" }}>{i.address || "-"}</b></span>
+        </div>
+        <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 4 }}>아래쪽 공급자 보관용(빨강)도 같은 내용으로 나가요.</div>
+      </div>
+    );
+  };
+
+  const lab = { fontSize: 12.5, fontWeight: 700, marginBottom: 4 };
+  const tabBtn = (on) => ({ ...smallBtnStyle, padding: "7px 14px", fontWeight: on ? 700 : 500, background: on ? T.ink : T.surface, color: on ? "#fff" : T.ink, borderColor: on ? T.ink : T.border });
+  const editing = editCode ? infoOf(editCode) : null;
+  const fieldRow = (label, value, onChange, ph, help) => (
+    <div>
+      <div style={lab}>{label}</div>
+      <input style={{ ...inputStyle, width: "100%" }} value={value || ""} placeholder={ph} onChange={(e) => onChange(e.target.value)} />
+      {help && <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 3 }}>{help}</div>}
+    </div>
+  );
+  const zoneSel = (value, onChange) => (
+    <div>
+      <div style={lab}>권역 (일별 집계·전 지역 당착 피킹 묶음)</div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {["수도권", "영남", "호남"].map((z) => (
+          <button key={z} onClick={() => onChange(z)} style={tabBtn(value === z)}>
+            {z}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return createPortal(
+    <div style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
+      <div onMouseDown={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth: 1180, height: "92vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)", fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
+        <div style={{ display: "flex", alignItems: "flex-start", padding: "16px 22px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>GS 센터 설정</div>
+            <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>
+              센터 추가 · 센터 정보(거래명세서 공급받는자 칸) · 피킹지/거래명세서 센터 순서. 발주파일의 <b>납품처코드</b>(예: VV29)로 센터를 찾아 수량이 들어가요.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer", color: T.inkSoft }}>
+            ×
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, padding: "10px 22px", borderBottom: `1px solid ${T.border}`, alignItems: "center", flexWrap: "wrap", flexShrink: 0 }}>
+          <button onClick={() => setTab("info")} style={tabBtn(tab === "info")}>
+            ① 센터 목록·정보
+          </button>
+          <button onClick={() => setTab("order")} style={tabBtn(tab === "order")}>
+            ② 순서 (끌어서 변경)
+          </button>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => startAdd()} className="primary-btn" style={{ ...primaryBtnStyle }}>
+            + 센터 추가
+          </button>
+        </div>
+        {unknown.length > 0 && (
+          <div style={{ margin: "10px 22px", padding: "10px 12px", borderRadius: 10, background: "#FDECEA", border: `1px solid ${T.danger}55`, fontSize: 13, flexShrink: 0 }}>
+            <b style={{ color: T.danger }}>발주에 있는데 등록 안 된 센터</b> — 지금은 피킹지·거래명세서에서 빠져요.
+            {unknown.map((u) => (
+              <span key={u.code} style={{ marginLeft: 10 }}>
+                <b>{u.label}</b> ({u.qty.toLocaleString()}개){" "}
+                <button onClick={() => startAdd(u)} style={{ ...smallBtnStyle, padding: "2px 8px", fontSize: 12, color: T.teal, borderColor: T.teal }}>
+                  이 센터 추가
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          {/* 왼쪽: 편집 */}
+          <div style={{ flex: "1 1 52%", overflow: "auto", padding: "14px 22px", borderRight: `1px solid ${T.border}` }}>
+            {form && (
+              <div style={{ border: `2px solid ${T.teal}`, borderRadius: 12, padding: 14, marginBottom: 14, background: "#F4FBF8", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontWeight: 800 }}>새 센터 추가</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  {fieldRow("센터 코드 *", form.code, (v) => setForm({ ...form, code: v.toUpperCase() }), "VV29", "발주파일 납품처코드 그대로")}
+                  {fieldRow("시트 이름 *", form.name, (v) => setForm({ ...form, name: v }), "평택", "피킹지 지역칸·명세서 시트 탭 이름")}
+                  {fieldRow("센터명 (명세서 상호)", form.centerName, (v) => setForm({ ...form, centerName: v }), form.name ? `${form.name}센터` : "평택센터")}
+                  {fieldRow("명세서 등록번호 칸", form.vvLabel, (v) => setForm({ ...form, vvLabel: v }), "VV29 (주)지에스리테일평택저온", "발주파일 납품처 이름 그대로 쓰면 돼요")}
+                </div>
+                {fieldRow("주소", form.address, (v) => setForm({ ...form, address: v }), "경기도 평택시 하만호길 153 3층 (BLK 물류센터)")}
+                {zoneSel(form.realZone, (z) => setForm({ ...form, realZone: z }))}
+                <div>
+                  <div style={lab}>위치 — 어느 센터 다음에 넣을까요? (1편·2편·당착 피킹지, 1편·2편·DC·당착 명세서, 요약표 모두 그 센터 바로 다음)</div>
+                  <select style={{ ...inputStyle, width: 260 }} value={form.after} onChange={(e) => setForm({ ...form, after: e.target.value })}>
+                    {allCodes.map((c) => (
+                      <option key={c} value={c}>
+                        {nameOf(c)} ({c}) 다음
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 3 }}>넣은 뒤 ② 순서 탭에서 목록마다 끌어서 따로 옮길 수 있어요.</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button onClick={() => (setForm(null), setMsg(""))} style={smallBtnStyle}>
+                    취소
+                  </button>
+                  <button onClick={addCenter} className="primary-btn" style={primaryBtnStyle}>
+                    목록에 넣기
+                  </button>
+                </div>
+              </div>
+            )}
+            {tab === "info" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 6 }}>센터를 누르면 거래명세서 공급받는자 칸(등록번호·상호·주소)을 고칠 수 있어요. 오른쪽에 명세서 모양으로 미리 보여줘요.</div>
+                {allCodes.map((c) => {
+                  const i = infoOf(c);
+                  const on = editCode === c;
+                  const nw = newCodes.includes(c) || isAdded(c);
+                  return (
+                    <div key={c} style={{ border: `1px solid ${on ? T.teal : T.border}`, borderRadius: 8, background: on ? "#F4FBF8" : nw ? "#E4F2EE" : T.surface }}>
+                      <div onClick={() => setEditCode(on ? null : c)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 10px", cursor: "pointer", fontSize: 13 }}>
+                        <b style={{ width: 46, fontFamily: "'JetBrains Mono', monospace" }}>{c}</b>
+                        <b style={{ width: 70 }}>{i.name}</b>
+                        <span style={{ flex: 1, color: T.inkSoft, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {i.centerName} · {String(i.address || "주소 없음").replace(/\n/g, " ")}
+                        </span>
+                        {nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.teal }}>새 센터</span>}
+                        {centers[c] && !nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.amberDeep }}>수정됨</span>}
+                      </div>
+                      {on && (
+                        <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            {fieldRow("시트 이름", (centers[c] || {}).name ?? "", (v) => setCenter(c, { name: v }), i.name)}
+                            {fieldRow("센터명 (명세서 상호)", (centers[c] || {}).centerName ?? "", (v) => setCenter(c, { centerName: v }), i.centerName)}
+                          </div>
+                          {fieldRow("명세서 등록번호 칸", (centers[c] || {}).vvLabel ?? "", (v) => setCenter(c, { vvLabel: v }), i.vvLabel)}
+                          {fieldRow("주소", (centers[c] || {}).address ?? "", (v) => setCenter(c, { address: v }), String(i.address || "").replace(/\n/g, " "), "비워두면 원래 값 그대로")}
+                          {zoneSel(i.realZone, (z) => setCenter(c, { realZone: z }))}
+                          <div style={{ display: "flex", gap: 8 }}>
+                            {centers[c] && !isAdded(c) && (
+                              <button
+                                onClick={() =>
+                                  setCenters((x) => {
+                                    const n = { ...x };
+                                    delete n[c];
+                                    return n;
+                                  })
+                                }
+                                style={{ ...smallBtnStyle, color: T.teal }}
+                              >
+                                원래 값으로
+                              </button>
+                            )}
+                            {(isAdded(c) || newCodes.includes(c)) && (
+                              <button onClick={() => removeCenter(c)} style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}>
+                                이 센터 지우기
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                  {GS_ORDER_LISTS.map((L) => (
+                    <button key={L.key} onClick={() => setListKey(L.key)} style={{ ...tabBtn(listKey === L.key), padding: "5px 10px", fontSize: 12.5 }}>
+                      {L.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 8 }}>
+                  ⠿ 를 꾹 눌러 끌어서 옮기거나 ▲▼로 옮겨요.{curList.kind === "table" ? " 'B구역' 줄 위는 A구역, 아래는 B구역이에요. 체크를 누르면 그 센터 줄에 체크포인트(누계)가 들어가요." : ""}
+                </div>
+                <GsDragList
+                  items={lists[listKey]}
+                  highlight={[...newCodes, ...allCodes.filter(isAdded)]}
+                  onChange={(a) => setLists((L) => ({ ...L, [listKey]: a }))}
+                  renderItem={(c) =>
+                    c === "|B|" ? (
+                      <b>여기부터 B구역</b>
+                    ) : (
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <b style={{ width: 70 }}>{nameOf(c)}</b>
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: T.inkSoft }}>{c}</span>
+                        <span style={{ flex: 1 }} />
+                        {curList.kind === "table" && (
+                          <button
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={() => setCps((x) => ({ ...x, [listKey]: x[listKey].includes(c) ? x[listKey].filter((y) => y !== c) : [...x[listKey], c] }))}
+                            style={{ ...smallBtnStyle, padding: "1px 8px", fontSize: 11.5, fontWeight: 700, ...(cps[listKey].includes(c) ? { background: T.ink, color: "#fff", borderColor: T.ink } : { color: T.inkSoft }) }}
+                          >
+                            체크
+                          </button>
+                        )}
+                      </span>
+                    )
+                  }
+                />
+              </div>
+            )}
+          </div>
+          {/* 오른쪽: 미리보기 */}
+          <div style={{ flex: "1 1 48%", overflow: "auto", padding: "14px 18px", background: "#F6F5F1" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>미리보기</div>
+            {tab === "info" ? (
+              editCode || form ? (
+                <>
+                  {invoicePreview(
+                    form
+                      ? { name: form.name || "(시트 이름)", vvLabel: form.vvLabel || form.code, centerName: form.centerName || (form.name ? `${form.name}센터` : ""), address: form.address }
+                      : infoOf(editCode)
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽에서 센터를 누르면 거래명세서 공급받는자 칸이 어떻게 찍히는지 보여줘요.</div>
+              )
+            ) : curList.kind === "table" ? (
+              <>
+                <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>{curList.label} 지역 줄 순서 (● = 발주 있는 센터, 굵은 선 = 체크포인트)</div>
+                {pickPreview(listKey)}
+              </>
+            ) : listKey === "dangchak" || listKey === "pivot" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>{listKey === "dangchak" ? "전 지역 당착 피킹지(조인앤조인 등)는 권역(영남→호남→수도권)으로 묶이고, 그 안에서 이 순서예요." : "거래명세서 맨 앞 'N편발주량' 요약표의 센터 줄 순서예요."}</div>
+                {(listKey === "dangchak" ? ["영남", "호남", "수도권"].flatMap((z) => lists.dangchak.filter((c) => infoOf(c).realZone === z).map((c) => [z, c])) : lists.pivot.map((c) => ["", c])).map(([z, c]) => (
+                  <div key={c} style={{ display: "flex", gap: 8, fontSize: 12.5, padding: "3px 8px", background: newCodes.includes(c) || isAdded(c) ? "#C9EBDD" : "#fff", border: "1px solid #DDD" }}>
+                    {z && <span style={{ width: 44, color: T.inkSoft }}>{z}</span>}
+                    <b>{nameOf(c)}</b>
+                    <span style={{ color: T.inkSoft }}>{infoOf(c).vvLabel}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              tabsPreview(listKey)
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 22px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap", flexShrink: 0 }}>
+          {newCodes.length > 0 && selectedRegionCfgs.length > 0 && (
+            <div style={{ flex: "1 1 100%", fontSize: 12.5, background: "#FFF8E8", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "8px 10px" }}>
+              <b>발행 지역을 '선택한 지역만'으로 정해둔 공급사</b> — 체크한 곳만 새 센터({newCodes.map(nameOf).join(", ")}) 명세서가 나가요. 체크 안 하면 그 공급사는 지금처럼 고른 센터만 나가요.
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                {selectedRegionCfgs.map((x) => {
+                  const k = x.sup + "|" + x.part;
+                  return (
+                    <label key={k} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", border: `1px solid ${T.border}`, borderRadius: 999, background: invAdd[k] ? "#E4F2EE" : "#fff", cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!invAdd[k]} onChange={(e) => setInvAdd((v) => ({ ...v, [k]: e.target.checked }))} />
+                      {x.sup} {partName(x.part)} ({x.codes.length}곳)
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {msg && <span style={{ fontSize: 13, fontWeight: 600, color: /저장했어요/.test(msg) ? T.teal : T.danger }}>{msg}</span>}
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={smallBtnStyle}>
+            닫기
+          </button>
+          <button disabled={busy} onClick={save} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInfoSaved, onOpenCenters, chOrders = {} }) {
   const [brand, setBrand] = useState("GS");
   const [partKey, setPartKey] = useState("gs");
   const [showForm, setShowForm] = useState(false);
@@ -19465,7 +20238,23 @@ function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInf
         ))}
       </div>
       {part.gsMain ? (
-        <PickingEditPage orders={orders} productInfo={productInfo} orderCfg={orderCfg} headerAction={formBtn} authToken={authToken} onProductInfoSaved={onProductInfoSaved} />
+        <PickingEditPage
+          orders={orders}
+          productInfo={productInfo}
+          orderCfg={orderCfg}
+          authToken={authToken}
+          onProductInfoSaved={onProductInfoSaved}
+          headerAction={
+            <span style={{ display: "inline-flex", gap: 8 }}>
+              {onOpenCenters && (
+                <button onClick={onOpenCenters} style={{ ...smallBtnStyle, padding: "8px 14px", fontWeight: 700, borderColor: T.teal, color: T.teal, display: "inline-flex", alignItems: "center", gap: 6 }} title="센터 추가·센터 정보(명세서 공급받는자)·피킹지/명세서 센터 순서">
+                  <SettingsGear size={15} /> 센터 설정
+                </button>
+              )}
+              {formBtn}
+            </span>
+          }
+        />
       ) : (
         <div>
           <PageHeader
