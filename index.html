@@ -1606,7 +1606,8 @@ function gsCenterResolve(cfg) {
   const added = Object.keys(centers).filter((k) => centers[k] && centers[k].added && isCode(k) && !D.addr[k] && !D.pick1.some((r) => r.code === k));
   const defName = (code) => ((D.pick1.find((r) => r.code === code) || {}).name || (D.addr[code] || {}).sheetName || code);
   const nameOf = (code) => (centers[code] && String(centers[code].name || "").trim()) || defName(code);
-  const known = (code) => D.pick1.some((r) => r.code === code) || added.includes(code);
+  const removed = Object.keys(centers).filter((k) => centers[k] && centers[k].removed); // 직원이 삭제한 센터 (기본 센터도 뺄 수 있음, 복구 가능)
+  const known = (code) => !removed.includes(code) && (D.pick1.some((r) => r.code === code) || added.includes(code));
   const orders = c.orders || {};
   const table = (def, saved) => {
     const seen = new Set();
@@ -1618,8 +1619,8 @@ function gsCenterResolve(cfg) {
         seen.add(r.code);
         rows.push({ code: r.code, name: own(r.code), zone: r.zone === "B" ? "B" : "A", checkpoint: !!r.checkpoint });
       });
-    def.forEach((r) => !seen.has(r.code) && (seen.add(r.code), rows.push({ ...r, name: own(r.code) })));
-    added.forEach((k) => !seen.has(k) && (seen.add(k), rows.push({ code: k, name: nameOf(k), zone: "B", checkpoint: false })));
+    def.forEach((r) => known(r.code) && !seen.has(r.code) && (seen.add(r.code), rows.push({ ...r, name: own(r.code) })));
+    added.forEach((k) => known(k) && !seen.has(k) && (seen.add(k), rows.push({ code: k, name: nameOf(k), zone: "B", checkpoint: false })));
     // A구역이 앞, B구역이 뒤 (피킹지 모양 유지)
     return [...rows.filter((r) => r.zone === "A"), ...rows.filter((r) => r.zone !== "A")];
   };
@@ -1627,8 +1628,8 @@ function gsCenterResolve(cfg) {
     const seen = new Set();
     const out = [];
     (Array.isArray(saved) && saved.length ? saved : def).forEach((k) => known(k) && !seen.has(k) && (seen.add(k), out.push(k)));
-    def.forEach((k) => !seen.has(k) && (seen.add(k), out.push(k)));
-    added.forEach((k) => !seen.has(k) && (seen.add(k), out.push(k)));
+    def.forEach((k) => known(k) && !seen.has(k) && (seen.add(k), out.push(k)));
+    added.forEach((k) => known(k) && !seen.has(k) && (seen.add(k), out.push(k)));
     return out;
   };
   const addr = JSON.parse(JSON.stringify(D.addr));
@@ -1645,7 +1646,8 @@ function gsCenterResolve(cfg) {
     }
   });
   return {
-    added,
+    added: added.filter((k) => !removed.includes(k)),
+    removed,
     pick1: table(D.pick1, orders.pick1),
     pick2: table(D.pick2, orders.pick2),
     dangchak: list(D.dangchak, orders.dangchak),
@@ -4113,7 +4115,7 @@ function WMSApp() {
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={vEmartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} onOpenCenters={() => setCenterModal(true)} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
+        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} onOpenCenters={() => setCenterModal({ tab: "info", listKey: "pick1" })} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
         {tab === "pickinginspection" && (
           <PickingCenter
             channel={pickChannel}
@@ -4147,7 +4149,7 @@ function WMSApp() {
             bgfOrders={vBgfOrders}
             bgfFrozenOrders={vBgfFrozenOrders}
             authToken={authToken}
-            gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} />}
+            gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} onOpenCenters={() => setCenterModal({ tab: "order", listKey: "inv2" })} />}
           />
         )}
 
@@ -4163,7 +4165,7 @@ function WMSApp() {
           <DeliveryCourse courses={courses} vehicles={vehicles} onAdd={addCourse} onDelete={deleteCourse} />
         )}
       </div>
-      {centerModal && <GsCenterSettingsModal authToken={authToken} orders={orders} onSaved={applyCenterCfg} onInvoiceSaved={applyInvoiceSettings} onClose={() => setCenterModal(false)} />}
+      {centerModal && <GsCenterSettingsModal initial={centerModal} authToken={authToken} orders={orders} onSaved={applyCenterCfg} onInvoiceSaved={applyInvoiceSettings} onClose={() => setCenterModal(false)} />}
     </div>
   );
 }
@@ -19681,7 +19683,7 @@ function GsDragList({ items, onChange, renderItem, highlight }) {
   );
 }
 
-function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onClose }) {
+function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceSaved, onClose }) {
   const R0 = useMemo(() => gsCenterResolve(GS_CENTER_CFG), []);
   const D = gsCenterDefaults();
   const [centers, setCenters] = useState(() => JSON.parse(JSON.stringify((GS_CENTER_CFG && GS_CENTER_CFG.centers) || {})));
@@ -19689,8 +19691,8 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
   const toItems = (rows) => [...rows.filter((r) => r.zone === "A").map((r) => r.code), "|B|", ...rows.filter((r) => r.zone !== "A").map((r) => r.code)];
   const [lists, setLists] = useState(() => ({ pick1: toItems(R0.pick1), pick2: toItems(R0.pick2), dangchak: [...R0.dangchak], inv1: [...R0.inv1], inv2: [...R0.inv2], pivot: [...R0.pivot] }));
   const [cps, setCps] = useState(() => ({ pick1: R0.pick1.filter((r) => r.checkpoint).map((r) => r.code), pick2: R0.pick2.filter((r) => r.checkpoint).map((r) => r.code) }));
-  const [tab, setTab] = useState("info");
-  const [listKey, setListKey] = useState("pick1");
+  const [tab, setTab] = useState((initial && initial.tab) || "info");
+  const [listKey, setListKey] = useState((initial && initial.listKey) || "pick1");
   const [editCode, setEditCode] = useState(null);
   const [form, setForm] = useState(null); // 새 센터 입력
   const [newCodes, setNewCodes] = useState([]); // 이번에 추가한 센터 (강조)
@@ -19751,10 +19753,20 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
     setEditCode(code);
   }
   function removeCenter(code) {
-    if (!window.confirm(`${nameOf(code)}(${code}) 센터를 지울까요? 저장하면 피킹지·거래명세서에서 이 센터가 빠져요.`)) return;
+    const base = !!D.addr[code] || D.pick1.some((r) => r.code === code);
+    const q = sampleQty[code] || 0;
+    if (
+      !window.confirm(
+        `${nameOf(code)}(${code}) 센터를 삭제할까요?\n\n저장하면 1편·2편·당착 피킹지, 1편·2편·DC·당착 거래명세서, 요약표에서 이 센터가 빠져요.` +
+          (q ? `\n※ 지금 올라온 발주에 이 센터 수량이 ${q.toLocaleString()}개 있어요. 삭제하면 그 수량이 피킹지·명세서에 안 나가요.` : "") +
+          (base ? "\n(기본 센터라 아래 '삭제한 센터'에서 언제든 복구할 수 있어요)" : "")
+      )
+    )
+      return;
     setCenters((c) => {
       const n = { ...c };
-      delete n[code];
+      if (base) n[code] = { ...(n[code] || {}), removed: true };
+      else delete n[code];
       return n;
     });
     setLists((L) => {
@@ -19765,6 +19777,39 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
     setNewCodes((x) => x.filter((y) => y !== code));
     setEditCode(null);
   }
+  // 삭제한 기본 센터 복구: 원래 자리(기본 순서에서 바로 앞 센터 다음)로
+  function restoreCenter(code) {
+    setCenters((c) => {
+      const n = { ...c };
+      const o = { ...(n[code] || {}) };
+      delete o.removed;
+      if (Object.keys(o).length) n[code] = o;
+      else delete n[code];
+      return n;
+    });
+    setLists((L) => {
+      const n = {};
+      Object.keys(L).forEach((k) => {
+        const a = L[k].filter((x) => x !== code);
+        const def = k === "pick1" || k === "pick2" ? D[k].map((r) => r.code) : D[k];
+        const di = def.indexOf(code);
+        let at = -1;
+        for (let j = di - 1; j >= 0 && at === -1; j--) at = a.indexOf(def[j]);
+        if (k === "pick1" || k === "pick2") {
+          const z = (D[k].find((r) => r.code === code) || {}).zone;
+          const bi = a.indexOf("|B|");
+          if (at === -1) at = z === "B" ? bi : -1;
+          else if (z === "B" && at < bi) at = bi;
+          else if (z === "A" && at >= bi) at = bi - 1;
+          if (D[k].find((r) => r.code === code && r.checkpoint)) setCps((x) => ({ ...x, [k]: x[k].includes(code) ? x[k] : [...x[k], code] }));
+        }
+        a.splice(at + 1, 0, code);
+        n[k] = a;
+      });
+      return n;
+    });
+  }
+  const removedCodes = Object.keys(centers).filter((k) => centers[k] && centers[k].removed);
 
   // 저장할 값 (기본과 같은 목록은 빼고)
   function buildValue() {
@@ -19791,6 +19836,7 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
       const c = {};
       ["name", "centerName", "vvLabel", "address", "realZone"].forEach((f) => o[f] != null && String(o[f]).trim() !== "" && (c[f] = String(o[f]).trim()));
       if (o.added) c.added = true;
+      if (o.removed) c.removed = true;
       if (Object.keys(c).length) cleanCenters[k] = c;
     });
     return { centers: cleanCenters, orders: ordersV };
@@ -19803,6 +19849,10 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
     const lines = [];
     if (added.length) lines.push(`새 센터: ${added.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
     if (removed.length) lines.push(`지우는 센터: ${removed.join(", ")}`);
+    const delBase = R.removed.filter((c) => !R0.removed.includes(c));
+    const restored = R0.removed.filter((c) => !R.removed.includes(c));
+    if (delBase.length) lines.push(`삭제하는 센터: ${delBase.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
+    if (restored.length) lines.push(`복구하는 센터: ${restored.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
     GS_ORDER_LISTS.forEach((L) => {
       const a = L.kind === "table" ? R[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R[L.key].join();
       const b = L.kind === "table" ? R0[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R0[L.key].join();
@@ -19914,7 +19964,7 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
         <span style={{ fontSize: 11.5, padding: "3px 8px", background: "#fff", border: "1px solid #BBB", fontWeight: 700 }}>{k === "inv1" ? "1편발주량" : "2편발주량"}</span>
         {lists[k].map((c) => (
           <span key={c} style={{ fontSize: 11.5, padding: "3px 8px", background: newCodes.includes(c) || isAdded(c) ? "#C9EBDD" : "#F7F7F7", border: "1px solid #BBB" }}>
-            {nameOf(c)}
+            {((centers[c] && centers[c].name && centers[c].name.trim()) || (D.addr[c] && D.addr[c].sheetName) || nameOf(c)) + (k === "inv1" ? "(1편)" : "(2편)")}
           </span>
         ))}
       </div>
@@ -20065,6 +20115,16 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
                         </span>
                         {nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.teal }}>새 센터</span>}
                         {centers[c] && !nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.amberDeep }}>수정됨</span>}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeCenter(c);
+                          }}
+                          title="이 센터 삭제 (저장 전까지는 바뀌지 않아요)"
+                          style={{ ...smallBtnStyle, padding: "2px 9px", fontSize: 12, color: T.danger, borderColor: T.danger + "55" }}
+                        >
+                          삭제
+                        </button>
                       </div>
                       {on && (
                         <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -20090,17 +20150,27 @@ function GsCenterSettingsModal({ authToken, orders, onSaved, onInvoiceSaved, onC
                                 원래 값으로
                               </button>
                             )}
-                            {(isAdded(c) || newCodes.includes(c)) && (
-                              <button onClick={() => removeCenter(c)} style={{ ...smallBtnStyle, color: T.danger, borderColor: T.danger + "55" }}>
-                                이 센터 지우기
-                              </button>
-                            )}
+
                           </div>
                         </div>
                       )}
                     </div>
                   );
                 })}
+                {removedCodes.length > 0 && (
+                  <div style={{ marginTop: 12, border: `1px dashed ${T.danger}88`, borderRadius: 10, padding: 10, background: "#FFF8F7" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: T.danger, marginBottom: 6 }}>삭제한 센터 ({removedCodes.length}) — 피킹지·거래명세서에 안 나가요</div>
+                    {removedCodes.map((c) => (
+                      <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "4px 2px" }}>
+                        <b style={{ width: 46, fontFamily: "'JetBrains Mono', monospace" }}>{c}</b>
+                        <span style={{ flex: 1, textDecoration: "line-through", color: T.inkSoft }}>{nameOf(c)} · {infoOf(c).centerName}</span>
+                        <button onClick={() => restoreCenter(c)} style={{ ...smallBtnStyle, padding: "2px 10px", fontSize: 12, color: T.teal, borderColor: T.teal }}>
+                          ↺ 복구
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div>
@@ -24793,7 +24863,7 @@ function InvoiceSettingsModal({ orders, authToken, invoiceSettings, onSaved, onC
   );
 }
 
-function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoiceSettingsSaved }) {
+function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoiceSettingsSaved, onOpenCenters }) {
   const [showInvSettings, setShowInvSettings] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(null);
@@ -24898,6 +24968,12 @@ function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoic
         action={
           <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
             <SheetColorButton kind="gs_invoice" authToken={authToken} suppliers={invoiceSettingsSupplierList().map((x) => x.key)} />
+            {onOpenCenters && (
+              <button onClick={onOpenCenters} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13, borderColor: T.teal, color: T.teal, fontWeight: 700 }} title="센터 시트 순서(위치)·센터 정보(공급받는자 칸)·센터 추가/삭제 - 피킹지 수정의 센터 설정과 같은 설정이에요">
+                <SettingsGear size={15} />
+                센터 순서·정보
+              </button>
+            )}
             <button onClick={() => setShowInvSettings(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="사업자 정보·발행 지역·상품명·입수·소비기한">
               <SettingsGear size={15} />
               거래명세서 설정
