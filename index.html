@@ -24587,6 +24587,7 @@ const PI_CAT_COLOR = {
   일반: { bg: "#EEF1F4", fg: "#3E4750" },
   DC: { bg: "#E4F2EE", fg: "#0E4F3F" },
   당착: { bg: "#FBE9DF", fg: "#7A331A" },
+  "DC+당착": { bg: "#F6E7F1", fg: "#6B2457" },
 };
 
 // 발주 기록에서 상품 목록과 "기본값"(발주파일·기존 코드 설정으로 들어온 입수)을 뽑는다. 가장 최근 날짜 값 기준.
@@ -24619,6 +24620,8 @@ function buildProductInfoRows(orders) {
 }
 
 function piCategoryOf(dc, dk) {
+  // DC + 당착 동시 (2026-11-18): DC 거래명세서와 당착 거래명세서에 같이 나감 (당착 지역 몫은 당착, 나머지 지역은 DC - 기존 엔진 그대로)
+  if (dk && dc) return { cat: "DC+당착", detail: `${dc.group.label} / ${dk.style === "full" ? "전 지역" : regionNamesOf(dk.regions || [dk.region])}` };
   if (dk) return { cat: "당착", detail: dk.style === "full" ? "전 지역" : regionNamesOf(dk.regions || [dk.region]) };
   if (dc) return { cat: "DC", detail: dc.group.label };
   return { cat: "일반", detail: "" };
@@ -25132,12 +25135,13 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
     }
     const dn = String(f.displayName).trim();
     if (dn && dn !== key) entry.displayName = dn;
-    // 명세서 구분: 기본과 같으면 저장하지 않음
-    if (f.cat === "일반") {
-      if (baseDc) entry.dc = "";
-      if (baseDk) entry.dangchak = null;
-    } else if (f.cat === "DC") {
+    // 명세서 구분: 기본과 같으면 저장하지 않음. DC와 당착은 같이 고를 수 있음 (2026-11-18)
+    const wantDc = f.cat.includes("DC");
+    const wantDk = f.cat.includes("당착");
+    if (wantDc) {
       if (!baseDc || baseDc.group.key !== f.dcKey) entry.dc = f.dcKey;
+    } else if (baseDc) entry.dc = "";
+    if (!wantDk) {
       if (baseDk) entry.dangchak = null;
     } else {
       if (f.dkScope !== "full" && f.dkRegions.length === 0) return setMsg("당착으로 뺄 지역을 하나 이상 골라주세요.");
@@ -25148,6 +25152,14 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
         baseDk.style === want.style &&
         (want.style === "full" || (baseDk.group === want.group && [...(baseDk.regions || [])].sort().join() === [...want.regions].sort().join()));
       if (!same) entry.dangchak = want;
+    }
+    if (wantDc && wantDk && effCat !== "DC+당착") {
+      const g = DC_VENDOR_GROUPS.find((x) => x.key === f.dcKey);
+      const where =
+        f.dkScope === "full"
+          ? "전 지역 당착이라 수량은 당착 거래명세서로 나가요. (DC 거래명세서는 거래명세서 설정에서 DC 발행 지역을 골라둔 경우에만 그 지역이 나가요)"
+          : `당착으로 고른 지역(${regionNamesOf(f.dkRegions)}) 수량은 당착 거래명세서로, 나머지 지역 수량은 DC 거래명세서로 나눠서 나가요. (같은 수량이 두 번 나가지 않아요)`;
+      if (!window.confirm(`"${String(f.displayName).trim() || key}" 상품을\nDC 거래명세서(${g ? g.label : f.dcKey})와 당착 거래명세서에 동시에 발행하는 게 맞나요?\n\n${where}`)) return;
     }
     persist(entry);
   }
@@ -25191,6 +25203,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
     일반: `평소 피킹지시서와 ${row.part}편 거래명세서로 나가요.`,
     DC: "DC 거래명세서 카드에서 선택한 DC 공급사로 나가요.",
     당착: f.dkScope === "full" ? "모든 지역이 당착으로, 당착 피킹 시트와 당착 거래명세서로만 나가요." : "고른 지역 몫만 당착(오전현장)으로 빠지고, 나머지 지역은 평소대로 나가요.",
+    "DC+당착": f.dkScope === "full" ? "당착 거래명세서로 나가고, DC 거래명세서에도 같이 실려요." : "고른 지역 몫은 당착 거래명세서로, 나머지 지역은 DC 거래명세서로 나가요 (두 명세서에 동시 발행).",
   }[f.cat];
 
   return createPortal(
@@ -25252,13 +25265,23 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
               {f.cat !== baseCat && resetLink("cat", baseCat)}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              {["일반", "DC", "당착"].map((c) => (
-                <button key={c} onClick={() => set("cat", c)} style={seg(f.cat === c)}>
-                  {c}
-                </button>
-              ))}
+              {["일반", "DC", "당착"].map((c) => {
+                const on = c === "일반" ? f.cat === "일반" : f.cat.includes(c);
+                const toggle = () => {
+                  if (c === "일반") return set("cat", "일반");
+                  const dc = c === "DC" ? !f.cat.includes("DC") : f.cat.includes("DC");
+                  const dk = c === "당착" ? !f.cat.includes("당착") : f.cat.includes("당착");
+                  set("cat", dc && dk ? "DC+당착" : dc ? "DC" : dk ? "당착" : "일반");
+                };
+                return (
+                  <button key={c} onClick={toggle} style={seg(on)}>
+                    {c}
+                  </button>
+                );
+              })}
             </div>
-            {f.cat === "DC" && (
+            <div style={{ ...baseTxt, marginTop: 6 }}>DC와 당착은 같이 고를 수 있어요 (두 명세서에 동시 발행)</div>
+            {f.cat.includes("DC") && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
                 {DC_VENDOR_GROUPS.map((g) => (
                   <button key={g.key} onClick={() => set("dcKey", g.key)} style={chip(f.dcKey === g.key)}>
@@ -25267,7 +25290,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
                 ))}
               </div>
             )}
-            {f.cat === "당착" && (
+            {f.cat.includes("당착") && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => set("dkScope", "regions")} style={chip(f.dkScope === "regions")}>
@@ -25314,7 +25337,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
             )}
             <div style={baseTxt}>
               기본: <b>{baseCat}</b>
-              {baseCat === "DC" ? ` · ${baseDc.group.label}` : baseCat === "당착" ? ` · ${piCategoryOf(baseDc, baseDk).detail}` : ""} — {catHelp}
+              {baseCat !== "일반" ? ` · ${piCategoryOf(baseDc, baseDk).detail}` : ""} — {catHelp}
             </div>
           </div>
 
