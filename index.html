@@ -11672,7 +11672,9 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
       // 필터/한 상품만: 나머지 시트는 빼기
       if (onlySheets) tplInfo.sheets.forEach((s) => !onlySheets.has(s.name) && hiddenSheets.add(s.name));
       const regCfgOf = (sheet) => ((pickCfg && pickCfg.products) || {})[sheet] || {};
+      const ccPick = tplCentersKeyOf(cfg) ? await settingNow(tplCentersKeyOf(cfg)) : null; // 피킹지 센터 설정에서 뺀 센터
       const rowsOut = rows.filter((r) => {
+        if (tplCenterOff(ccPick, r.center, "removedPick")) return false;
         const p = matchEmartProduct(tplInfo, r.name);
         if (p) {
           const c = regCfgOf(p.sheet);
@@ -11844,11 +11846,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정 (삭제·복구 포함)">
               <SettingsGear size={15} /> 순서 설정
             </button>
-            {cfg.centerOrderKey && (
-              <button className="no-print" onClick={() => setShowCenterOrder(true)} style={settingBtnStyle} title="피킹지 센터 줄 순서 (전체 상품 / 상품 하나)">
-                <SettingsGear size={15} /> 센터 순서
-              </button>
-            )}
+            {/* 센터 순서는 [피킹지 수정 > 센터 설정]으로 옮김 (2026-11-19) */}
             <input
               ref={tplRef}
               type="file"
@@ -12313,7 +12311,11 @@ function analyzeEmartInvoiceTemplate(tpl, lay = INV_LAYOUT_EMART) {
     const b1 = s.cells.get(lay.key);
     const b13 = s.cells.get("B13");
     const off = b13 && b13.f ? Number((/\+(\d+)\s*$/.exec(b13.f) || [])[1] || 0) : 0;
-    sheets.push({ name: s.name, pivot, center: b1 && typeof b1.v === "string" ? b1.v.trim() : "", rows, b13Offset: off });
+    const txtC = (ref) => {
+      const c0 = ref && s.cells.get(ref);
+      return c0 && !c0.f && typeof c0.v === "string" ? c0.v.trim() : "";
+    };
+    sheets.push({ name: s.name, pivot, center: b1 && typeof b1.v === "string" ? b1.v.trim() : "", rows, b13Offset: off, cName: txtC(lay.centerName), cAddr: txtC(lay.centerAddr) });
   });
   // 공급사(피벗)별 정리
   const pivots = new Map();
@@ -12729,6 +12731,10 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     return { el, sheet: id != null && tpl.sheets[Number(id)] ? tpl.sheets[Number(id)].name : null };
   });
   const plan = emartInvoicePlan(inv, orderRows, settings);
+  // 거래명세서 센터 설정: 뺀 센터는 명세서 안 만듦 / 센터별 상호·주소 / 시트 순서 (2026-11-19)
+  const cc = (lay && lay.centersCfg) || {};
+  const ccOv = (c) => (cc.centers && cc.centers[String(c || "").trim()]) || null;
+  plan.list.forEach((x) => (x.centers = (x.centers || []).filter((c) => !tplCenterOff(cc, c, "removedInv"))));
   const dateSerial = xlSerialOf(date);
   const keep = new Set();
   const report = { suppliers: [], added: plan.added, missingCenters: [], newSuppliers: [] };
@@ -12866,13 +12872,15 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
         const altC = !exact && lay.donorCenterOf ? lay.donorCenterOf(c, Array.from(donorOf.keys())) : null;
         const donor = exact || (altC && donorOf.get(altC)) || null;
         const from = { L6: txt(sh0.name, lay.centerName), G8: txt(sh0.name, lay.centerAddr) };
-        const to = { L6: (exact && txt(exact, lay.centerName)) || lay.newCenterName(short), G8: (donor && txt(donor, lay.centerAddr)) || "" };
+        const ovC = ccOv(c);
+        const to = { L6: (ovC && ovC.centerName) || (exact && txt(exact, lay.centerName)) || lay.newCenterName(short), G8: (ovC && ovC.address) || (donor && txt(donor, lay.centerAddr)) || "" };
         const mut = (sheet) => {
           const tmp = { doc: sheet.doc };
           setCellXml(tmp, lay.key, c);
           // 센터명·주소가 적힌 칸(위·아래 보관용 모두) 바꾸기
           srcWs.cells.forEach((cell, ref) => {
             if (cell.f || typeof cell.v !== "string") return;
+            if (ref === lay.key) return; // 센터 키 칸(B1 등)은 위에서 넣은 센터 이름 그대로 (수량을 찾는 칸)
             if (from.L6 && cell.v === from.L6) setCellXml(tmp, ref, to.L6);
             else if (from.G8 && cell.v === from.G8) setCellXml(tmp, ref, to.G8 || null);
           });
@@ -12887,6 +12895,34 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
   }
   tpl.sheets.forEach((s) => readSheetCells(s, tpl.sst));
   const byName = new Map(tpl.sheets.map((s) => [s.name, s]));
+  // 센터 설정에서 고친 상호·주소: 그 센터 시트의 위·아래 보관용 칸을 모두 바꿈 (원본 글자와 같은 칸만)
+  if (cc.centers)
+    plan.list.forEach((x) => {
+      if (!want(x) || !x.pivot || !x.pivot.sheets) return;
+      x.pivot.sheets.forEach((sh) => {
+        const ov = ccOv(sh.center);
+        if (!ov || (!ov.centerName && !ov.address)) return;
+        const ws = byName.get(sh.name);
+        if (!ws || !ws.cells) return;
+        const tx = (ref) => {
+          const c0 = ws.cells.get(ref);
+          return c0 && !c0.f && typeof c0.v === "string" && c0.v.trim() ? c0.v : null;
+        };
+        const curN = tx(lay.centerName);
+        const curA = tx(lay.centerAddr);
+        const edits = [];
+        ws.cells.forEach((cell, ref) => {
+          if (cell.f || typeof cell.v !== "string") return;
+          if (ref === lay.key) return; // 센터 키 칸(B1 등)은 절대 안 바꿈 - 수량을 찾는 칸
+          if (ov.centerName && curN && cell.v === curN && cell.v !== ov.centerName) edits.push([ref, ov.centerName]);
+          else if (ov.address && curA && cell.v === curA && cell.v !== ov.address) edits.push([ref, ov.address]);
+        });
+        if (ov.centerName && !curN) edits.push([lay.centerName, ov.centerName]);
+        if (ov.address && !curA) edits.push([lay.centerAddr, ov.address]);
+        edits.forEach(([ref, v]) => setCellXml(ws, ref, v));
+        if (edits.length) readSheetCells(ws, tpl.sst);
+      });
+    });
 
   plan.list.forEach((x) => {
     if (!want(x)) return;
@@ -13291,6 +13327,35 @@ async function buildEmartInvoiceWorkbook(templateBuffer, orderRows, date, settin
     app = app.replace(/<HeadingPairs>[\s\S]*?<\/HeadingPairs>/, "").replace(/<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/, "");
     tpl.zip.file("docProps/app.xml", app);
   }
+  // 센터 설정의 시트 순서: 공급사마다 센터 시트들이 차지한 자리 안에서만 순서를 바꿈 (피벗·다른 공급사 자리는 그대로)
+  if (Array.isArray(cc.invOrder) && cc.invOrder.length) {
+    const rank = (c) => {
+      const i = cc.invOrder.indexOf(String(c || "").trim());
+      return i === -1 ? 1e6 : i;
+    };
+    const els = Array.from(tpl.wbXml.getElementsByTagName("sheet"));
+    const names = els.map((e) => e.getAttribute("name"));
+    const centerOf = new Map();
+    plan.list.forEach((x) => x.pivot && (x.pivot.sheets || []).forEach((sh) => centerOf.set(sh.name, { sup: x.supplier, c: sh.center })));
+    const bySup = new Map();
+    names.forEach((n, i) => {
+      const m = centerOf.get(n);
+      if (!m) return;
+      if (!bySup.has(m.sup)) bySup.set(m.sup, []);
+      bySup.get(m.sup).push(i);
+    });
+    const outN = names.slice();
+    bySup.forEach((idxs) => {
+      const ns = idxs.map((i) => ({ n: names[i], k: i }));
+      const sorted = ns.slice().sort((a, b) => rank(centerOf.get(a.n).c) - rank(centerOf.get(b.n).c) || a.k - b.k);
+      idxs.forEach((i, j) => (outN[i] = sorted[j].n));
+    });
+    if (outN.some((n, i) => n !== names[i]) && els.length) {
+      const parent = els[0].parentNode;
+      const elOf = new Map(els.map((e) => [e.getAttribute("name"), e]));
+      outN.forEach((n) => parent.appendChild(elOf.get(n)));
+    }
+  }
   const finalOrder = Array.from(tpl.wbXml.getElementsByTagName("sheet")).map((el) => el.getAttribute("name"));
   (tpl.definedNames || []).forEach((d) => {
     if (d.sheet == null) return;
@@ -13341,6 +13406,8 @@ async function downloadEmartInvoiceFile(rows, date, settings, onlySuppliers, cfg
   if (lay && lay.infoKey) lay = { ...lay, infoMap: (await settingNow(lay.infoKey)) || {} };
   // 표시 상품명: 이 채널 상품 정보 관리 (2026-11-08)
   if (lay && (lay.dnKey || lay.infoKey)) lay = { ...lay, dnMap: lay.dnKey ? (await settingNow(lay.dnKey)) || {} : lay.infoMap };
+  // 거래명세서 센터 설정 (센터 빼기·상호/주소·시트 순서) 2026-11-19
+  if (lay && tplCentersKeyOf(cfg)) lay = { ...lay, centersCfg: (await settingNow(tplCentersKeyOf(cfg))) || null };
   const { bytes, report } = await buildEmartInvoiceWorkbook(buf, rows, date, settings, onlySuppliers, lay, cfg.label);
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
@@ -13428,6 +13495,7 @@ const GS_FROZEN_INV_CFG = {
 // ---------- 화면: 이마트 거래명세서 (이마트 냉동·GS 냉동도 같은 화면) ----------
 function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
   const [inv, setInv] = useState(null);
+  const [ctrOpen, setCtrOpen] = useState(false); // 거래명세서 센터 설정 (2026-11-19)
   const [tplErr, setTplErr] = useState("");
   useEffect(() => {
     getInvTemplateInfo(cfg)
@@ -13530,11 +13598,19 @@ function EmartInvoiceView({ emartOrders, authToken, cfg = EM_INV_CFG }) {
   const active = plan ? plan.list.filter((x) => x.total > 0 || x.selectedMode) : [];
   return (
     <div>
+      {ctrOpen && (
+        <TplCenterSettingsModal mode="inv" brand={cfg.brand} label={cfg.label} orders={emartOrders} invInfo={inv && inv.inv ? { sheets: inv.inv.sheets, regionOrder: inv.inv.regionOrder || cfg.lay.regionOrder || null } : null} authToken={authToken} onClose={() => setCtrOpen(false)} />
+      )}
       <PageHeader
         title={cfg.title}
         sub={cfg.sub}
         action={
           <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {tplCentersKeyOf(cfg) && (
+              <button className="no-print" onClick={() => setCtrOpen(true)} style={{ ...settingBtnStyle, whiteSpace: "nowrap", borderColor: T.teal, color: T.teal, fontWeight: 700 }} title="거래명세서 센터 시트 순서·상호/주소·센터 추가/삭제 (피킹지는 바뀌지 않아요)">
+                <SettingsGear size={15} /> 센터 설정
+              </button>
+            )}
             <button className="no-print" onClick={() => setSetOpen(true)} style={{ ...settingBtnStyle, whiteSpace: "nowrap" }} title={`${cfg.label} 공급사 사업자 정보·발행 센터·상품(입수·소비기한) 설정`}>
               <SettingsGear size={15} /> 거래명세서 설정
             </button>
@@ -15606,6 +15682,15 @@ function EmartPickReportModal({ report, tplInfo, authToken, onClose, aliasKey = 
 // 수량 칸은 그 줄 A열 센터 이름으로 피벗을 찾는 수식이라 수량이 센터를 그대로 따라감 (이름만 바뀌고 수량이 남는 일 없음).
 // 저장: settings[pv.centerOrderKey] = { all: [센터...], products: { 상품명: [센터...] } } - 상품별이 있으면 그게 우선
 // want: 원하는 센터 순서. labels: 지금 자리 순서. 목록에 있는 센터들이 차지한 자리에만 원하는 순서대로 다시 넣고, 목록에 없는 센터는 제자리
+// ===== 이마트24·세븐·BGF·GS냉동(+냉동) 센터 설정 (2026-11-19) =====
+// 설정 {채널}_centers = { centers: { [센터 이름(발주파일 그대로)]: { added?, centerName?, address?, removedPick?, removedInv? } }, invOrder?: [센터...] }
+// 피킹지 센터 순서는 기존 {채널}_center_order(all) 그대로 사용 (피킹지 수정 > 센터 설정에서 바꿈)
+const TPL_CENTERS_KEY = { EMART: "emart_centers", EMARTFROZEN: "emfrozen_centers", GSFROZEN: "gsfrozen_centers", SEVEN: "seven_centers", SEVENFROZEN: "sevenfrozen_centers", BGF: "bgf_centers", BGFFROZEN: "bgffrozen_centers" };
+const tplCentersKeyOf = (cfgOrBrand) => TPL_CENTERS_KEY[typeof cfgOrBrand === "string" ? cfgOrBrand : cfgOrBrand && cfgOrBrand.brand] || null;
+const tplCenterOff = (cc, label, kind) => {
+  const o = cc && cc.centers && cc.centers[String(label || "").trim()];
+  return !!(o && (o.removed || o[kind]));
+};
 function centerOrderApply(labels, want) {
   if (!want || !want.length) return labels.slice();
   // 같은 센터 이름이 두 줄 이상인 시트(제주권 공유 시트처럼 상품 블록마다 같은 센터)는 건드리지 않음 - 자리 바꾸면 이름이 비는 줄이 생김
@@ -15938,8 +16023,10 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
       const tpOf = (r) => (tplInfo ? matchEmartProduct(tplInfo, r.name, r.code) : null);
       const adjusted = []; // 피킹지 설정으로 0 고정·지역 빼기 한 줄 (2차 검증 고정값 안내용)
       const dkByVendor = new Map(); // 당착: 공급사 -> { names, items: 상품 -> {센터: 수량}, centers }
+      const ccPick = tplCentersKeyOf(pv) ? await settingNow(tplCentersKeyOf(pv)) : null; // 피킹지 센터 설정에서 뺀 센터
       const outRows = rows.filter((r) => {
         if (!names.has(r.name)) return false;
+        if (tplCenterOff(ccPick, r.center, "removedPick")) return false;
         const tp = tpOf(r);
         const a = regAdjOf(r.name, tp, r.center);
         if (a === "dangchak") {
@@ -16223,11 +16310,7 @@ function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines,
             <button className="no-print" onClick={() => setShowOrderSet(true)} style={settingBtnStyle} title="공급사·상품 순서 설정">
               <SettingsGear size={15} /> 순서 설정
             </button>
-            {pv.centerOrderKey && (
-              <button className="no-print" onClick={() => setShowCenterOrder(true)} style={settingBtnStyle} title="피킹지 센터 줄 순서 (전체 상품 / 상품 하나)">
-                <SettingsGear size={15} /> 센터 순서
-              </button>
-            )}
+            {/* 센터 순서는 [피킹지 수정 > 센터 설정]으로 옮김 (2026-11-19) */}
             <input
               ref={tplRef}
               type="file"
@@ -20352,10 +20435,397 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     document.body
   );
 }
+const TPL_PICK_CFG_OF = () => ({ EMART: EM_PV_CFG, EMARTFROZEN: EM_FROZEN_PICK_CFG, GSFROZEN: GS_FROZEN_PICK_CFG, SEVEN: SEVEN_PV_CFG, SEVENFROZEN: SEVEN_FROZEN_PV_CFG, BGF: BGF_PV_CFG, BGFFROZEN: BGF_FROZEN_PV_CFG });
+// 이마트24·세븐·BGF·GS냉동(+냉동) 센터 설정 창 (mode "pick" = 피킹지 수정 메뉴, "inv" = 거래명세서 메뉴) - GS 센터 설정과 같은 모양
+// 센터는 발주파일에 찍혀 오는 "센터 이름"(예: 원주2(저온), BGF로지스강릉) 그대로 알아봐요.
+function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = null, authToken, onClose }) {
+  const isPick = mode !== "inv";
+  const key = tplCentersKeyOf(brand);
+  const pickCfg = TPL_PICK_CFG_OF()[brand];
+  const coKey = pickCfg && pickCfg.centerOrderKey;
+  const savedCC = useSetting(key || "tpl_centers_none", authToken);
+  const savedCO = useSetting(coKey || "center_order_none", authToken);
+  const [tplInfo, setTplInfo] = useState(null);
+  useEffect(() => {
+    if (!pickCfg || !pickCfg.loadInfo) return;
+    pickCfg.loadInfo().then(setTplInfo).catch(() => setTplInfo({ products: [] }));
+  }, []); // eslint-disable-line
+  // 발주에 있는 센터 (가장 최근 날짜)
+  const orderQty = useMemo(() => {
+    const m = {};
+    if (!pickCfg) return m;
+    const dates = Array.from(new Set(orders.map((o) => o.createdAt).filter(Boolean))).sort();
+    const d = dates[dates.length - 1];
+    let rows = [];
+    try {
+      rows = pickCfg.rowsOf ? pickCfg.rowsOf(orders, d, tplInfo) : emartRowsFromOrders(orders.filter((o) => o.createdAt === d && (!pickCfg.rowFilter || pickCfg.rowFilter(o))));
+    } catch (e) {
+      rows = [];
+    }
+    (rows || []).forEach((r) => r && r.center && (m[String(r.center).trim()] = (m[String(r.center).trim()] || 0) + (Number(r.qty) || 0)));
+    return m;
+  }, [orders, tplInfo]);
+  // 기본 센터 순서: 피킹지(센터 줄 가장 많은 상품 시트) / 거래명세서(원본 시트 순서)
+  const baseList = useMemo(() => {
+    const out = [];
+    const add = (l) => l && !out.includes(String(l).trim()) && out.push(String(l).trim());
+    if (isPick) {
+      const ps = (tplInfo && tplInfo.products) || [];
+      const cnt = (x) => (x.regionRows || []).filter((r) => !r.subtotal).length;
+      const top = ps.reduce((m, x) => (cnt(x) > (m ? cnt(m) : 0) ? x : m), null);
+      if (top) top.regionRows.filter((r) => !r.subtotal).forEach((r) => add(r.label));
+      ps.forEach((x) => (x.regionRows || []).filter((r) => !r.subtotal).forEach((r) => add(r.label)));
+      (pickCfg && pickCfg.stdRegions ? pickCfg.stdRegions : []).forEach(add);
+    } else if (invInfo) {
+      (invInfo.sheets || []).forEach((sh) => add(sh.center));
+      (invInfo.regionOrder || []).forEach(add);
+    }
+    Object.keys(orderQty).forEach(add);
+    return out;
+  }, [tplInfo, invInfo, orderQty]); // eslint-disable-line
+  const infoBase = useMemo(() => {
+    const m = {};
+    ((invInfo && invInfo.sheets) || []).forEach((sh) => sh.center && !m[sh.center] && (m[sh.center] = { cName: sh.cName || "", cAddr: sh.cAddr || "" }));
+    return m;
+  }, [invInfo]);
+  const [centers, setCenters] = useState(null);
+  const [list, setList] = useState(null);
+  const offKey = isPick ? "removedPick" : "removedInv";
+  const C = centers || (savedCC && savedCC.centers) || {};
+  const isOff = (l) => !!(C[l] && (C[l].removed || C[l][offKey]));
+  const savedOrder = isPick ? (savedCO && savedCO.all) || null : (savedCC && savedCC.invOrder) || null;
+  const initList = useMemo(() => {
+    const all = [...baseList];
+    Object.keys((savedCC && savedCC.centers) || {}).forEach((l) => savedCC.centers[l] && savedCC.centers[l].added && !all.includes(l) && all.push(l));
+    const seq = [];
+    (savedOrder || []).forEach((l) => all.includes(l) && !seq.includes(l) && seq.push(l));
+    // 저장된 순서에 없는 센터는 기본 순서에서 바로 앞 센터 다음에
+    all.forEach((l, i) => {
+      if (seq.includes(l)) return;
+      let at = -1;
+      for (let j = i - 1; j >= 0 && at === -1; j--) at = seq.indexOf(all[j]);
+      seq.splice(at + 1, 0, l);
+    });
+    return seq;
+  }, [baseList, savedCC, savedOrder]); // eslint-disable-line
+  const L = (list || initList).filter((l) => !isOff(l));
+  const removedList = Object.keys(C).filter((l) => isOff(l));
+  const [form, setForm] = useState(null);
+  const [edit, setEdit] = useState(null);
+  const [tab, setTab] = useState("list");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [newOnes, setNewOnes] = useState([]);
+  const [showOne, setShowOne] = useState(false);
+  const setC = (l, patch) => setCenters((c) => ({ ...(c || (savedCC && savedCC.centers) || {}), [l]: { ...((c || (savedCC && savedCC.centers) || {})[l] || {}), ...patch } }));
+  const shortOf = (l) => String(l).replace(/\(.*$/, "").replace(/^BGF로지스/, "").replace(/^VV\d+\s*/, "").trim() || l;
+  // 원본(피킹지 템플릿 / 명세서 원본)에 없는데 발주에 있는 센터 - 아직 센터 설정에도 안 넣은 것
+  const unknown = Object.keys(orderQty).filter((l) => {
+    if (C[l]) return false;
+    if (isPick) return !!tplInfo && !(tplInfo.products || []).some((x) => (x.regionRows || []).some((r) => r.label === l));
+    return !!invInfo && !(invInfo.sheets || []).some((sh) => sh.center === l);
+  });
+  function addCenter() {
+    const nm = String(form.name || "").trim();
+    if (!nm) return setMsg("센터 이름을 발주파일에 찍혀 오는 그대로 넣어주세요.");
+    if (L.includes(nm)) return setMsg("이미 있는 센터예요.");
+    if (removedList.includes(nm)) return setMsg("삭제한 센터 목록에 있어요. 아래에서 복구해주세요.");
+    setMsg("");
+    setC(nm, { added: true, ...(isPick ? {} : { centerName: String(form.centerName || "").trim(), address: String(form.address || "").trim() }) });
+    const cur = [...L];
+    const i = cur.indexOf(form.after);
+    cur.splice(i === -1 ? cur.length : i + 1, 0, nm);
+    setList(cur);
+    setNewOnes((x) => [...x, nm]);
+    setForm(null);
+    setEdit(nm);
+  }
+  function removeC(l) {
+    const q = orderQty[l] || 0;
+    if (!window.confirm(`${l} 센터를 ${isPick ? "피킹지에서" : "거래명세서에서"} 삭제할까요?\n저장하면 ${isPick ? "피킹지" : "거래명세서"}에서 이 센터가 빠져요 (${isPick ? "거래명세서" : "피킹지"}는 그대로).` + (q ? `\n※ 지금 발주에 이 센터 수량이 ${q.toLocaleString()}개 있어요. 삭제하면 그 수량이 ${isPick ? "피킹지" : "거래명세서"}에 안 나가요.` : "") + "\n(아래 '삭제한 센터'에서 복구할 수 있어요)")) return;
+    setC(l, { [offKey]: true });
+    setList(L.filter((x) => x !== l));
+  }
+  function restoreC(l) {
+    setCenters((c0) => {
+      const c = { ...(c0 || (savedCC && savedCC.centers) || {}) };
+      const o = { ...(c[l] || {}) };
+      delete o[offKey];
+      if (o.removed) {
+        delete o.removed;
+        o[isPick ? "removedInv" : "removedPick"] = true;
+      }
+      if (Object.keys(o).length) c[l] = o;
+      else delete c[l];
+      return c;
+    });
+    const cur = [...L];
+    const all = initList;
+    const i = all.indexOf(l);
+    let at = -1;
+    for (let j = i - 1; j >= 0 && at === -1; j--) at = cur.indexOf(all[j]);
+    cur.splice(at + 1, 0, l);
+    setList(cur);
+  }
+  async function save() {
+    const lines = [];
+    if (newOnes.length) lines.push(`새 센터: ${newOnes.join(", ")}`);
+    const off0 = Object.keys((savedCC && savedCC.centers) || {}).filter((l) => savedCC.centers[l] && (savedCC.centers[l].removed || savedCC.centers[l][offKey]));
+    const offNow = removedList;
+    const del = offNow.filter((l) => !off0.includes(l));
+    const back = off0.filter((l) => !offNow.includes(l));
+    if (del.length) lines.push(`삭제: ${del.join(", ")}`);
+    if (back.length) lines.push(`복구: ${back.join(", ")}`);
+    if (list) lines.push("센터 순서 바뀜");
+    if (centers && !lines.length) lines.push("센터 정보 변경");
+    if (!lines.length) return setMsg("바뀐 게 없어요.");
+    if (!window.confirm(`${label} ${isPick ? "피킹지" : "거래명세서"} 센터 설정을 저장할까요?\n\n${lines.join("\n")}\n\n저장하면 ${isPick ? "피킹지" : "거래명세서"}에 바로 반영돼요.`)) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      if (centers || (!isPick && list)) {
+        const r = await updateSetting(key, authToken, (v) => {
+          const o = { ...(v || {}) };
+          if (centers) {
+            const clean = {};
+            Object.entries(centers).forEach(([l, x]) => {
+              const c = {};
+              ["added", "removed", "removedPick", "removedInv"].forEach((f) => x && x[f] && (c[f] = true));
+              ["centerName", "address"].forEach((f) => x && String(x[f] || "").trim() && (c[f] = String(x[f]).trim()));
+              if (Object.keys(c).length) clean[l] = c;
+            });
+            o.centers = clean;
+          }
+          if (!isPick && list) o.invOrder = L;
+          return o;
+        });
+        if (r && r.ok === false) throw new Error(r.error || "저장 실패");
+      }
+      if (isPick && list && coKey) {
+        const r2 = await updateSetting(coKey, authToken, (v) => ({ all: L, products: { ...((v && v.products) || {}) } }));
+        if (r2 && r2.ok === false) throw new Error(r2.error || "저장 실패");
+      }
+      setMsg(`저장했어요. ${isPick ? "피킹지" : "거래명세서"}에 바로 반영돼요.`);
+      setNewOnes([]);
+      setList(null);
+      setCenters(null);
+    } catch (e) {
+      setMsg(`저장하지 못했어요: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const infoOf = (l) => {
+    const o = C[l] || {};
+    const b = infoBase[l] || {};
+    return { name: (o.centerName && o.centerName.trim()) || b.cName || (isAddedL(l) ? shortOf(l) : ""), addr: (o.address && o.address.trim()) || b.cAddr || "" };
+  };
+  const isAddedL = (l) => !!(C[l] && C[l].added) || newOnes.includes(l);
+  const tabBtn = (on) => ({ ...smallBtnStyle, padding: "7px 14px", fontWeight: on ? 700 : 500, background: on ? T.ink : T.surface, color: on ? "#fff" : T.ink, borderColor: on ? T.ink : T.border });
+  const lab = { fontSize: 12.5, fontWeight: 700, marginBottom: 4 };
+  const fieldRow = (lb, v, on, ph, help) => (
+    <div>
+      <div style={lab}>{lb}</div>
+      <input style={{ ...inputStyle, width: "100%" }} value={v || ""} placeholder={ph} onChange={(e) => on(e.target.value)} />
+      {help && <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 3 }}>{help}</div>}
+    </div>
+  );
+  const preview = () => {
+    if (isPick) {
+      const cell = { padding: "3px 6px", border: "1px solid #BFC5CA", fontSize: 11.5, whiteSpace: "nowrap" };
+      return (
+        <>
+          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>피킹지 상품 시트의 센터 줄이 이 순서로 나가요 (● = 발주 있는 센터, 초록 = 새 센터). 수량은 센터를 그대로 따라가요.</div>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#fff" }}>
+            <thead>
+              <tr style={{ background: "#FFF2CC" }}>
+                {["센터 (A열)", "입수", "수량", "박스", "센터명", "낱개"].map((h) => (
+                  <th key={h} style={{ ...cell, fontWeight: 700 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {L.map((l, i) => (
+                <tr key={l} style={{ background: isAddedL(l) ? "#E4F2EE" : i % 2 ? "#fff" : "#F2F2F2" }}>
+                  <td style={cell}>{l}</td>
+                  <td style={{ ...cell, textAlign: "center" }}>12</td>
+                  <td style={{ ...cell, textAlign: "right" }}>{orderQty[l] ? "●" : "-"}</td>
+                  <td style={{ ...cell, textAlign: "center" }}>-</td>
+                  <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{shortOf(l)}</td>
+                  <td style={{ ...cell, textAlign: "center" }}>-</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      );
+    }
+    const sel = (form && { name: String(form.centerName || "").trim() || shortOf(form.name || "(센터)"), addr: form.address, l: form.name }) || (edit && { ...infoOf(edit), l: edit });
+    const b = { border: "1.5px solid #1F3FD6", padding: "4px 6px", fontSize: 11.5, color: "#1F3FD6" };
+    return (
+      <>
+        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>공급사마다 센터 시트가 이 순서로 나가요 (발주 없는 센터는 빠짐)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 2, background: "#E6E6E6", padding: 4, borderRadius: 4, marginBottom: 12 }}>
+          <span style={{ fontSize: 11.5, padding: "3px 8px", background: "#fff", border: "1px solid #BBB", fontWeight: 700 }}>공급사 피벗</span>
+          {L.map((l) => (
+            <span key={l} style={{ fontSize: 11.5, padding: "3px 8px", background: isAddedL(l) ? "#C9EBDD" : "#F7F7F7", border: "1px solid #BBB" }}>{shortOf(l)}(공급사)</span>
+          ))}
+        </div>
+        {sel ? (
+          <div style={{ border: "2px solid #1F3FD6", background: "#fff", padding: 8 }}>
+            <div style={{ textAlign: "center", color: "#1F3FD6", fontSize: 20, fontWeight: 700, letterSpacing: 8 }}>거래명세표</div>
+            <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 6 }}>
+              <tbody>
+                <tr>
+                  <td style={{ ...b, width: 80 }}>센터 (키)</td>
+                  <td style={{ ...b, color: "#000" }}>{sel.l}</td>
+                </tr>
+                <tr>
+                  <td style={b}>상호(센터명)</td>
+                  <td style={{ ...b, color: "#000" }}>{sel.name || <span style={{ color: T.danger }}>(비어 있음)</span>}</td>
+                </tr>
+                <tr>
+                  <td style={b}>사업장 주소</td>
+                  <td style={{ ...b, color: "#000" }}>{sel.addr || <span style={{ color: T.danger }}>(주소 없음 - 다른 센터 시트를 복사하면 그 센터 주소가 남을 수 있어요)</span>}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style={{ fontSize: 11, color: T.inkSoft, marginTop: 4 }}>위 공급받는자 보관용·아래 공급자 보관용 모두 같은 값으로 바뀌어요.</div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽에서 센터를 누르면 명세서 상호·주소가 어떻게 찍히는지 보여줘요.</div>
+        )}
+      </>
+    );
+  };
+  if (!key) return null;
+  return createPortal(
+    <div style={{ position: "fixed", inset: 0, background: "rgba(27,29,26,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onMouseDown={onClose}>
+      <div onMouseDown={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth: 1120, height: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
+        <div style={{ display: "flex", alignItems: "flex-start", padding: "16px 22px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{label} {isPick ? "피킹지" : "거래명세서"} 센터 설정</div>
+            <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>
+              {isPick ? "피킹지 상품 시트의 센터 줄 순서·센터 추가/삭제만 바꿔요. 거래명세서는 [거래명세서] 메뉴에서 따로." : "거래명세서 센터 시트 순서·상호/주소·센터 추가/삭제만 바꿔요. 피킹지는 [피킹지 수정] 메뉴에서 따로."} 센터는 발주파일에 찍혀 오는 <b>센터 이름</b> 그대로 알아봐요.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer", color: T.inkSoft }}>×</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, padding: "10px 22px", borderBottom: `1px solid ${T.border}`, alignItems: "center", flexShrink: 0 }}>
+          <button onClick={() => setTab("list")} style={tabBtn(tab === "list")}>① 센터 목록{isPick ? "" : "·정보"}</button>
+          <button onClick={() => setTab("order")} style={tabBtn(tab === "order")}>② 순서 (끌어서 변경)</button>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => (setTab("list"), setEdit(null), setForm({ name: "", centerName: "", address: "", after: L[L.length - 1] || "" }))} className="primary-btn" style={primaryBtnStyle}>+ 센터 추가</button>
+        </div>
+        {unknown.length > 0 && (
+          <div style={{ margin: "10px 22px", padding: "10px 12px", borderRadius: 10, background: "#FFF8E8", border: `1px solid ${T.amber}`, fontSize: 13, flexShrink: 0 }}>
+            <b>원본에 없는 센터로 발주가 있어요</b> — 지금은 다른 센터 시트를 복사해서 만들어요. 위치·{isPick ? "순서" : "상호·주소"}를 정하려면 추가하세요:
+            {unknown.map((u) => (
+              <button key={u} onClick={() => (setTab("list"), setEdit(null), setForm({ name: u, centerName: "", address: "", after: L[L.length - 1] || "" }))} style={{ ...smallBtnStyle, padding: "2px 8px", fontSize: 12, marginLeft: 8, color: T.teal, borderColor: T.teal }}>
+                {u} 추가
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ flex: "1 1 50%", overflow: "auto", padding: "14px 22px", borderRight: `1px solid ${T.border}` }}>
+            {!tplInfo && isPick ? <div style={{ fontSize: 13, color: T.inkSoft }}>피킹지 원본을 읽는 중...</div> : null}
+            {form && (
+              <div style={{ border: `2px solid ${T.teal}`, borderRadius: 12, padding: 14, marginBottom: 14, background: "#F4FBF8", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontWeight: 800 }}>새 센터 추가</div>
+                {fieldRow("센터 이름 *", form.name, (v) => setForm({ ...form, name: v }), brand === "BGF" || brand === "BGFFROZEN" ? "BGF로지스○○" : brand === "EMART" || brand === "EMARTFROZEN" ? "평택2(저온)" : "센터 이름", "발주파일에 찍혀 오는 센터 이름 그대로 (띄어쓰기까지)")}
+                {!isPick && fieldRow("상호 (센터명)", form.centerName, (v) => setForm({ ...form, centerName: v }), shortOf(form.name || "") + "센터")}
+                {!isPick && fieldRow("주소", form.address, (v) => setForm({ ...form, address: v }), "센터 주소")}
+                <div>
+                  <div style={lab}>위치 — 어느 센터 다음에 넣을까요?</div>
+                  <select style={{ ...inputStyle, width: 280 }} value={form.after} onChange={(e) => setForm({ ...form, after: e.target.value })}>
+                    {L.map((l) => (
+                      <option key={l} value={l}>{l} 다음</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button onClick={() => (setForm(null), setMsg(""))} style={smallBtnStyle}>취소</button>
+                  <button onClick={addCenter} className="primary-btn" style={primaryBtnStyle}>목록에 넣기</button>
+                </div>
+              </div>
+            )}
+            {tab === "list" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {L.map((l) => {
+                  const on = edit === l;
+                  const i = infoOf(l);
+                  return (
+                    <div key={l} style={{ border: `1px solid ${on ? T.teal : T.border}`, borderRadius: 8, background: on ? "#F4FBF8" : isAddedL(l) ? "#E4F2EE" : T.surface }}>
+                      <div onClick={() => setEdit(on ? null : l)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 10px", cursor: "pointer", fontSize: 13 }}>
+                        <b style={{ minWidth: 120 }}>{l}</b>
+                        <span style={{ flex: 1, color: T.inkSoft, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {isPick ? (orderQty[l] ? `발주 ${orderQty[l].toLocaleString()}개` : "") : <>{i.name || "-"} · {i.addr || <b style={{ color: T.danger }}>주소 없음</b>}</>}
+                        </span>
+                        {isAddedL(l) && <span style={{ fontSize: 11, fontWeight: 700, color: T.teal }}>새 센터</span>}
+                        <button onClick={(e) => (e.stopPropagation(), removeC(l))} style={{ ...smallBtnStyle, padding: "2px 9px", fontSize: 12, color: T.danger, borderColor: T.danger + "55" }}>삭제</button>
+                      </div>
+                      {on && !isPick && (
+                        <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                          {fieldRow("상호 (센터명)", (C[l] || {}).centerName ?? "", (v) => setC(l, { centerName: v }), i.name, "비워두면 원본 그대로")}
+                          {fieldRow("주소", (C[l] || {}).address ?? "", (v) => setC(l, { address: v }), i.addr, "비워두면 원본 그대로")}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {removedList.length > 0 && (
+                  <div style={{ marginTop: 12, border: `1px dashed ${T.danger}88`, borderRadius: 10, padding: 10, background: "#FFF8F7" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: T.danger, marginBottom: 6 }}>삭제한 센터 ({removedList.length}) — {isPick ? "피킹지" : "거래명세서"}에 안 나가요</div>
+                    {removedList.map((l) => (
+                      <div key={l} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "4px 2px" }}>
+                        <span style={{ flex: 1, textDecoration: "line-through", color: T.inkSoft }}>{l}</span>
+                        <button onClick={() => restoreC(l)} style={{ ...smallBtnStyle, padding: "2px 10px", fontSize: 12, color: T.teal, borderColor: T.teal }}>↺ 복구</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 8 }}>
+                  ⠿ 를 꾹 눌러 끌어서 옮기거나 ▲▼로 옮겨요.{isPick ? " 권역 합계 줄은 원본 자리 그대로 있고, 센터 줄만 순서가 바뀌어요 (전체 상품 공통)." : ""}
+                  {isPick && coKey && tplInfo && (
+                    <button onClick={() => setShowOne(true)} style={{ ...smallBtnStyle, padding: "2px 9px", fontSize: 12, marginLeft: 8 }}>
+                      상품 하나만 따로 순서 정하기
+                    </button>
+                  )}
+                </div>
+                <GsDragList items={L} highlight={L.filter(isAddedL)} onChange={(a) => setList(a)} renderItem={(l) => <span style={{ display: "flex", gap: 8 }}><b>{shortOf(l)}</b><span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span></span>} />
+              </>
+            )}
+          </div>
+          <div style={{ flex: "1 1 50%", overflow: "auto", padding: "14px 18px", background: "#F6F5F1" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>미리보기</div>
+            {preview()}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 22px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7", flexShrink: 0 }}>
+          {msg && <span style={{ fontSize: 13, fontWeight: 600, color: /저장했어요/.test(msg) ? T.teal : T.danger }}>{msg}</span>}
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={smallBtnStyle}>닫기</button>
+          <button disabled={busy} onClick={save} className="primary-btn" style={{ ...primaryBtnStyle, opacity: busy ? 0.6 : 1 }}>{busy ? "저장 중..." : "저장"}</button>
+        </div>
+      </div>
+      {showOne && pickCfg && tplInfo && (
+        <div onMouseDown={(e) => e.stopPropagation()}>
+          <CenterOrderModal pv={pickCfg} tplInfo={tplInfo} productNames={(tplInfo.products || []).map((x) => frozenTitleOf(x))} productList={(tplInfo.products || []).map((x) => ({ name: frozenTitleOf(x), vendor: x.pivot }))} authToken={authToken} onClose={() => setShowOne(false)} />
+        </div>
+      )}
+    </div>,
+    document.body
+  );
+}
 function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInfoSaved, onOpenCenters, chOrders = {} }) {
   const [brand, setBrand] = useState("GS");
   const [partKey, setPartKey] = useState("gs");
   const [showForm, setShowForm] = useState(false);
+  const [showCtr, setShowCtr] = useState(false); // 피킹지 센터 설정 (이마트·세븐·BGF·GS냉동) 2026-11-19
   const ch = PICK_FORM_CHANNELS.find((c) => c.brand === brand) || PICK_FORM_CHANNELS[0];
   const part = ch.parts.find((p) => p.key === partKey) || ch.parts[0];
   const formBtn = (
@@ -20403,7 +20873,16 @@ function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInf
           <PageHeader
             title={`피킹지 수정 · ${ch.label} ${part.label}`}
             sub={part.key === "gsfrozen" ? "GS 냉동은 피킹지 폼 변경만 해요." : "공급사별로 고객사 배포용 피킹지(0고정·당착 지역 포함)와 수정용 엑셀을 받아요. 공급사마다 피킹지 모양(폼)도 바꿀 수 있어요."}
-            action={formBtn}
+            action={
+              <span style={{ display: "inline-flex", gap: 8 }}>
+                {tplCentersKeyOf(part.cfg()) && (
+                  <button onClick={() => setShowCtr(true)} style={{ ...smallBtnStyle, padding: "8px 14px", fontWeight: 700, borderColor: T.teal, color: T.teal, display: "inline-flex", alignItems: "center", gap: 6 }} title="피킹지 센터 줄 순서·센터 추가/삭제 (거래명세서는 바뀌지 않아요)">
+                    <SettingsGear size={15} /> 센터 설정
+                  </button>
+                )}
+                {formBtn}
+              </span>
+            }
           />
           {part.key === "emfrozen" ? (
             <GsFrozenPickingView key="edit-emfrozen" editMode cfg={EM_FROZEN_PICK_CFG} frozenOrders={chOrders.emfrozen || []} authToken={authToken} />
@@ -20415,6 +20894,7 @@ function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInf
           </div>
         </div>
       )}
+      {showCtr && !part.gsMain && <TplCenterSettingsModal mode="pick" brand={part.cfg().brand} label={`${ch.label} ${part.label}`} orders={chOrders[part.key] || []} authToken={authToken} onClose={() => setShowCtr(false)} />}
       {showForm && <PickFormModal part={part} chLabel={`${ch.label} ${part.label}`} orders={part.gsMain ? orders : chOrders[part.key] || []} authToken={authToken} onClose={() => setShowForm(false)} />}
     </div>
   );
