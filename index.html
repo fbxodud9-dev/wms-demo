@@ -1572,6 +1572,7 @@ const REGION_ORDER_MAP_2 = buildRegionOrderMap(REGION_ORDER_TABLE_2);
 // 기본값과 같은 목록은 저장하지 않음. 저장된 목록에 없는 기본 센터는 맨 뒤에 자동으로 붙음 (센터가 빠지는 일 없게).
 // 아래 표·목록(REGION_ORDER_TABLE 등)을 그 자리에서 바꿔서, 피킹지·거래명세서·편수·일별 집계가 모두 같은 센터 정보를 씀.
 const GS_CENTER_KEY = "gs_centers";
+const PICK_PIVOT_ORDER = [...INVOICE_PIVOT_ORDER]; // 피킹지 공급사 피벗 줄 순서 (센터 설정 전엔 요약표와 같음)
 const GS_CENTER_DEFAULT = {};
 let GS_CENTER_CFG = {};
 function gsCenterDefaults() {
@@ -1606,8 +1607,12 @@ function gsCenterResolve(cfg) {
   const added = Object.keys(centers).filter((k) => centers[k] && centers[k].added && isCode(k) && !D.addr[k] && !D.pick1.some((r) => r.code === k));
   const defName = (code) => ((D.pick1.find((r) => r.code === code) || {}).name || (D.addr[code] || {}).sheetName || code);
   const nameOf = (code) => (centers[code] && String(centers[code].name || "").trim()) || defName(code);
-  const removed = Object.keys(centers).filter((k) => centers[k] && centers[k].removed); // 직원이 삭제한 센터 (기본 센터도 뺄 수 있음, 복구 가능)
-  const known = (code) => !removed.includes(code) && (D.pick1.some((r) => r.code === code) || added.includes(code));
+  // 직원이 삭제한 센터 (기본 센터도 뺄 수 있음, 복구 가능). 피킹지(removedPick)·거래명세서(removedInv) 따로, removed = 둘 다
+  const offPick = (k) => !!(centers[k] && (centers[k].removed || centers[k].removedPick));
+  const offInv = (k) => !!(centers[k] && (centers[k].removed || centers[k].removedInv));
+  const removed = Object.keys(centers).filter((k) => offPick(k) && offInv(k));
+  const exists = (code) => D.pick1.some((r) => r.code === code) || added.includes(code);
+  let known = (code) => exists(code) && !offPick(code);
   const orders = c.orders || {};
   const table = (def, saved) => {
     const seen = new Set();
@@ -1624,7 +1629,8 @@ function gsCenterResolve(cfg) {
     // A구역이 앞, B구역이 뒤 (피킹지 모양 유지)
     return [...rows.filter((r) => r.zone === "A"), ...rows.filter((r) => r.zone !== "A")];
   };
-  const list = (def, saved) => {
+  const list = (def, saved, inv) => {
+    const known = inv ? (code) => exists(code) && !offInv(code) : (code) => exists(code) && !offPick(code);
     const seen = new Set();
     const out = [];
     (Array.isArray(saved) && saved.length ? saved : def).forEach((k) => known(k) && !seen.has(k) && (seen.add(k), out.push(k)));
@@ -1639,7 +1645,8 @@ function gsCenterResolve(cfg) {
     if (!o) return;
     const base = addr[k] || { vvLabel: k, centerName: `${nameOf(k)}센터`, address: "", sheetName: nameOf(k) };
     const t = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
-    addr[k] = { ...base, vvLabel: t(o.vvLabel) || base.vvLabel, centerName: t(o.centerName) || base.centerName, address: t(o.address) ?? base.address, sheetName: t(o.name) || base.sheetName };
+    // 거래명세서 시트 이름은 invName (피킹지 지역 이름 name과 따로). 새 센터는 invName이 없으면 피킹지 이름
+    addr[k] = { ...base, vvLabel: t(o.vvLabel) || base.vvLabel, centerName: t(o.centerName) || base.centerName, address: t(o.address) ?? base.address, sheetName: t(o.invName) || (D.addr[k] ? base.sheetName : t(o.name) || base.sheetName) };
     if (o.realZone && ["수도권", "영남", "호남"].includes(o.realZone)) {
       if (o.realZone === "수도권") delete realZone[k];
       else realZone[k] = o.realZone;
@@ -1648,12 +1655,27 @@ function gsCenterResolve(cfg) {
   return {
     added: added.filter((k) => !removed.includes(k)),
     removed,
+    removedPick: Object.keys(centers).filter((k) => offPick(k)),
+    removedInv: Object.keys(centers).filter((k) => offInv(k)),
     pick1: table(D.pick1, orders.pick1),
     pick2: table(D.pick2, orders.pick2),
     dangchak: list(D.dangchak, orders.dangchak),
-    inv1: list(D.inv1, orders.inv1),
-    inv2: list(D.inv2, orders.inv2),
-    pivot: list(D.pivot, orders.pivot),
+    inv1: list(D.inv1, orders.inv1, true),
+    inv2: list(D.inv2, orders.inv2, true),
+    pivot: list(D.pivot, orders.pivot, true),
+    // 피킹지 파일의 공급사 피벗 줄 순서 (거래명세서 요약표와 따로): 기본 순서 + 새 센터는 1편 피킹지에서 바로 앞 센터 다음
+    pickPivot: (() => {
+      const pk = (k) => exists(k) && !offPick(k);
+      const out = D.pivot.filter(pk);
+      const p1 = table(D.pick1, orders.pick1).map((r) => r.code);
+      p1.forEach((k, i) => {
+        if (out.includes(k)) return;
+        let at = -1;
+        for (let j = i - 1; j >= 0 && at === -1; j--) at = out.indexOf(p1[j]);
+        out.splice(at + 1, 0, k);
+      });
+      return out;
+    })(),
     addr,
     realZone,
   };
@@ -1676,6 +1698,7 @@ function applyGsCenterCfg(v) {
   fill(INVOICE_SHEET_ORDER_1, R.inv1);
   fill(INVOICE_SHEET_ORDER_2, R.inv2);
   fill(INVOICE_PIVOT_ORDER, R.pivot);
+  fill(PICK_PIVOT_ORDER, R.pickPivot);
   fill(DANGCHAK_REGION_ORDER, R.dangchak);
   fillObj(REGION_ADDRESS_MAP, R.addr);
   fillObj(REGION_REAL_ZONE, R.realZone);
@@ -1686,7 +1709,7 @@ function gsUnknownCenters(orders) {
   const m = new Map();
   (orders || []).forEach((o) => {
     const code = String(o.storeCode || "").trim();
-    if (!code || code === "VV00" || REGION_ORDER_MAP[code] || REGION_ORDER_MAP_2[code]) return;
+    if (!code || code === "VV00" || REGION_ORDER_MAP[code] || REGION_ORDER_MAP_2[code] || INVOICE_SHEET_ORDER_2.includes(code) || INVOICE_SHEET_ORDER_1.includes(code)) return;
     const x = m.get(code) || { code, label: `${code} ${o.customer || ""}`.trim(), customer: o.customer || "", qty: 0, dates: new Set() };
     (o.lines || []).forEach((l) => (x.qty += Number(l.changedQty ?? l.qty) || 0));
     if (o.createdAt) x.dates.add(o.createdAt);
@@ -4115,7 +4138,7 @@ function WMSApp() {
         {tab === "orderinfo-emart" && <EmartOrderPage emartOrders={vEmartOrders} authToken={authToken} onUpload={addOrdersBulk} onRegisterItems={registerItemsBulk} onDeleteDate={(d) => deleteOrdersByDate(d, "EMART")} />}
 
         {tab === "replenish" && <Replenishment items={itemsView} onToggle={toggleReplenish} />}
-        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} onOpenCenters={() => setCenterModal({ tab: "info", listKey: "pick1" })} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
+        {tab === "pickingedit" && <PickingEditHub orders={vOrders} productInfo={productInfo} orderCfg={orderCfg} authToken={authToken} onProductInfoSaved={applyProductInfo} onOpenCenters={() => setCenterModal({ mode: "pick", tab: "info", listKey: "pick1" })} chOrders={{ gsfrozen: vFrozenOrders, emart: vEmartOrders, emfrozen: vEmFrozenOrders, seven: vSevenOrders, sevenfrozen: vSevenFrozenOrders, bgf: vBgfOrders, bgffrozen: vBgfFrozenOrders }} />}
         {tab === "pickinginspection" && (
           <PickingCenter
             channel={pickChannel}
@@ -4149,7 +4172,7 @@ function WMSApp() {
             bgfOrders={vBgfOrders}
             bgfFrozenOrders={vBgfFrozenOrders}
             authToken={authToken}
-            gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} onOpenCenters={() => setCenterModal({ tab: "order", listKey: "inv2" })} />}
+            gsView={<InvoiceView orders={vOrders} productInfo={productInfo} invoiceSettings={invoiceSettings} authToken={authToken} onInvoiceSettingsSaved={applyInvoiceSettings} onOpenCenters={() => setCenterModal({ mode: "inv", tab: "info", listKey: "inv2" })} />}
           />
         )}
 
@@ -19684,6 +19707,11 @@ function GsDragList({ items, onChange, renderItem, highlight }) {
 }
 
 function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceSaved, onClose }) {
+  // 피킹지 수정 메뉴 = 피킹지 센터 설정(mode "pick"), 거래명세서 메뉴 = 거래명세서 센터 설정(mode "inv") - 따로 관리 (2026-11-19)
+  const mode = (initial && initial.mode) === "inv" ? "inv" : "pick";
+  const isPick = mode === "pick";
+  const MY_LISTS = GS_ORDER_LISTS.filter((L) => (isPick ? ["pick1", "pick2", "dangchak"] : ["inv1", "inv2", "pivot"]).includes(L.key));
+  const offKey = isPick ? "removedPick" : "removedInv";
   const R0 = useMemo(() => gsCenterResolve(GS_CENTER_CFG), []);
   const D = gsCenterDefaults();
   const [centers, setCenters] = useState(() => JSON.parse(JSON.stringify((GS_CENTER_CFG && GS_CENTER_CFG.centers) || {})));
@@ -19692,7 +19720,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
   const [lists, setLists] = useState(() => ({ pick1: toItems(R0.pick1), pick2: toItems(R0.pick2), dangchak: [...R0.dangchak], inv1: [...R0.inv1], inv2: [...R0.inv2], pivot: [...R0.pivot] }));
   const [cps, setCps] = useState(() => ({ pick1: R0.pick1.filter((r) => r.checkpoint).map((r) => r.code), pick2: R0.pick2.filter((r) => r.checkpoint).map((r) => r.code) }));
   const [tab, setTab] = useState((initial && initial.tab) || "info");
-  const [listKey, setListKey] = useState((initial && initial.listKey) || "pick1");
+  const [listKey, setListKey] = useState(() => (MY_LISTS.some((L) => L.key === (initial && initial.listKey)) ? initial.listKey : MY_LISTS[0].key));
   const [editCode, setEditCode] = useState(null);
   const [form, setForm] = useState(null); // 새 센터 입력
   const [newCodes, setNewCodes] = useState([]); // 이번에 추가한 센터 (강조)
@@ -19701,13 +19729,14 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
   const [msg, setMsg] = useState("");
   const unknown = useMemo(() => gsUnknownCenters(orders).filter((u) => !centers[u.code]), [orders, centers]);
 
-  const allCodes = useMemo(() => lists.pick1.filter((c) => c !== "|B|"), [lists.pick1]);
+  const allCodes = useMemo(() => (isPick ? lists.pick1.filter((c) => c !== "|B|") : lists.inv2), [lists.pick1, lists.inv2]);
   const isAdded = (code) => !!(centers[code] && centers[code].added) && !D.addr[code];
   const infoOf = (code) => {
     const o = centers[code] || {};
     const base = D.addr[code] || { vvLabel: code, centerName: "", address: "", sheetName: "" };
     const nm = (o.name && o.name.trim()) || (D.pick1.find((r) => r.code === code) || {}).name || base.sheetName || code;
-    return { name: nm, vvLabel: (o.vvLabel && o.vvLabel.trim()) || base.vvLabel, centerName: (o.centerName && o.centerName.trim()) || base.centerName || `${nm}센터`, address: o.address != null && o.address !== "" ? o.address : base.address, realZone: o.realZone || (D.realZone[code] || "수도권") };
+    const sheet = (o.invName && o.invName.trim()) || (D.addr[code] ? base.sheetName : nm);
+    return { name: nm, sheet, vvLabel: (o.vvLabel && o.vvLabel.trim()) || base.vvLabel, centerName: (o.centerName && o.centerName.trim()) || base.centerName || `${nm}센터`, address: o.address != null && o.address !== "" ? o.address : base.address, realZone: o.realZone || (D.realZone[code] || "수도권") };
   };
   const nameOf = (code) => infoOf(code).name;
   const setCenter = (code, patch) => setCenters((c) => ({ ...c, [code]: { ...(c[code] || {}), ...patch } }));
@@ -19725,17 +19754,19 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
   function startAdd(pre) {
     setTab("info");
     setEditCode(null);
-    setForm({ code: (pre && pre.code) || "", name: "", centerName: "", vvLabel: (pre && pre.label) || "", address: "", realZone: "수도권", after: "VV03" });
+    setForm({ code: (pre && pre.code) || "", name: "", invName: "", centerName: "", vvLabel: (pre && pre.label) || "", address: "", realZone: "수도권", after: "VV03" });
   }
   function addCenter() {
     const f = form;
     const code = String(f.code || "").trim().toUpperCase();
     if (!/^[A-Z0-9]{2,10}$/.test(code)) return setMsg("센터 코드를 발주파일의 납품처코드 그대로 넣어주세요 (예: VV29).");
-    if (allCodes.includes(code)) return setMsg(`${code}는 이미 있는 센터예요.`);
-    const name = String(f.name || "").trim();
-    if (!name) return setMsg("시트 이름(짧은 이름, 예: 평택)을 넣어주세요.");
+    if (allCodes.includes(code) || lists.pick1.includes(code) || lists.inv2.includes(code) || D.addr[code]) return setMsg(`${code}는 이미 있는 센터예요.${removedCodes.includes(code) ? " 아래 '삭제한 센터'에서 복구해주세요." : ""}`);
+    const name = String((isPick ? f.name : f.invName) || "").trim();
+    if (!name) return setMsg(isPick ? "피킹지 지역 이름(예: 평택)을 넣어주세요." : "시트 이름(예: 평택)을 넣어주세요.");
     setMsg("");
-    setCenter(code, { added: true, name, centerName: String(f.centerName || "").trim() || `${name}센터`, vvLabel: String(f.vvLabel || "").trim() || code, address: String(f.address || "").trim(), realZone: f.realZone || "수도권" });
+    setCenter(code, isPick
+      ? { added: true, name, realZone: f.realZone || "수도권", ...(String(f.vvLabel || "").trim() ? { vvLabel: String(f.vvLabel).trim() } : {}) } // 발주파일에 찍힌 이름이 있으면 명세서 등록번호 칸 기본값으로
+      : { added: true, name, invName: name, centerName: String(f.centerName || "").trim() || `${name}센터`, vvLabel: String(f.vvLabel || "").trim() || code, address: String(f.address || "").trim() });
     // 모든 목록에서 고른 센터 바로 다음에 넣기 (피킹지 표는 그 센터와 같은 구역)
     setLists((L) => {
       const ins = (arr) => {
@@ -19753,25 +19784,19 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     setEditCode(code);
   }
   function removeCenter(code) {
-    const base = !!D.addr[code] || D.pick1.some((r) => r.code === code);
     const q = sampleQty[code] || 0;
     if (
       !window.confirm(
-        `${nameOf(code)}(${code}) 센터를 삭제할까요?\n\n저장하면 1편·2편·당착 피킹지, 1편·2편·DC·당착 거래명세서, 요약표에서 이 센터가 빠져요.` +
-          (q ? `\n※ 지금 올라온 발주에 이 센터 수량이 ${q.toLocaleString()}개 있어요. 삭제하면 그 수량이 피킹지·명세서에 안 나가요.` : "") +
-          (base ? "\n(기본 센터라 아래 '삭제한 센터'에서 언제든 복구할 수 있어요)" : "")
+        `${nameOf(code)}(${code}) 센터를 ${isPick ? "피킹지에서" : "거래명세서에서"} 삭제할까요?\n\n저장하면 ${isPick ? "1편·2편·당착 피킹지" : "1편·2편·DC·당착 거래명세서와 발주량 요약표"}에서 이 센터가 빠져요. (${isPick ? "거래명세서" : "피킹지"}는 그대로예요)` +
+          (q ? `\n※ 지금 올라온 발주에 이 센터 수량이 ${q.toLocaleString()}개 있어요. 삭제하면 그 수량이 ${isPick ? "피킹지" : "거래명세서"}에 안 나가요.` : "") +
+          "\n(아래 '삭제한 센터'에서 언제든 복구할 수 있어요)"
       )
     )
       return;
-    setCenters((c) => {
-      const n = { ...c };
-      if (base) n[code] = { ...(n[code] || {}), removed: true };
-      else delete n[code];
-      return n;
-    });
+    setCenter(code, { [offKey]: true });
     setLists((L) => {
-      const n = {};
-      Object.keys(L).forEach((k) => (n[k] = L[k].filter((x) => x !== code)));
+      const n = { ...L };
+      MY_LISTS.forEach(({ key: k }) => (n[k] = L[k].filter((x) => x !== code)));
       return n;
     });
     setNewCodes((x) => x.filter((y) => y !== code));
@@ -19782,17 +19807,22 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     setCenters((c) => {
       const n = { ...c };
       const o = { ...(n[code] || {}) };
-      delete o.removed;
+      delete o[offKey];
+      if (o.removed) {
+        delete o.removed;
+        o[isPick ? "removedInv" : "removedPick"] = true; // 예전 '둘 다 삭제'는 이 메뉴 쪽만 복구
+      }
       if (Object.keys(o).length) n[code] = o;
       else delete n[code];
       return n;
     });
     setLists((L) => {
-      const n = {};
-      Object.keys(L).forEach((k) => {
+      const n = { ...L };
+      MY_LISTS.map((x) => x.key).forEach((k) => {
         const a = L[k].filter((x) => x !== code);
         const def = k === "pick1" || k === "pick2" ? D[k].map((r) => r.code) : D[k];
-        const di = def.indexOf(code);
+        let di = def.indexOf(code);
+        if (di === -1) di = def.length; // 새 센터는 맨 뒤 (복구 후 끌어서 옮기기)
         let at = -1;
         for (let j = di - 1; j >= 0 && at === -1; j--) at = a.indexOf(def[j]);
         if (k === "pick1" || k === "pick2") {
@@ -19809,7 +19839,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
       return n;
     });
   }
-  const removedCodes = Object.keys(centers).filter((k) => centers[k] && centers[k].removed);
+  const removedCodes = Object.keys(centers).filter((k) => centers[k] && (centers[k].removed || centers[k][offKey]));
 
   // 저장할 값 (기본과 같은 목록은 빼고)
   function buildValue() {
@@ -19834,9 +19864,11 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     Object.entries(centers).forEach(([k, o]) => {
       if (!o) return;
       const c = {};
-      ["name", "centerName", "vvLabel", "address", "realZone"].forEach((f) => o[f] != null && String(o[f]).trim() !== "" && (c[f] = String(o[f]).trim()));
+      ["name", "invName", "centerName", "vvLabel", "address", "realZone"].forEach((f) => o[f] != null && String(o[f]).trim() !== "" && (c[f] = String(o[f]).trim()));
       if (o.added) c.added = true;
       if (o.removed) c.removed = true;
+      if (o.removedPick) c.removedPick = true;
+      if (o.removedInv) c.removedInv = true;
       if (Object.keys(c).length) cleanCenters[k] = c;
     });
     return { centers: cleanCenters, orders: ordersV };
@@ -19849,19 +19881,20 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     const lines = [];
     if (added.length) lines.push(`새 센터: ${added.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
     if (removed.length) lines.push(`지우는 센터: ${removed.join(", ")}`);
-    const delBase = R.removed.filter((c) => !R0.removed.includes(c));
-    const restored = R0.removed.filter((c) => !R.removed.includes(c));
+    const rk = isPick ? "removedPick" : "removedInv";
+    const delBase = R[rk].filter((c) => !R0[rk].includes(c));
+    const restored = R0[rk].filter((c) => !R[rk].includes(c));
     if (delBase.length) lines.push(`삭제하는 센터: ${delBase.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
     if (restored.length) lines.push(`복구하는 센터: ${restored.map((c) => `${nameOf(c)}(${c})`).join(", ")}`);
-    GS_ORDER_LISTS.forEach((L) => {
+    MY_LISTS.forEach((L) => {
       const a = L.kind === "table" ? R[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R[L.key].join();
       const b = L.kind === "table" ? R0[L.key].map((r) => r.code + r.zone + (r.checkpoint ? "*" : "")).join() : R0[L.key].join();
       if (a !== b) lines.push(`${L.label} 순서 바뀜`);
     });
-    const invPicks = selectedRegionCfgs.filter((x) => invAdd[x.sup + "|" + x.part]);
+    const invPicks = isPick ? [] : selectedRegionCfgs.filter((x) => invAdd[x.sup + "|" + x.part]);
     if (invPicks.length && newCodes.length) lines.push(`발행 지역에 새 센터 추가: ${invPicks.map((x) => `${x.sup} ${partName(x.part)}`).join(", ")}`);
     if (!lines.length && settingSig(v) === settingSig(GS_CENTER_CFG)) return setMsg("바뀐 게 없어요.");
-    if (!window.confirm(`센터 설정을 저장할까요?\n\n${lines.join("\n") || "센터 정보 변경"}\n\n저장하면 피킹지·거래명세서에 바로 반영돼요 (이미 올린 발주도 다시 올릴 필요 없어요).`)) return;
+    if (!window.confirm(`${isPick ? "피킹지" : "거래명세서"} 센터 설정을 저장할까요?\n\n${lines.join("\n") || "센터 정보 변경"}\n\n저장하면 ${isPick ? "피킹지" : "거래명세서"}에 바로 반영돼요 (이미 올린 발주도 다시 올릴 필요 없어요).` + (added.length ? `\n※ 새 센터는 ${isPick ? "거래명세서" : "피킹지"}에도 같은 위치로 들어가요. ${isPick ? "주소 등 명세서 정보는 [거래명세서] 메뉴의 센터 설정에서 넣어주세요." : "피킹지 위치는 [피킹지 수정] 메뉴의 센터 설정에서 바꿔요."}` : ""))) return;
     setBusy(true);
     setMsg("");
     try {
@@ -19895,7 +19928,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
         if (onInvoiceSaved) onInvoiceSaved(nextInv);
       }
       onSaved(v);
-      setMsg("저장했어요. 피킹지·거래명세서에 바로 반영돼요.");
+      setMsg(`저장했어요. ${isPick ? "피킹지" : "거래명세서"}에 바로 반영돼요.`);
       setNewCodes([]);
       setInvAdd({});
     } catch (e) {
@@ -19964,7 +19997,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
         <span style={{ fontSize: 11.5, padding: "3px 8px", background: "#fff", border: "1px solid #BBB", fontWeight: 700 }}>{k === "inv1" ? "1편발주량" : "2편발주량"}</span>
         {lists[k].map((c) => (
           <span key={c} style={{ fontSize: 11.5, padding: "3px 8px", background: newCodes.includes(c) || isAdded(c) ? "#C9EBDD" : "#F7F7F7", border: "1px solid #BBB" }}>
-            {((centers[c] && centers[c].name && centers[c].name.trim()) || (D.addr[c] && D.addr[c].sheetName) || nameOf(c)) + (k === "inv1" ? "(1편)" : "(2편)")}
+            {infoOf(c).sheet + (k === "inv1" ? "(1편)" : "(2편)")}
           </span>
         ))}
       </div>
@@ -20029,9 +20062,14 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
       <div onMouseDown={(e) => e.stopPropagation()} style={{ background: T.surface, borderRadius: 14, width: "100%", maxWidth: 1180, height: "92vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 18px 50px rgba(0,0,0,0.18)", fontFamily: "'IBM Plex Sans KR', sans-serif", color: T.ink }}>
         <div style={{ display: "flex", alignItems: "flex-start", padding: "16px 22px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>GS 센터 설정</div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{isPick ? "GS 피킹지 센터 설정" : "GS 거래명세서 센터 설정"}</div>
             <div style={{ fontSize: 12.5, color: T.inkSoft, marginTop: 3 }}>
-              센터 추가 · 센터 정보(거래명세서 공급받는자 칸) · 피킹지/거래명세서 센터 순서. 발주파일의 <b>납품처코드</b>(예: VV29)로 센터를 찾아 수량이 들어가요.
+              {isPick ? (
+                <>피킹지(1편·2편·당착)의 센터 순서·구역·체크포인트·지역 이름만 바꿔요. 거래명세서는 [거래명세서] 메뉴에서 따로 바꿔요.</>
+              ) : (
+                <>거래명세서(1편·2편·DC·당착)의 센터 시트 순서·공급받는자 칸(등록번호·상호·주소)만 바꿔요. 피킹지는 [피킹지 수정] 메뉴에서 따로 바꿔요.</>
+              )}{" "}
+              발주파일의 <b>납품처코드</b>(예: VV29)로 센터를 찾아 수량이 들어가요.
             </div>
           </div>
           <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer", color: T.inkSoft }}>
@@ -20071,14 +20109,16 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                 <div style={{ fontWeight: 800 }}>새 센터 추가</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   {fieldRow("센터 코드 *", form.code, (v) => setForm({ ...form, code: v.toUpperCase() }), "VV29", "발주파일 납품처코드 그대로")}
-                  {fieldRow("시트 이름 *", form.name, (v) => setForm({ ...form, name: v }), "평택", "피킹지 지역칸·명세서 시트 탭 이름")}
-                  {fieldRow("센터명 (명세서 상호)", form.centerName, (v) => setForm({ ...form, centerName: v }), form.name ? `${form.name}센터` : "평택센터")}
-                  {fieldRow("명세서 등록번호 칸", form.vvLabel, (v) => setForm({ ...form, vvLabel: v }), "VV29 (주)지에스리테일평택저온", "발주파일 납품처 이름 그대로 쓰면 돼요")}
+                  {isPick
+                    ? fieldRow("피킹지 지역 이름 *", form.name, (v) => setForm({ ...form, name: v }), "평택", "피킹지 지역 칸(E열)에 찍혀요")
+                    : fieldRow("시트 이름 *", form.invName, (v) => setForm({ ...form, invName: v }), "평택", "명세서 시트 탭 이름")}
+                  {!isPick && fieldRow("센터명 (명세서 상호)", form.centerName, (v) => setForm({ ...form, centerName: v }), form.invName ? `${form.invName}센터` : "평택센터")}
+                  {!isPick && fieldRow("명세서 등록번호 칸", form.vvLabel, (v) => setForm({ ...form, vvLabel: v }), "VV29 (주)지에스리테일평택저온", "발주파일 납품처 이름 그대로 쓰면 돼요")}
                 </div>
-                {fieldRow("주소", form.address, (v) => setForm({ ...form, address: v }), "경기도 평택시 하만호길 153 3층 (BLK 물류센터)")}
-                {zoneSel(form.realZone, (z) => setForm({ ...form, realZone: z }))}
+                {!isPick && fieldRow("주소", form.address, (v) => setForm({ ...form, address: v }), "경기도 평택시 하만호길 153 3층 (BLK 물류센터)")}
+                {isPick && zoneSel(form.realZone, (z) => setForm({ ...form, realZone: z }))}
                 <div>
-                  <div style={lab}>위치 — 어느 센터 다음에 넣을까요? (1편·2편·당착 피킹지, 1편·2편·DC·당착 명세서, 요약표 모두 그 센터 바로 다음)</div>
+                  <div style={lab}>위치 — 어느 센터 다음에 넣을까요? ({isPick ? "1편·2편·당착 피킹지" : "1편·2편·DC·당착 명세서·요약표"} 모두 그 센터 바로 다음)</div>
                   <select style={{ ...inputStyle, width: 260 }} value={form.after} onChange={(e) => setForm({ ...form, after: e.target.value })}>
                     {allCodes.map((c) => (
                       <option key={c} value={c}>
@@ -20086,7 +20126,9 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                       </option>
                     ))}
                   </select>
-                  <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 3 }}>넣은 뒤 ② 순서 탭에서 목록마다 끌어서 따로 옮길 수 있어요.</div>
+                  <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 3 }}>
+                    넣은 뒤 ② 순서 탭에서 목록마다 끌어서 따로 옮길 수 있어요. 새 센터는 수량이 빠지지 않게 {isPick ? "거래명세서" : "피킹지"}에도 같은 위치로 같이 들어가요 ({isPick ? "명세서 주소 등은 [거래명세서] 메뉴에서" : "피킹지 위치는 [피킹지 수정] 메뉴에서"} 따로 고쳐요).
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button onClick={() => (setForm(null), setMsg(""))} style={smallBtnStyle}>
@@ -20100,7 +20142,9 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
             )}
             {tab === "info" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 6 }}>센터를 누르면 거래명세서 공급받는자 칸(등록번호·상호·주소)을 고칠 수 있어요. 오른쪽에 명세서 모양으로 미리 보여줘요.</div>
+                <div style={{ fontSize: 12.5, color: T.inkSoft, marginBottom: 6 }}>
+                  {isPick ? "센터를 누르면 피킹지 지역 이름·권역을 고칠 수 있어요. 오른쪽에 피킹지 지역 줄로 미리 보여줘요." : "센터를 누르면 거래명세서 시트 이름·공급받는자 칸(등록번호·상호·주소)을 고칠 수 있어요. 오른쪽에 명세서 모양으로 미리 보여줘요."}
+                </div>
                 {allCodes.map((c) => {
                   const i = infoOf(c);
                   const on = editCode === c;
@@ -20109,9 +20153,13 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                     <div key={c} style={{ border: `1px solid ${on ? T.teal : T.border}`, borderRadius: 8, background: on ? "#F4FBF8" : nw ? "#E4F2EE" : T.surface }}>
                       <div onClick={() => setEditCode(on ? null : c)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 10px", cursor: "pointer", fontSize: 13 }}>
                         <b style={{ width: 46, fontFamily: "'JetBrains Mono', monospace" }}>{c}</b>
-                        <b style={{ width: 70 }}>{i.name}</b>
+                        <b style={{ width: 70 }}>{isPick ? i.name : i.sheet}</b>
                         <span style={{ flex: 1, color: T.inkSoft, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {i.centerName} · {String(i.address || "주소 없음").replace(/\n/g, " ")}
+                          {isPick ? `${i.realZone} · ${i.vvLabel}` : (
+                            <>
+                              {i.centerName} · {i.address ? String(i.address).replace(/\n/g, " ") : <b style={{ color: T.danger }}>주소 없음</b>}
+                            </>
+                          )}
                         </span>
                         {nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.teal }}>새 센터</span>}
                         {centers[c] && !nw && <span style={{ fontSize: 11, fontWeight: 700, color: T.amberDeep }}>수정됨</span>}
@@ -20128,20 +20176,31 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                       </div>
                       {on && (
                         <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                            {fieldRow("시트 이름", (centers[c] || {}).name ?? "", (v) => setCenter(c, { name: v }), i.name)}
-                            {fieldRow("센터명 (명세서 상호)", (centers[c] || {}).centerName ?? "", (v) => setCenter(c, { centerName: v }), i.centerName)}
-                          </div>
-                          {fieldRow("명세서 등록번호 칸", (centers[c] || {}).vvLabel ?? "", (v) => setCenter(c, { vvLabel: v }), i.vvLabel)}
-                          {fieldRow("주소", (centers[c] || {}).address ?? "", (v) => setCenter(c, { address: v }), String(i.address || "").replace(/\n/g, " "), "비워두면 원래 값 그대로")}
-                          {zoneSel(i.realZone, (z) => setCenter(c, { realZone: z }))}
+                          {isPick ? (
+                            <>
+                              {fieldRow("피킹지 지역 이름", (centers[c] || {}).name ?? "", (v) => setCenter(c, { name: v }), i.name, "피킹지 지역 칸(E열)에 찍혀요")}
+                              {zoneSel(i.realZone, (z) => setCenter(c, { realZone: z }))}
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                {fieldRow("시트 이름", (centers[c] || {}).invName ?? "", (v) => setCenter(c, { invName: v }), i.sheet, "명세서 시트 탭 이름")}
+                                {fieldRow("센터명 (명세서 상호)", (centers[c] || {}).centerName ?? "", (v) => setCenter(c, { centerName: v }), i.centerName)}
+                              </div>
+                              {fieldRow("명세서 등록번호 칸", (centers[c] || {}).vvLabel ?? "", (v) => setCenter(c, { vvLabel: v }), i.vvLabel)}
+                              {fieldRow("주소", (centers[c] || {}).address ?? "", (v) => setCenter(c, { address: v }), String(i.address || "").replace(/\n/g, " "), "비워두면 원래 값 그대로")}
+                            </>
+                          )}
                           <div style={{ display: "flex", gap: 8 }}>
                             {centers[c] && !isAdded(c) && (
                               <button
                                 onClick={() =>
                                   setCenters((x) => {
                                     const n = { ...x };
-                                    delete n[c];
+                                    const o = { ...(n[c] || {}) };
+                                    (isPick ? ["name", "realZone"] : ["invName", "centerName", "vvLabel", "address"]).forEach((f) => delete o[f]);
+                                    if (Object.keys(o).length) n[c] = o;
+                                    else delete n[c];
                                     return n;
                                   })
                                 }
@@ -20175,7 +20234,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
             ) : (
               <div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-                  {GS_ORDER_LISTS.map((L) => (
+                  {MY_LISTS.map((L) => (
                     <button key={L.key} onClick={() => setListKey(L.key)} style={{ ...tabBtn(listKey === L.key), padding: "5px 10px", fontSize: 12.5 }}>
                       {L.label}
                     </button>
@@ -20218,14 +20277,28 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
             {tab === "info" ? (
               editCode || form ? (
                 <>
-                  {invoicePreview(
-                    form
-                      ? { name: form.name || "(시트 이름)", vvLabel: form.vvLabel || form.code, centerName: form.centerName || (form.name ? `${form.name}센터` : ""), address: form.address }
-                      : infoOf(editCode)
+                  {isPick ? (
+                    <>
+                      <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>1편 피킹지 지역 줄 (초록 = 새 센터)</div>
+                      {pickPreview("pick1")}
+                    </>
+                  ) : (
+                    invoicePreview(
+                      form
+                        ? { name: form.invName || "(시트 이름)", vvLabel: form.vvLabel || form.code, centerName: form.centerName || (form.invName ? `${form.invName}센터` : ""), address: form.address }
+                        : { ...infoOf(editCode), name: infoOf(editCode).sheet }
+                    )
                   )}
                 </>
               ) : (
-                <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽에서 센터를 누르면 거래명세서 공급받는자 칸이 어떻게 찍히는지 보여줘요.</div>
+                isPick ? (
+                  <>
+                    <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 6 }}>1편 피킹지 지역 줄</div>
+                    {pickPreview("pick1")}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 13, color: T.inkSoft }}>왼쪽에서 센터를 누르면 거래명세서 공급받는자 칸이 어떻게 찍히는지 보여줘요.</div>
+                )
               )
             ) : curList.kind === "table" ? (
               <>
@@ -20249,7 +20322,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 22px", borderTop: `1px solid ${T.border}`, background: "#FBFAF7", flexWrap: "wrap", flexShrink: 0 }}>
-          {newCodes.length > 0 && selectedRegionCfgs.length > 0 && (
+          {!isPick && newCodes.length > 0 && selectedRegionCfgs.length > 0 && (
             <div style={{ flex: "1 1 100%", fontSize: 12.5, background: "#FFF8E8", border: `1px solid ${T.amber}`, borderRadius: 8, padding: "8px 10px" }}>
               <b>발행 지역을 '선택한 지역만'으로 정해둔 공급사</b> — 체크한 곳만 새 센터({newCodes.map(nameOf).join(", ")}) 명세서가 나가요. 체크 안 하면 그 공급사는 지금처럼 고른 센터만 나가요.
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
@@ -20317,7 +20390,7 @@ function PickingEditHub({ orders, productInfo, orderCfg, authToken, onProductInf
           headerAction={
             <span style={{ display: "inline-flex", gap: 8 }}>
               {onOpenCenters && (
-                <button onClick={onOpenCenters} style={{ ...smallBtnStyle, padding: "8px 14px", fontWeight: 700, borderColor: T.teal, color: T.teal, display: "inline-flex", alignItems: "center", gap: 6 }} title="센터 추가·센터 정보(명세서 공급받는자)·피킹지/명세서 센터 순서">
+                <button onClick={onOpenCenters} style={{ ...smallBtnStyle, padding: "8px 14px", fontWeight: 700, borderColor: T.teal, color: T.teal, display: "inline-flex", alignItems: "center", gap: 6 }} title="피킹지 센터 순서·구역·체크포인트·지역 이름, 센터 추가/삭제. 거래명세서는 바뀌지 않아요">
                   <SettingsGear size={15} /> 센터 설정
                 </button>
               )}
@@ -21699,12 +21772,13 @@ function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) 
     const r = p.regionRows.find((x) => x.key === code);
     return r ? Number(r.rawQty ?? r.qty) || 0 : 0;
   };
-  // 센터 줄: 명세서 피벗 순서 + 그 밖에 발주가 있는 센터
-  const codes = [...INVOICE_PIVOT_ORDER];
+  // 센터 줄: 피킹지 피벗 순서(피킹지 센터 설정 기준) + 그 밖에 발주가 있는 센터
+  const codes = [...PICK_PIVOT_ORDER];
   const labelOf = {};
   items.forEach((p) => p.regionRows.forEach((r) => {
     if (!labelOf[r.key]) labelOf[r.key] = r.label;
-    if ((r.rawQty ?? r.qty) > 0 && !codes.includes(r.key)) codes.push(r.key);
+    const off = GS_CENTER_CFG && GS_CENTER_CFG.centers && GS_CENTER_CFG.centers[r.key];
+    if ((r.rawQty ?? r.qty) > 0 && !codes.includes(r.key) && !(off && (off.removed || off.removedPick))) codes.push(r.key); // 피킹지에서 뺀 센터는 피벗에도 안 넣음
   }));
   ws.getCell(1, 1).value = `${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}`;
   ws.getCell(1, 2).value = "열 레이블";
@@ -22753,12 +22827,13 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
   // 설정 화면에서 순서를 정해 저장한 경우(ordered) 그 순서대로 시트가 나간다
   const iterOrder = onlyRegions && regionCfg.ordered ? onlyRegions : sheetOrder;
   iterOrder.forEach((code) => {
-    if (!REGION_ORDER_MAP[code]) return;
+    if (!REGION_ORDER_MAP[code] && !REGION_ADDRESS_MAP[code]) return; // 피킹지에서만 뺀 센터도 거래명세서는 따로
+    if (!sheetOrder.includes(code)) return; // 거래명세서 센터 설정에서 뺀 센터
     if (onlyRegions && !onlyRegions.includes(code)) return; // 거래명세서 설정의 발행 지역 (기본: 1편은 신제주·곤지암·곤지암2만)
     const rowItems = items.map((it) => ({ name: it.name, label: it.label, packQty: it.packQty, expiryDays: it.expiryDays, expiryFixed: it.expiryFixed, qty: qtyOf(it, code) }));
     const totalQty = rowItems.reduce((a, r) => a + r.qty, 0);
     // 실제로 뭐라도 나간(총수량 > 0) 지역만 명세서 발행. 단 1편 신제주·곤지암·곤지암2는 발주가 없어도 0으로 항상 발행
-    if (totalQty > 0 || onlyRegions) regions.push({ code, shortName: REGION_ORDER_MAP[code].shortName, items: rowItems, totalQty });
+    if (totalQty > 0 || onlyRegions) regions.push({ code, shortName: REGION_ORDER_MAP[code] ? REGION_ORDER_MAP[code].shortName : (REGION_ADDRESS_MAP[code] || {}).sheetName || code, items: rowItems, totalQty });
   });
   return { items, regions, qtyOf };
 }
@@ -24969,9 +25044,9 @@ function InvoiceView({ orders, productInfo, invoiceSettings, authToken, onInvoic
           <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
             <SheetColorButton kind="gs_invoice" authToken={authToken} suppliers={invoiceSettingsSupplierList().map((x) => x.key)} />
             {onOpenCenters && (
-              <button onClick={onOpenCenters} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13, borderColor: T.teal, color: T.teal, fontWeight: 700 }} title="센터 시트 순서(위치)·센터 정보(공급받는자 칸)·센터 추가/삭제 - 피킹지 수정의 센터 설정과 같은 설정이에요">
+              <button onClick={onOpenCenters} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13, borderColor: T.teal, color: T.teal, fontWeight: 700 }} title="거래명세서 센터 시트 순서(위치)·공급받는자 칸(등록번호·상호·주소)·센터 추가/삭제. 피킹지는 바뀌지 않아요">
                 <SettingsGear size={15} />
-                센터 순서·정보
+                센터 설정
               </button>
             )}
             <button onClick={() => setShowInvSettings(true)} style={{ ...smallBtnStyle, display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 13 }} title="사업자 정보·발행 지역·상품명·입수·소비기한">
