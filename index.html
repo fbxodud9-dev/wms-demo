@@ -1709,9 +1709,13 @@ function gsUnknownCenters(orders) {
   const m = new Map();
   (orders || []).forEach((o) => {
     const code = String(o.storeCode || "").trim();
+    // GS편의점 센터 코드(VV+숫자)만 봄 - GS슈퍼(조리센터·점포 코드 숫자) 등 다른 발주는 GS 일반 센터가 아님 (2026-11-19)
+    if (!/^VV\d+$/i.test(code)) return;
+    if (o.channel && o.channel !== "GS") return;
+    if (!(o.lines || []).some((l) => productBrandOf(l.name) === "GS")) return;
     if (!code || code === "VV00" || REGION_ORDER_MAP[code] || REGION_ORDER_MAP_2[code] || INVOICE_SHEET_ORDER_2.includes(code) || INVOICE_SHEET_ORDER_1.includes(code)) return;
     const x = m.get(code) || { code, label: `${code} ${o.customer || ""}`.trim(), customer: o.customer || "", qty: 0, dates: new Set() };
-    (o.lines || []).forEach((l) => (x.qty += Number(l.changedQty ?? l.qty) || 0));
+    (o.lines || []).forEach((l) => productBrandOf(l.name) === "GS" && (x.qty += Number(l.changedQty ?? l.qty) || 0)); // GS 상품 수량만
     if (o.createdAt) x.dates.add(o.createdAt);
     m.set(code, x);
   });
