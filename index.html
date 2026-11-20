@@ -33363,7 +33363,8 @@ function verifyGsPicking(_ref240) {
           var rr = p.regionRows.find(function (r) {
             return r.key === key;
           });
-          return info && info.vvLabel || rr && rr.label || key;
+          if (info) return gsVvLabelOf(key);
+          return rr && rr.label || key;
         };
         var want = {};
         Object.entries(r0).forEach(function (_ref241) {

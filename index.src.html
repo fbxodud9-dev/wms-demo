@@ -17302,7 +17302,9 @@ function verifyGsPicking({ orders, date, buffer, sheetLog, products, fullExport 
         const labelOf = (key) => {
           const info = REGION_ADDRESS_MAP[key];
           const rr = p.regionRows.find((r) => r.key === key);
-          return (info && info.vvLabel) || (rr && rr.label) || key;
+          // 피벗을 쓸 때와 같은 이름 규칙 (등록번호 비우면 발주파일 이름 "VV29 (주)지에스리테일평택저온", 2026-11-21)
+          if (info) return gsVvLabelOf(key);
+          return (rr && rr.label) || key;
         };
         const want = {};
         Object.entries(r0).forEach(([k, q]) => (want[labelOf(k)] = (want[labelOf(k)] || 0) + q));
