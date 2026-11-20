@@ -1704,6 +1704,14 @@ function applyGsCenterCfg(v) {
   fillObj(REGION_REAL_ZONE, R.realZone);
   return R;
 }
+// 센터 설정에서 명세서 등록번호 칸을 비워둔 센터(새 센터 등): 그날 발주파일의 "VV코드 + 납품처 이름"을 그대로 씀 (2026-11-20)
+const GS_ORDER_LABEL = {};
+function gsVvLabelOf(code) {
+  const info = REGION_ADDRESS_MAP[code];
+  const v = info && info.vvLabel;
+  if (v && String(v).trim() !== String(code)) return v;
+  return GS_ORDER_LABEL[code] || v || code;
+}
 // 발주에 있는데 등록 안 된 GS 센터 코드 → { code, label, qty }
 function gsUnknownCenters(orders) {
   const m = new Map();
@@ -20041,6 +20049,12 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     });
     return m;
   }, [orders]);
+  // 명세서 등록번호 칸: 직접 적은 값 > 그날 발주파일 이름 > (비어 있음 안내)
+  const invLabelOf = (code) => {
+    const v = infoOf(code).vvLabel;
+    if (v && v !== code) return v;
+    return orderLabel[code] || `${code} (비워두면 발주파일 납품처 이름이 자동으로 들어가요)`;
+  };
   const pickLabelOf = (code) => {
     if (orderLabel[code]) return { text: orderLabel[code] };
     const v = infoOf(code).vvLabel;
@@ -20289,7 +20303,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                                 {fieldRow("시트 이름", (centers[c] || {}).invName ?? "", (v) => setCenter(c, { invName: v }), i.sheet, "명세서 시트 탭 이름")}
                                 {fieldRow("센터명 (명세서 상호)", (centers[c] || {}).centerName ?? "", (v) => setCenter(c, { centerName: v }), i.centerName)}
                               </div>
-                              {fieldRow("명세서 등록번호 칸", (centers[c] || {}).vvLabel ?? "", (v) => setCenter(c, { vvLabel: v }), i.vvLabel)}
+                              {fieldRow("명세서 등록번호 칸", (centers[c] || {}).vvLabel ?? "", (v) => setCenter(c, { vvLabel: v }), i.vvLabel !== c ? i.vvLabel : orderLabel[c] || `${c} (발주파일 이름)`, "비워두면 그날 발주파일의 'VV코드 + 납품처 이름'이 자동으로 들어가요")}
                               {fieldRow("주소", (centers[c] || {}).address ?? "", (v) => setCenter(c, { address: v }), String(i.address || "").replace(/\n/g, " "), "비워두면 원래 값 그대로")}
                             </>
                           )}
@@ -20388,7 +20402,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                     invoicePreview(
                       form
                         ? { name: form.invName || "(시트 이름)", vvLabel: form.vvLabel || form.code, centerName: form.centerName || (form.invName ? `${form.invName}센터` : ""), address: form.address }
-                        : { ...infoOf(editCode), name: infoOf(editCode).sheet }
+                        : { ...infoOf(editCode), name: infoOf(editCode).sheet, vvLabel: invLabelOf(editCode) }
                     )
                   )}
                 </>
@@ -22304,7 +22318,7 @@ function addPickingPivotSheet(workbook, supplierKey, products, usedNames, date) 
   let r = 3;
   codes.forEach((code) => {
     const info = REGION_ADDRESS_MAP[code];
-    ws.getCell(r, 1).value = (info && info.vvLabel) || labelOf[code] || code;
+    ws.getCell(r, 1).value = info ? gsVvLabelOf(code) : labelOf[code] || code;
     let rowTotal = 0;
     items.forEach((p, i) => {
       const q = qtyOf(p, code);
@@ -23452,7 +23466,7 @@ function addStyledInvoiceSheet(workbook, region, supplierInfo, date, usedNames, 
     // 정보블록 4줄 (각 줄 = 2행 병합)
     let r = T + 2;
     put(r, 3, "등록번호", LBL, { h: "center", wrap: true }); mc(r, 3, r + 1, 6);
-    put(r, 7, info.vvLabel, BLK9, { h: "center" }); mc(r, 7, r + 1, 16);
+    put(r, 7, gsVvLabelOf(region.code) || info.vvLabel, BLK9, { h: "center" }); mc(r, 7, r + 1, 16);
     put(r, 18, "등록번호", LBL, { h: "center" }); mc(r, 18, r + 1, 21);
     put(r, 22, supplierInfo.regNo, BLK12B, { h: "center" }); mc(r, 22, r + 1, 34);
 
@@ -23598,7 +23612,7 @@ function addInvoiceSummarySheet(workbook, data, date, part, usedNames) {
   INVOICE_PIVOT_ORDER.forEach((code) => {
     const info = REGION_ADDRESS_MAP[code];
     if (!info) return;
-    ws.getCell(r, 1).value = info.vvLabel;
+    ws.getCell(r, 1).value = gsVvLabelOf(code);
     let rowTotal = 0;
     data.items.forEach((it, i) => {
       const q = data.qtyOf(it, code);
@@ -24191,6 +24205,7 @@ function buildProductsForDate(orders, activeDate, opts = {}) {
     const regionKey = o.storeCode || o.customer;
     const ref = REGION_ORDER_MAP[regionKey];
     const regionLabel = o.storeCode ? `${o.storeCode} ${o.customer}` : o.customer;
+    if (o.storeCode && o.customer) GS_ORDER_LABEL[o.storeCode] = regionLabel; // 명세서 등록번호 칸을 비워둔 센터는 발주파일 이름을 씀
     const supplierKey = supplierGroupKey(o.supplier);
     o.lines.forEach((l) => {
       // 할당(할당완료/미할당) 시스템은 화면에서 뺐으니, 피킹지시서·거래명세서도 할당수량이 아니라
