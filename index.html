@@ -1711,7 +1711,7 @@ function gsUnknownCenters(orders) {
     const code = String(o.storeCode || "").trim();
     // GS편의점 센터 코드(VV+숫자)만 봄 - GS슈퍼(조리센터·점포 코드 숫자) 등 다른 발주는 GS 일반 센터가 아님 (2026-11-19)
     if (!/^VV\d+$/i.test(code)) return;
-    if (o.channel && o.channel !== "GS") return;
+    if (o.channel && SEPARATE_CHANNELS.includes(o.channel)) return; // 이마트·세븐·BGF 등 따로 올리는 채널 (GS 발주의 channel은 발주타입 값이라 "GS"가 아닐 수 있음)
     if (!(o.lines || []).some((l) => productBrandOf(l.name) === "GS")) return;
     if (!code || code === "VV00" || REGION_ORDER_MAP[code] || REGION_ORDER_MAP_2[code] || INVOICE_SHEET_ORDER_2.includes(code) || INVOICE_SHEET_ORDER_1.includes(code)) return;
     const x = m.get(code) || { code, label: `${code} ${o.customer || ""}`.trim(), customer: o.customer || "", qty: 0, dates: new Set() };
@@ -20032,6 +20032,21 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
     return m;
   }, [orders]);
   const curList = GS_ORDER_LISTS.find((x) => x.key === listKey);
+  // 피킹지 A열(지역)은 실제로는 발주파일 납품처 이름이 찍혀요 → 미리보기도 발주 이름 > 저장한 이름 > 기본 순서로
+  const orderLabel = useMemo(() => {
+    const m = {};
+    (orders || []).forEach((o) => {
+      const c = String(o.storeCode || "").trim();
+      if (c && !m[c] && o.customer) m[c] = String(o.customer).startsWith(c) ? String(o.customer) : `${c} ${o.customer}`;
+    });
+    return m;
+  }, [orders]);
+  const pickLabelOf = (code) => {
+    if (orderLabel[code]) return { text: orderLabel[code] };
+    const v = infoOf(code).vvLabel;
+    if (v && v !== code) return { text: v };
+    return { text: `${code} (발주파일 납품처 이름)`, guess: true };
+  };
   const pickPreview = (k) => {
     let zone = "A";
     const rows = [];
@@ -20062,7 +20077,7 @@ function GsCenterSettingsModal({ initial, authToken, orders, onSaved, onInvoiceS
                 const nw = newCodes.includes(r.code) || isAdded(r.code);
                 return (
                   <tr key={r.code} style={{ background: nw ? "#E4F2EE" : gray ? "#F2F2F2" : "#fff", borderBottom: r.cp ? "3px solid #1B1D1A" : undefined }}>
-                    <td style={{ ...cell, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{infoOf(r.code).vvLabel}</td>
+                    <td style={{ ...cell, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", color: pickLabelOf(r.code).guess ? T.inkSoft : undefined }}>{pickLabelOf(r.code).text}</td>
                     <td style={{ ...cell, textAlign: "center" }}>12</td>
                     <td style={{ ...cell, textAlign: "right" }}>{sampleQty[r.code] ? "●" : "-"}</td>
                     <td style={{ ...cell, textAlign: "center" }}>-</td>
