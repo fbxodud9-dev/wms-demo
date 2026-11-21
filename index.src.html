@@ -4258,6 +4258,11 @@ const VOLUME_GROUPS = [
   { id: "gs", label: "GS 계열 소계" },
 ];
 const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "emart_dk", "cu_dk", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+// 파일이 없어서 직원이 직접 넣는 추가 칸 (2026-11-21): [key, 입력 라벨, 합쳐질 칸] — 입력값이 그 칸 숫자에 더해져서 대시보드·그래프·엑셀에 집계
+const VOLUME_EXTRA_DEFS = [
+  ["seven_taps", "세븐 탭스", "seven_2"],
+  ["seven_frozen_winz", "세븐 냉동 윈즈", "seven_frozen"],
+];
 
 function localDateStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
@@ -4416,6 +4421,15 @@ function computeVolumeDay(auto, saved) {
     if (isAuto) rows[key] = { value: auto[key], entered: false, fromOrders: true, autoValue: auto[key] };
     else rows[key] = { value: entered ? Number(s) : 0, entered, fromOrders: false, autoValue: null };
   });
+  // 추가 칸(세븐 탭스 → 세븐 2편, 세븐 냉동 윈즈 → 세븐 냉동): 직접 넣은 수량을 그 칸에 더함 (자동 집계 칸이어도 더해짐)
+  VOLUME_EXTRA_DEFS.forEach(([key, , parent]) => {
+    const s = saved ? saved[key] : undefined;
+    const entered = s !== undefined && s !== null && s !== "";
+    const v = entered ? Number(s) || 0 : 0;
+    rows[key] = { value: v, entered, fromOrders: false, autoValue: null, extraOf: parent };
+    const pr = rows[parent];
+    rows[parent] = { ...pr, baseValue: pr.value, extra: v, value: pr.value + v };
+  });
   const channels = VOLUME_CHANNELS.map((ch) => {
     const parts = VOLUME_ROW_DEFS.filter((d) => d[2] === ch.id).map((d) => ({ key: d[0], label: d[1], value: rows[d[0]].value }));
     return { ...ch, parts, total: parts.reduce((a, p) => a + p.value, 0) };
@@ -4550,7 +4564,7 @@ function VolumePanel({ variant, date, day, prevDay, onEdit }) {
 function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   const [form, setForm] = useState(() => {
     const f = {};
-    VOLUME_ROW_DEFS.forEach(([key]) => {
+    [...VOLUME_ROW_DEFS, ...VOLUME_EXTRA_DEFS].forEach(([key]) => {
       f[key] = saved && saved[key] !== undefined && saved[key] !== null ? String(saved[key]) : "";
     });
     return f;
@@ -4565,7 +4579,7 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
   };
   const data = {};
   let invalid = false;
-  VOLUME_ROW_DEFS.forEach(([key]) => {
+  [...VOLUME_ROW_DEFS, ...VOLUME_EXTRA_DEFS].forEach(([key]) => {
     const v = parse(form[key]);
     if (Number.isNaN(v)) invalid = true;
     else if (v !== null) data[key] = v;
@@ -4610,7 +4624,8 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
               {VOLUME_ROW_DEFS.filter((d) => VOLUME_CHANNELS.find((c) => c.id === d[2]).group === g.id).map(([key, , , full]) => {
                 const isAuto = preview.rows && preview.rows[key] ? preview.rows[key].fromOrders : VOLUME_AUTO_KEYS.includes(key);
                 return (
-                  <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                  <React.Fragment key={key}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
                     <div style={{ flex: 1, fontSize: 13.5 }}>
                       {full}
                       {isAuto && <span style={{ marginLeft: 6, fontSize: 11, color: T.teal, fontWeight: 600 }}>일별 집계 자동</span>}
@@ -4629,12 +4644,33 @@ function VolumeEditModal({ date, auto, saved, onSave, onClose }) {
                       />
                     )}
                   </div>
+                  {VOLUME_EXTRA_DEFS.filter((x) => x[2] === key).map(([xk, xLabel]) => (
+                    <div key={xk} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0 6px 14px" }}>
+                      <div style={{ flex: 1, fontSize: 13.5 }}>
+                        <span style={{ color: T.inkSoft }}>└ </span>
+                        {xLabel}
+                        <span style={{ marginLeft: 6, fontSize: 11, color: T.clay, fontWeight: 600 }}>직접 입력 · {full}에 합산</span>
+                        <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 2 }}>
+                          {full} 합계 {fmtNum(preview.rows[key].value)}
+                          {preview.rows[key].extra ? ` (${fmtNum(preview.rows[key].baseValue)} + ${xLabel} ${fmtNum(preview.rows[key].extra)})` : ""}
+                        </div>
+                      </div>
+                      <input
+                        inputMode="numeric"
+                        value={form[xk]}
+                        onChange={(e) => setForm({ ...form, [xk]: e.target.value })}
+                        placeholder="-"
+                        style={{ ...inputStyle, width: 130, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", padding: "7px 10px" }}
+                      />
+                    </div>
+                  ))}
+                  </React.Fragment>
                 );
               })}
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
-            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편, 이마트 1편·2편, GS 냉동, 이마트 냉동)은 일별 발주 집계 화면(GS·이마트·GS 냉동·이마트 냉동 시트)의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다.
+            “일별 집계 자동” 칸(GS 1편·냉장/당착·2편, 이마트 1편·2편, GS 냉동, 이마트 냉동)은 일별 발주 집계 화면(GS·이마트·GS 냉동·이마트 냉동 시트)의 1편·냉장·2편 숫자를 그대로 가져와요. 바꾸려면 일별 발주 집계에서 상품 숫자나 집계 설정을 고치세요. 비워둔 다른 칸은 0으로 봅니다. 세븐 탭스·세븐 냉동 윈즈는 파일이 없어서 직접 넣는 칸이고, 넣은 수량이 세븐 2편·세븐 냉동 숫자에 더해져서 대시보드에 집계돼요.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderTop: `1px solid ${T.border}`, background: "#FAF9F5" }}>
@@ -4908,7 +4944,7 @@ function VolumeTrend({ baseDate, dayOf }) {
         ws.columns = [{ width: 13 }, { width: 6 }, ...parts.map(() => ({ width: 14 })), { width: 14 }];
         ws.getCell("A" + R0).value = `${ch.name} 물동량 (${period})`;
         ws.getCell("A" + R0).font = { name: XLFONT, size: 13, bold: true };
-        ["날짜", "요일", ...parts.map((d) => d[3]), "합계"].forEach((h, i) => {
+        ["날짜", "요일", ...parts.map((d) => { const x = VOLUME_EXTRA_DEFS.find((e) => e[2] === d[0]); return x ? `${d[3]} (${x[1]} 포함)` : d[3]; }), "합계"].forEach((h, i) => {
           const c = ws.getCell(colL(i + 1) + H0);
           c.value = h;
           headStyle(c);
@@ -5342,8 +5378,11 @@ function VolumeDashboard({ orders, emartOrders = [], frozenOrders = [], emFrozen
   async function handleSave(date, data) {
     try {
       const res = await apiFetch(`/volumes/${date}`, authToken, { method: "PUT", body: { data } });
-      setSavedMap((m) => ({ ...m, [date]: res.volume.data || {} }));
-      setNotice("");
+      const back = res.volume.data || {};
+      // 추가 칸(세븐 탭스·세븐 냉동 윈즈)을 서버가 저장하지 않고 돌려주면 그대로 알림 (숫자가 조용히 사라지지 않게)
+      const lost = VOLUME_EXTRA_DEFS.filter(([k]) => data[k] !== undefined && back[k] === undefined).map((x) => x[1]);
+      setSavedMap((m) => ({ ...m, [date]: back }));
+      setNotice(lost.length ? `서버가 ${lost.join("·")} 수량을 저장하지 않았어요. 개발 담당에게 알려주세요.` : "");
     } catch (e) {
       writeLocalVolume(date, data);
       setSavedMap((m) => ({ ...m, [date]: data }));

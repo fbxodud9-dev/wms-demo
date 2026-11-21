@@ -7635,6 +7635,7 @@ var VOLUME_GROUPS = [{
   label: "GS 계열 소계"
 }];
 var VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "emart_dk", "cu_dk", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"];
+var VOLUME_EXTRA_DEFS = [["seven_taps", "세븐 탭스", "seven_2"], ["seven_frozen_winz", "세븐 냉동 윈즈", "seven_frozen"]];
 function localDateStr() {
   var d = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : new Date();
   var p = function p(n) {
@@ -7895,6 +7896,27 @@ function computeVolumeDay(auto, saved) {
       autoValue: null
     };
   });
+  VOLUME_EXTRA_DEFS.forEach(function (_ref78) {
+    var _ref79 = _slicedToArray(_ref78, 3),
+      key = _ref79[0],
+      parent = _ref79[2];
+    var s = saved ? saved[key] : undefined;
+    var entered = s !== undefined && s !== null && s !== "";
+    var v = entered ? Number(s) || 0 : 0;
+    rows[key] = {
+      value: v,
+      entered: entered,
+      fromOrders: false,
+      autoValue: null,
+      extraOf: parent
+    };
+    var pr = rows[parent];
+    rows[parent] = _objectSpread(_objectSpread({}, pr), {}, {
+      baseValue: pr.value,
+      extra: v,
+      value: pr.value + v
+    });
+  });
   var channels = VOLUME_CHANNELS.map(function (ch) {
     var parts = VOLUME_ROW_DEFS.filter(function (d) {
       return d[2] === ch.id;
@@ -7945,11 +7967,11 @@ function writeLocalVolume(date, data) {
     localStorage.setItem(VOLUME_LS_KEY, JSON.stringify(all));
   } catch (e) {}
 }
-function DeltaBadge(_ref78) {
-  var diff = _ref78.diff,
-    pct = _ref78.pct,
-    _ref78$size = _ref78.size,
-    size = _ref78$size === void 0 ? 12.5 : _ref78$size;
+function DeltaBadge(_ref80) {
+  var diff = _ref80.diff,
+    pct = _ref80.pct,
+    _ref80$size = _ref80.size,
+    size = _ref80$size === void 0 ? 12.5 : _ref80$size;
   if (diff === null) return null;
   var up = diff > 0;
   var flat = diff === 0;
@@ -7964,12 +7986,12 @@ function DeltaBadge(_ref78) {
     }
   }, flat ? "±0" : "".concat(up ? "▲" : "▼", " ").concat(fmtNum(Math.abs(diff))), pct !== null && !flat ? " (".concat(up ? "+" : "-").concat(Math.abs(pct).toFixed(1), "%)") : "");
 }
-function VolumePanel(_ref79) {
-  var variant = _ref79.variant,
-    date = _ref79.date,
-    day = _ref79.day,
-    prevDay = _ref79.prevDay,
-    onEdit = _ref79.onEdit;
+function VolumePanel(_ref81) {
+  var variant = _ref81.variant,
+    date = _ref81.date,
+    day = _ref81.day,
+    prevDay = _ref81.prevDay,
+    onEdit = _ref81.onEdit;
   var primary = variant === "today";
   var hasData = day.total > 0;
   var diff = prevDay ? day.total - prevDay.total : null;
@@ -8216,17 +8238,17 @@ function VolumePanel(_ref79) {
     })));
   }))));
 }
-function VolumeEditModal(_ref80) {
-  var date = _ref80.date,
-    auto = _ref80.auto,
-    saved = _ref80.saved,
-    onSave = _ref80.onSave,
-    onClose = _ref80.onClose;
+function VolumeEditModal(_ref82) {
+  var date = _ref82.date,
+    auto = _ref82.auto,
+    saved = _ref82.saved,
+    onSave = _ref82.onSave,
+    onClose = _ref82.onClose;
   var _useState127 = useState(function () {
       var f = {};
-      VOLUME_ROW_DEFS.forEach(function (_ref81) {
-        var _ref82 = _slicedToArray(_ref81, 1),
-          key = _ref82[0];
+      [].concat(VOLUME_ROW_DEFS, VOLUME_EXTRA_DEFS).forEach(function (_ref83) {
+        var _ref84 = _slicedToArray(_ref83, 1),
+          key = _ref84[0];
         f[key] = saved && saved[key] !== undefined && saved[key] !== null ? String(saved[key]) : "";
       });
       return f;
@@ -8250,9 +8272,9 @@ function VolumeEditModal(_ref80) {
   };
   var data = {};
   var invalid = false;
-  VOLUME_ROW_DEFS.forEach(function (_ref83) {
-    var _ref84 = _slicedToArray(_ref83, 1),
-      key = _ref84[0];
+  [].concat(VOLUME_ROW_DEFS, VOLUME_EXTRA_DEFS).forEach(function (_ref85) {
+    var _ref86 = _slicedToArray(_ref85, 1),
+      key = _ref86[0];
     var v = parse(form[key]);
     if (Number.isNaN(v)) invalid = true;else if (v !== null) data[key] = v;
   });
@@ -8383,13 +8405,14 @@ function VolumeEditModal(_ref80) {
       return VOLUME_CHANNELS.find(function (c) {
         return c.id === d[2];
       }).group === g.id;
-    }).map(function (_ref85) {
-      var _ref86 = _slicedToArray(_ref85, 4),
-        key = _ref86[0],
-        full = _ref86[3];
+    }).map(function (_ref87) {
+      var _ref88 = _slicedToArray(_ref87, 4),
+        key = _ref88[0],
+        full = _ref88[3];
       var isAuto = preview.rows && preview.rows[key] ? preview.rows[key].fromOrders : VOLUME_AUTO_KEYS.includes(key);
-      return React.createElement("div", {
-        key: key,
+      return React.createElement(React.Fragment, {
+        key: key
+      }, React.createElement("div", {
         style: {
           display: "flex",
           alignItems: "center",
@@ -8434,6 +8457,56 @@ function VolumeEditModal(_ref80) {
           fontFamily: "'JetBrains Mono', monospace",
           padding: "7px 10px"
         })
+      })), VOLUME_EXTRA_DEFS.filter(function (x) {
+        return x[2] === key;
+      }).map(function (_ref89) {
+        var _ref90 = _slicedToArray(_ref89, 2),
+          xk = _ref90[0],
+          xLabel = _ref90[1];
+        return React.createElement("div", {
+          key: xk,
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "4px 0 6px 14px"
+          }
+        }, React.createElement("div", {
+          style: {
+            flex: 1,
+            fontSize: 13.5
+          }
+        }, React.createElement("span", {
+          style: {
+            color: T.inkSoft
+          }
+        }, "\u2514 "), xLabel, React.createElement("span", {
+          style: {
+            marginLeft: 6,
+            fontSize: 11,
+            color: T.clay,
+            fontWeight: 600
+          }
+        }, "\uC9C1\uC811 \uC785\uB825 \xB7 ", full, "\uC5D0 \uD569\uC0B0"), React.createElement("div", {
+          style: {
+            fontSize: 11.5,
+            color: T.inkSoft,
+            marginTop: 2
+          }
+        }, full, " \uD569\uACC4 ", fmtNum(preview.rows[key].value), preview.rows[key].extra ? " (".concat(fmtNum(preview.rows[key].baseValue), " + ").concat(xLabel, " ").concat(fmtNum(preview.rows[key].extra), ")") : "")), React.createElement("input", {
+          inputMode: "numeric",
+          value: form[xk],
+          onChange: function onChange(e) {
+            return setForm(_objectSpread(_objectSpread({}, form), {}, _defineProperty({}, xk, e.target.value)));
+          },
+          placeholder: "-",
+          style: _objectSpread(_objectSpread({}, inputStyle), {}, {
+            width: 130,
+            textAlign: "right",
+            fontFamily: "'JetBrains Mono', monospace",
+            padding: "7px 10px"
+          })
+        }));
       }));
     }));
   }), React.createElement("div", {
@@ -8443,7 +8516,7 @@ function VolumeEditModal(_ref80) {
       marginTop: 10,
       lineHeight: 1.5
     }
-  }, "\u201C\uC77C\uBCC4 \uC9D1\uACC4 \uC790\uB3D9\u201D \uCE78(GS 1\uD3B8\xB7\uB0C9\uC7A5/\uB2F9\uCC29\xB72\uD3B8, \uC774\uB9C8\uD2B8 1\uD3B8\xB72\uD3B8, GS \uB0C9\uB3D9, \uC774\uB9C8\uD2B8 \uB0C9\uB3D9)\uC740 \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4 \uD654\uBA74(GS\xB7\uC774\uB9C8\uD2B8\xB7GS \uB0C9\uB3D9\xB7\uC774\uB9C8\uD2B8 \uB0C9\uB3D9 \uC2DC\uD2B8)\uC758 1\uD3B8\xB7\uB0C9\uC7A5\xB72\uD3B8 \uC22B\uC790\uB97C \uADF8\uB300\uB85C \uAC00\uC838\uC640\uC694. \uBC14\uAFB8\uB824\uBA74 \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4\uC5D0\uC11C \uC0C1\uD488 \uC22B\uC790\uB098 \uC9D1\uACC4 \uC124\uC815\uC744 \uACE0\uCE58\uC138\uC694. \uBE44\uC6CC\uB454 \uB2E4\uB978 \uCE78\uC740 0\uC73C\uB85C \uBD05\uB2C8\uB2E4.")), React.createElement("div", {
+  }, "\u201C\uC77C\uBCC4 \uC9D1\uACC4 \uC790\uB3D9\u201D \uCE78(GS 1\uD3B8\xB7\uB0C9\uC7A5/\uB2F9\uCC29\xB72\uD3B8, \uC774\uB9C8\uD2B8 1\uD3B8\xB72\uD3B8, GS \uB0C9\uB3D9, \uC774\uB9C8\uD2B8 \uB0C9\uB3D9)\uC740 \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4 \uD654\uBA74(GS\xB7\uC774\uB9C8\uD2B8\xB7GS \uB0C9\uB3D9\xB7\uC774\uB9C8\uD2B8 \uB0C9\uB3D9 \uC2DC\uD2B8)\uC758 1\uD3B8\xB7\uB0C9\uC7A5\xB72\uD3B8 \uC22B\uC790\uB97C \uADF8\uB300\uB85C \uAC00\uC838\uC640\uC694. \uBC14\uAFB8\uB824\uBA74 \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4\uC5D0\uC11C \uC0C1\uD488 \uC22B\uC790\uB098 \uC9D1\uACC4 \uC124\uC815\uC744 \uACE0\uCE58\uC138\uC694. \uBE44\uC6CC\uB454 \uB2E4\uB978 \uCE78\uC740 0\uC73C\uB85C \uBD05\uB2C8\uB2E4. \uC138\uBE10 \uD0ED\uC2A4\xB7\uC138\uBE10 \uB0C9\uB3D9 \uC708\uC988\uB294 \uD30C\uC77C\uC774 \uC5C6\uC5B4\uC11C \uC9C1\uC811 \uB123\uB294 \uCE78\uC774\uACE0, \uB123\uC740 \uC218\uB7C9\uC774 \uC138\uBE10 2\uD3B8\xB7\uC138\uBE10 \uB0C9\uB3D9 \uC22B\uC790\uC5D0 \uB354\uD574\uC838\uC11C \uB300\uC2DC\uBCF4\uB4DC\uC5D0 \uC9D1\uACC4\uB3FC\uC694.")), React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -8491,16 +8564,16 @@ var xmlEsc = function xmlEsc(s) {
 var xlSheetRef = function xlSheetRef(sheet) {
   return "'".concat(String(sheet).replace(/'/g, "''"), "'");
 };
-function xlChartXml(_ref87) {
-  var title = _ref87.title,
-    cats = _ref87.cats,
-    catRef = _ref87.catRef,
-    _ref87$bars = _ref87.bars,
-    bars = _ref87$bars === void 0 ? [] : _ref87$bars,
-    _ref87$lines = _ref87.lines,
-    lines = _ref87$lines === void 0 ? [] : _ref87$lines,
-    _ref87$majorUnit = _ref87.majorUnit,
-    majorUnit = _ref87$majorUnit === void 0 ? 0 : _ref87$majorUnit;
+function xlChartXml(_ref91) {
+  var title = _ref91.title,
+    cats = _ref91.cats,
+    catRef = _ref91.catRef,
+    _ref91$bars = _ref91.bars,
+    bars = _ref91$bars === void 0 ? [] : _ref91$bars,
+    _ref91$lines = _ref91.lines,
+    lines = _ref91$lines === void 0 ? [] : _ref91$lines,
+    _ref91$majorUnit = _ref91.majorUnit,
+    majorUnit = _ref91$majorUnit === void 0 ? 0 : _ref91$majorUnit;
   var strCache = function strCache(arr) {
     return "<c:strCache><c:ptCount val=\"".concat(arr.length, "\"/>").concat(arr.map(function (v, i) {
       return "<c:pt idx=\"".concat(i, "\"><c:v>").concat(xmlEsc(v), "</c:v></c:pt>");
@@ -8695,13 +8768,13 @@ function niceMax(v) {
   var n = v / p;
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
 }
-function TrendSpark(_ref88) {
-  var vals = _ref88.vals,
-    color = _ref88.color,
-    _ref88$w = _ref88.w,
-    w = _ref88$w === void 0 ? 150 : _ref88$w,
-    _ref88$h = _ref88.h,
-    h = _ref88$h === void 0 ? 38 : _ref88$h;
+function TrendSpark(_ref92) {
+  var vals = _ref92.vals,
+    color = _ref92.color,
+    _ref92$w = _ref92.w,
+    w = _ref92$w === void 0 ? 150 : _ref92$w,
+    _ref92$h = _ref92.h,
+    h = _ref92$h === void 0 ? 38 : _ref92$h;
   var m = Math.max.apply(Math, [1].concat(_toConsumableArray(vals)));
   var pts = vals.map(function (v, i) {
     return "".concat((i * w / Math.max(1, vals.length - 1)).toFixed(1), ",").concat((h - 4 - (h - 8) * v / m).toFixed(1));
@@ -8730,9 +8803,9 @@ function TrendSpark(_ref88) {
     fill: color
   }));
 }
-function VolumeTrend(_ref89) {
-  var baseDate = _ref89.baseDate,
-    dayOf = _ref89.dayOf;
+function VolumeTrend(_ref93) {
+  var baseDate = _ref93.baseDate,
+    dayOf = _ref93.dayOf;
   var _useState133 = useState("14"),
     _useState134 = _slicedToArray(_useState133, 2),
     range = _useState134[0],
@@ -9008,7 +9081,10 @@ function VolumeTrend(_ref89) {
                 bold: true
               };
               ["날짜", "요일"].concat(_toConsumableArray(parts.map(function (d) {
-                return d[3];
+                var x = VOLUME_EXTRA_DEFS.find(function (e) {
+                  return e[2] === d[0];
+                });
+                return x ? "".concat(d[3], " (").concat(x[1], " \uD3EC\uD568)") : d[3];
               })), ["합계"]).forEach(function (h, i) {
                 var c = ws.getCell(colL(i + 1) + H0);
                 c.value = h;
@@ -9038,8 +9114,8 @@ function VolumeTrend(_ref89) {
                   d: d,
                   pi: pi
                 };
-              }).filter(function (_ref90) {
-                var d = _ref90.d;
+              }).filter(function (_ref94) {
+                var d = _ref94.d;
                 return days.some(function (x) {
                   return x.day && x.day.rows[d[0]] && x.day.rows[d[0]].value > 0;
                 });
@@ -9062,9 +9138,9 @@ function VolumeTrend(_ref89) {
                   }))) >= 100000 ? 100000 : 0,
                   cats: catVals,
                   catRef: "".concat(sn, "!$A$").concat(D0, ":$A$").concat(DL),
-                  bars: partsWithData.length > 1 ? partsWithData.map(function (_ref91, k) {
-                    var d = _ref91.d,
-                      pi = _ref91.pi;
+                  bars: partsWithData.length > 1 ? partsWithData.map(function (_ref95, k) {
+                    var d = _ref95.d,
+                      pi = _ref95.pi;
                     return {
                       name: d[3],
                       nameRef: "".concat(sn, "!$").concat(colL(3 + pi), "$").concat(H0),
@@ -9674,23 +9750,23 @@ function VolumeTrend(_ref89) {
     }, 0))));
   })));
 }
-function VolumeDashboard(_ref92) {
-  var orders = _ref92.orders,
-    _ref92$emartOrders = _ref92.emartOrders,
-    emartOrders = _ref92$emartOrders === void 0 ? [] : _ref92$emartOrders,
-    _ref92$frozenOrders = _ref92.frozenOrders,
-    frozenOrders = _ref92$frozenOrders === void 0 ? [] : _ref92$frozenOrders,
-    _ref92$emFrozenOrders = _ref92.emFrozenOrders,
-    emFrozenOrders = _ref92$emFrozenOrders === void 0 ? [] : _ref92$emFrozenOrders,
-    _ref92$sevenOrders = _ref92.sevenOrders,
-    sevenOrders = _ref92$sevenOrders === void 0 ? [] : _ref92$sevenOrders,
-    _ref92$sevenFrozenOrd = _ref92.sevenFrozenOrders,
-    sevenFrozenOrders = _ref92$sevenFrozenOrd === void 0 ? [] : _ref92$sevenFrozenOrd,
-    _ref92$bgfOrders = _ref92.bgfOrders,
-    bgfOrders = _ref92$bgfOrders === void 0 ? [] : _ref92$bgfOrders,
-    _ref92$bgfFrozenOrder = _ref92.bgfFrozenOrders,
-    bgfFrozenOrders = _ref92$bgfFrozenOrder === void 0 ? [] : _ref92$bgfFrozenOrder,
-    authToken = _ref92.authToken;
+function VolumeDashboard(_ref96) {
+  var orders = _ref96.orders,
+    _ref96$emartOrders = _ref96.emartOrders,
+    emartOrders = _ref96$emartOrders === void 0 ? [] : _ref96$emartOrders,
+    _ref96$frozenOrders = _ref96.frozenOrders,
+    frozenOrders = _ref96$frozenOrders === void 0 ? [] : _ref96$frozenOrders,
+    _ref96$emFrozenOrders = _ref96.emFrozenOrders,
+    emFrozenOrders = _ref96$emFrozenOrders === void 0 ? [] : _ref96$emFrozenOrders,
+    _ref96$sevenOrders = _ref96.sevenOrders,
+    sevenOrders = _ref96$sevenOrders === void 0 ? [] : _ref96$sevenOrders,
+    _ref96$sevenFrozenOrd = _ref96.sevenFrozenOrders,
+    sevenFrozenOrders = _ref96$sevenFrozenOrd === void 0 ? [] : _ref96$sevenFrozenOrd,
+    _ref96$bgfOrders = _ref96.bgfOrders,
+    bgfOrders = _ref96$bgfOrders === void 0 ? [] : _ref96$bgfOrders,
+    _ref96$bgfFrozenOrder = _ref96.bgfFrozenOrders,
+    bgfFrozenOrders = _ref96$bgfFrozenOrder === void 0 ? [] : _ref96$bgfFrozenOrder,
+    authToken = _ref96.authToken;
   var today = localDateStr();
   var _useState145 = useState(today),
     _useState146 = _slicedToArray(_useState145, 2),
@@ -9936,7 +10012,7 @@ function VolumeDashboard(_ref92) {
   }
   function _handleSave() {
     _handleSave = _asyncToGenerator(_regeneratorRuntime().mark(function _callee45(date, data) {
-      var res;
+      var res, back, lost;
       return _regeneratorRuntime().wrap(function _callee45$(_context45) {
         while (1) switch (_context45.prev = _context45.next) {
           case 0:
@@ -9950,25 +10026,33 @@ function VolumeDashboard(_ref92) {
             });
           case 3:
             res = _context45.sent;
-            setSavedMap(function (m) {
-              return _objectSpread(_objectSpread({}, m), {}, _defineProperty({}, date, res.volume.data || {}));
+            back = res.volume.data || {};
+            lost = VOLUME_EXTRA_DEFS.filter(function (_ref98) {
+              var _ref99 = _slicedToArray(_ref98, 1),
+                k = _ref99[0];
+              return data[k] !== undefined && back[k] === undefined;
+            }).map(function (x) {
+              return x[1];
             });
-            setNotice("");
-            _context45.next = 13;
+            setSavedMap(function (m) {
+              return _objectSpread(_objectSpread({}, m), {}, _defineProperty({}, date, back));
+            });
+            setNotice(lost.length ? "\uC11C\uBC84\uAC00 ".concat(lost.join("·"), " \uC218\uB7C9\uC744 \uC800\uC7A5\uD558\uC9C0 \uC54A\uC558\uC5B4\uC694. \uAC1C\uBC1C \uB2F4\uB2F9\uC5D0\uAC8C \uC54C\uB824\uC8FC\uC138\uC694.") : "");
+            _context45.next = 15;
             break;
-          case 8:
-            _context45.prev = 8;
+          case 10:
+            _context45.prev = 10;
             _context45.t0 = _context45["catch"](0);
             writeLocalVolume(date, data);
             setSavedMap(function (m) {
               return _objectSpread(_objectSpread({}, m), {}, _defineProperty({}, date, data));
             });
             setNotice("\uC11C\uBC84\uC5D0 \uC800\uC7A5\uD558\uC9C0 \uBABB\uD574 \uC774 \uBE0C\uB77C\uC6B0\uC800\uC5D0\uB9CC \uC800\uC7A5\uD588\uC5B4\uC694 (".concat(_context45.t0.message, ")"));
-          case 13:
+          case 15:
           case "end":
             return _context45.stop();
         }
-      }, _callee45, null, [[0, 8]]);
+      }, _callee45, null, [[0, 10]]);
     }));
     return _handleSave.apply(this, arguments);
   }
@@ -10066,22 +10150,22 @@ function VolumeDashboard(_ref92) {
     }
   }));
 }
-function Dashboard(_ref94) {
-  var items = _ref94.items,
-    tx = _ref94.tx,
-    lowStock = _ref94.lowStock,
-    totalQty = _ref94.totalQty,
-    todayTx = _ref94.todayTx,
-    goTo = _ref94.goTo,
-    orders = _ref94.orders,
-    emartOrders = _ref94.emartOrders,
-    frozenOrders = _ref94.frozenOrders,
-    emFrozenOrders = _ref94.emFrozenOrders,
-    sevenOrders = _ref94.sevenOrders,
-    sevenFrozenOrders = _ref94.sevenFrozenOrders,
-    bgfOrders = _ref94.bgfOrders,
-    bgfFrozenOrders = _ref94.bgfFrozenOrders,
-    authToken = _ref94.authToken;
+function Dashboard(_ref100) {
+  var items = _ref100.items,
+    tx = _ref100.tx,
+    lowStock = _ref100.lowStock,
+    totalQty = _ref100.totalQty,
+    todayTx = _ref100.todayTx,
+    goTo = _ref100.goTo,
+    orders = _ref100.orders,
+    emartOrders = _ref100.emartOrders,
+    frozenOrders = _ref100.frozenOrders,
+    emFrozenOrders = _ref100.emFrozenOrders,
+    sevenOrders = _ref100.sevenOrders,
+    sevenFrozenOrders = _ref100.sevenFrozenOrders,
+    bgfOrders = _ref100.bgfOrders,
+    bgfFrozenOrders = _ref100.bgfFrozenOrders,
+    authToken = _ref100.authToken;
   var inCount = todayTx.filter(function (t) {
     return t.type === "IN";
   }).length;
@@ -10103,8 +10187,8 @@ function Dashboard(_ref94) {
     authToken: authToken
   }));
 }
-function TxBadge(_ref95) {
-  var type = _ref95.type;
+function TxBadge(_ref101) {
+  var type = _ref101.type;
   var isIn = type === "IN";
   return React.createElement("div", {
     style: {
@@ -10126,11 +10210,11 @@ function TxBadge(_ref95) {
     strokeWidth: 2.5
   }));
 }
-function SectionHead(_ref96) {
-  var Icon = _ref96.icon,
-    title = _ref96.title,
-    color = _ref96.color,
-    onMore = _ref96.onMore;
+function SectionHead(_ref102) {
+  var Icon = _ref102.icon,
+    title = _ref102.title,
+    color = _ref102.color,
+    onMore = _ref102.onMore;
   return React.createElement("div", {
     style: {
       display: "flex",
@@ -10169,8 +10253,8 @@ function SectionHead(_ref96) {
     size: 13
   })));
 }
-function EmptyRow(_ref97) {
-  var text = _ref97.text;
+function EmptyRow(_ref103) {
+  var text = _ref103.text;
   return React.createElement("div", {
     style: {
       padding: "28px 16px",
@@ -10206,9 +10290,9 @@ var ORDER_FAMILY_OF = Object.fromEntries(ORDER_FAMILIES.flatMap(function (f) {
     return [x.key, f];
   })));
 }));
-function OrderFamilySwitch(_ref98) {
-  var tab = _ref98.tab,
-    onGo = _ref98.onGo;
+function OrderFamilySwitch(_ref104) {
+  var tab = _ref104.tab,
+    onGo = _ref104.onGo;
   var f = ORDER_FAMILY_OF[tab];
   if (!f) return null;
   var isFrozen = tab === f.frozen;
@@ -10320,15 +10404,15 @@ var CH_SHORT = {
   SEVEN: "세븐",
   SEVENFROZEN: "세븐냉동"
 };
-function PastDateLoader(_ref99) {
-  var summary = _ref99.summary,
-    loadedDates = _ref99.loadedDates,
-    groupDates = _ref99.groupDates,
-    group = _ref99.group,
-    busy = _ref99.busy,
-    onLoad = _ref99.onLoad,
-    pastView = _ref99.pastView,
-    onClose = _ref99.onClose;
+function PastDateLoader(_ref105) {
+  var summary = _ref105.summary,
+    loadedDates = _ref105.loadedDates,
+    groupDates = _ref105.groupDates,
+    group = _ref105.group,
+    busy = _ref105.busy,
+    onLoad = _ref105.onLoad,
+    pastView = _ref105.pastView,
+    onClose = _ref105.onClose;
   var _useState159 = useState(""),
     _useState160 = _slicedToArray(_useState159, 2),
     pick = _useState160[0],
@@ -10369,7 +10453,7 @@ function PastDateLoader(_ref99) {
     return "".concat(d.slice(5, 7), ".").concat(d.slice(8, 10), "(").concat(gsWeekday(d), ")");
   };
   var go = function () {
-    var _ref100 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee46(d) {
+    var _ref106 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee46(d) {
       return _regeneratorRuntime().wrap(function _callee46$(_context46) {
         while (1) switch (_context46.prev = _context46.next) {
           case 0:
@@ -10391,7 +10475,7 @@ function PastDateLoader(_ref99) {
       }, _callee46);
     }));
     return function go(_x59) {
-      return _ref100.apply(this, arguments);
+      return _ref106.apply(this, arguments);
     };
   }();
   return React.createElement("div", {
@@ -10494,8 +10578,8 @@ function PastDateLoader(_ref99) {
     }
   }, pastView ? "다른 메뉴로 가거나 [최근 이틀로 돌아가기]를 누르면 바로 최근 이틀로 돌아가요. 주문정보·피킹지·명세서·출고 화면 사이를 오가는 동안은 이 날짜가 유지돼요." : "\uBE60\uB974\uAC8C \uC5F4\uB9AC\uB3C4\uB85D \uCC44\uB110\uB9C8\uB2E4 \uCD5C\uADFC \uBC1C\uC8FC\uC77C ".concat(RECENT_ORDER_DATES, "\uAC1C\uB9CC \uBD88\uB7EC\uC640\uC694. \uC9C0\uB09C \uAE30\uB85D\uC740 \uB0A0\uC9DC\uB97C \uACE0\uB974\uBA74 \uADF8 \uB0A0\uC9DC\uB9CC \uB530\uB85C \uBCF4\uC5EC \uC918\uC694. \uBC1C\uC8FC\uB294 \uC11C\uBC84\uC5D0 14\uC77C \uB3D9\uC548 \uB0A8\uC544 \uC788\uACE0, \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4 \uC22B\uC790\uB294 \uACC4\uC18D \uB0A8\uC544\uC694.")));
 }
-function ComingSoon(_ref101) {
-  var title = _ref101.title;
+function ComingSoon(_ref107) {
+  var title = _ref107.title;
   return React.createElement("div", null, React.createElement(PageHeader, {
     title: title,
     sub: "\uC544\uC9C1 \uC900\uBE44 \uC911\uC778 \uD654\uBA74\uC774\uC5D0\uC694"
@@ -10576,10 +10660,10 @@ function SalesSummaryPage() {
     y2: "170",
     stroke: "#C9CED3",
     strokeWidth: "2"
-  }), [[60, 110], [100, 80], [140, 125], [180, 60], [220, 95]].map(function (_ref102, i) {
-    var _ref103 = _slicedToArray(_ref102, 2),
-      x = _ref103[0],
-      h = _ref103[1];
+  }), [[60, 110], [100, 80], [140, 125], [180, 60], [220, 95]].map(function (_ref108, i) {
+    var _ref109 = _slicedToArray(_ref108, 2),
+      x = _ref109[0],
+      h = _ref109[1];
     return React.createElement("rect", {
       key: i,
       x: x,
@@ -10726,10 +10810,10 @@ function SalesSummaryPage() {
     }, "\uC900\uBE44 \uC911"));
   })))));
 }
-function PageHeader(_ref104) {
-  var title = _ref104.title,
-    sub = _ref104.sub,
-    action = _ref104.action;
+function PageHeader(_ref110) {
+  var title = _ref110.title,
+    sub = _ref110.sub,
+    action = _ref110.action;
   return React.createElement("div", {
     style: {
       display: "flex",
@@ -10751,8 +10835,8 @@ function PageHeader(_ref104) {
     }
   }, sub)), action);
 }
-function Inventory(_ref105) {
-  var items = _ref105.items;
+function Inventory(_ref111) {
+  var items = _ref111.items;
   var _useState163 = useState(""),
     _useState164 = _slicedToArray(_useState163, 2),
     q = _useState164[0],
@@ -10927,8 +11011,8 @@ function buildZoneLayout(items) {
     };
   });
 }
-function ThreeDView(_ref106) {
-  var items = _ref106.items;
+function ThreeDView(_ref112) {
+  var items = _ref112.items;
   var mountRef = useRef(null);
   var stateRef = useRef({});
   var _useState167 = useState(null),
@@ -11479,8 +11563,8 @@ var ORDER_STATUS = {
     bg: "#E7F4EF"
   }
 };
-function OrderStatusPill(_ref107) {
-  var status = _ref107.status;
+function OrderStatusPill(_ref113) {
+  var status = _ref113.status;
   var s = ORDER_STATUS[status] || ORDER_STATUS.NEW;
   return React.createElement("span", {
     style: {
@@ -11528,22 +11612,22 @@ var primaryBtnStyle = {
   gap: 6,
   fontFamily: "inherit"
 };
-function OrderInfo(_ref108) {
+function OrderInfo(_ref114) {
   var _items$;
-  var items = _ref108.items,
-    orders = _ref108.orders,
-    onAdd = _ref108.onAdd,
-    onAddBulk = _ref108.onAddBulk,
-    onRegisterItemsBulk = _ref108.onRegisterItemsBulk,
-    onRekeyItems = _ref108.onRekeyItems,
-    onUpdateChangedQty = _ref108.onUpdateChangedQty,
-    onConvert = _ref108.onConvert,
-    onRegisterItem = _ref108.onRegisterItem,
-    onReset = _ref108.onReset,
-    onDeleteDate = _ref108.onDeleteDate,
-    channelTag = _ref108.channelTag,
-    title = _ref108.title,
-    sub = _ref108.sub;
+  var items = _ref114.items,
+    orders = _ref114.orders,
+    onAdd = _ref114.onAdd,
+    onAddBulk = _ref114.onAddBulk,
+    onRegisterItemsBulk = _ref114.onRegisterItemsBulk,
+    onRekeyItems = _ref114.onRekeyItems,
+    onUpdateChangedQty = _ref114.onUpdateChangedQty,
+    onConvert = _ref114.onConvert,
+    onRegisterItem = _ref114.onRegisterItem,
+    onReset = _ref114.onReset,
+    onDeleteDate = _ref114.onDeleteDate,
+    channelTag = _ref114.channelTag,
+    title = _ref114.title,
+    sub = _ref114.sub;
   var _useState171 = useState(false),
     _useState172 = _slicedToArray(_useState171, 2),
     showForm = _useState172[0],
@@ -12166,9 +12250,9 @@ function OrderInfo(_ref108) {
               if (autoDup > 0) window.alert("\u26A0 \uAC19\uC740 \uBC1C\uC8FC\uAC00 \uB4E4\uC5B4 \uC788\uB294 \uD30C\uC77C\uC744 \uB450 \uBC88 \uACE0\uB974\uC168\uC5B4\uC694.\n(".concat(_toConsumableArray(dupFiles).join(", "), ")\n\n\uACB9\uCE58\uB294 \uC0C1\uD488 \uC904 ").concat(autoDup.toLocaleString(), "\uAC1C\uB294 \uD55C \uBC88\uB9CC \uB123\uC5C8\uC5B4\uC694. \uC218\uB7C9\uC774 \uB450 \uBC30\uAC00 \uB418\uC9C0 \uC54A\uC544\uC694."));
               if (ask.length > 0) {
                 once = window.confirm("\u26A0 \uAC19\uC774 \uACE0\uB978 \uD30C\uC77C\uB4E4\uC5D0 \uB611\uAC19\uC740 \uBC1C\uC8FC \uC904\uC774 ".concat(ask.length.toLocaleString(), "\uAC1C \uC788\uC5B4\uC694.\n(\uAC19\uC740 \uB0A0\uC9DC\xB7\uB0A9\uD488\uCC98\xB7\uACF5\uAE09\uC0AC\xB7\uC0C1\uD488\uCF54\uB4DC, \uC8FC\uBB38\uBC88\uD638\uB098 \uD30C\uC77C \uD615\uC2DD\uB9CC \uB2E4\uB984)\n").concat(_toConsumableArray(askFiles).slice(0, 5).join("\n"), "\n\n\uC6D0\uBCF8 \uBC1C\uC8FC\uD30C\uC77C\uACFC \uB2E4\uB978 \uD615\uC2DD \uD30C\uC77C(\uC2A4\uD06C\uB798\uD551\xB7\uB2E4\uB978 \uBA54\uB274 \uB0B4\uB824\uBC1B\uAE30 \uB4F1)\uC744 \uAC19\uC774 \uACE0\uB978 \uAC83 \uAC19\uC544\uC694.\n\n[\uD655\uC778] \uD55C \uBC88\uB9CC \uB123\uAE30 (\uAD8C\uC7A5)\n[\uCDE8\uC18C] \uB458 \uB2E4 \uB123\uAE30 (\uC9C4\uC9DC \uCD94\uAC00\uBC1C\uC8FC\uC77C \uB54C\uB9CC)"));
-                if (!once) ask.forEach(function (_ref110) {
-                  var o = _ref110.o,
-                    l = _ref110.l;
+                if (!once) ask.forEach(function (_ref116) {
+                  var o = _ref116.o,
+                    l = _ref116.l;
                   return o.lines.push(l);
                 });
               }
@@ -12232,10 +12316,10 @@ function OrderInfo(_ref108) {
               });
             });
             _context50.next = 36;
-            return onRegisterItemsBulk([].concat(_toConsumableArray(unmatchedList.map(function (_ref111) {
-              var _ref112 = _slicedToArray(_ref111, 2),
-                sku = _ref112[0],
-                name = _ref112[1];
+            return onRegisterItemsBulk([].concat(_toConsumableArray(unmatchedList.map(function (_ref117) {
+              var _ref118 = _slicedToArray(_ref117, 2),
+                sku = _ref118[0],
+                name = _ref118[1];
               return {
                 sku: sku,
                 name: name,
@@ -13187,10 +13271,10 @@ function normalizeDailyRules(saved) {
     cold: "cold",
     notCold: "normal"
   };
-  Object.entries(legacy).forEach(function (_ref113) {
-    var _ref114 = _slicedToArray(_ref113, 2),
-      k = _ref114[0],
-      action = _ref114[1];
+  Object.entries(legacy).forEach(function (_ref119) {
+    var _ref120 = _slicedToArray(_ref119, 2),
+      k = _ref120[0],
+      action = _ref120[1];
     return (Array.isArray(v[k]) ? v[k] : []).forEach(function (name, i) {
       return out.push({
         id: "legacy-".concat(k, "-").concat(i),
@@ -13549,10 +13633,10 @@ function _syncPackedDaily() {
                   }).forEach(function (d) {
                     return fresh[d] = computeFn(d);
                   });
-                  if (!(curDays && Object.entries(fresh).every(function (_ref358) {
-                    var _ref359 = _slicedToArray(_ref358, 2),
-                      d = _ref359[0],
-                      snap = _ref359[1];
+                  if (!(curDays && Object.entries(fresh).every(function (_ref364) {
+                    var _ref365 = _slicedToArray(_ref364, 2),
+                      d = _ref365[0],
+                      snap = _ref365[1];
                     return JSON.stringify(curDays[d]) === JSON.stringify(snap);
                   }))) {
                     _context121.next = 8;
@@ -13564,10 +13648,10 @@ function _syncPackedDaily() {
                   return updateSetting(key, authToken, function (v) {
                     var sups = _toConsumableArray(v.sups || []);
                     var days = _objectSpread({}, v.days || {});
-                    Object.entries(fresh).forEach(function (_ref360) {
-                      var _ref361 = _slicedToArray(_ref360, 2),
-                        d = _ref361[0],
-                        snap = _ref361[1];
+                    Object.entries(fresh).forEach(function (_ref366) {
+                      var _ref367 = _slicedToArray(_ref366, 2),
+                        d = _ref367[0],
+                        snap = _ref367[1];
                       days[d] = snap.products.map(function (p) {
                         var i = sups.indexOf(p.supplier);
                         if (i === -1) i = sups.push(p.supplier) - 1;
@@ -13868,19 +13952,19 @@ function applyDailyEdits(days, editsBySheet) {
     });
   });
   var out = _objectSpread({}, days);
-  Object.entries(editsBySheet).forEach(function (_ref115) {
-    var _ref116 = _slicedToArray(_ref115, 2),
-      date = _ref116[0],
-      m = _ref116[1];
+  Object.entries(editsBySheet).forEach(function (_ref121) {
+    var _ref122 = _slicedToArray(_ref121, 2),
+      date = _ref122[0],
+      m = _ref122[1];
     if (!m || _typeof(m) !== "object") return;
     var cur = (out[date] && out[date].products || []).map(function (p) {
       return _objectSpread({}, p);
     });
-    Object.entries(m).forEach(function (_ref117) {
+    Object.entries(m).forEach(function (_ref123) {
       var _cur$i$_orig;
-      var _ref118 = _slicedToArray(_ref117, 2),
-        name = _ref118[0],
-        q = _ref118[1];
+      var _ref124 = _slicedToArray(_ref123, 2),
+        name = _ref124[0],
+        q = _ref124[1];
       var n = Number(q);
       if (!Number.isFinite(n)) return;
       var i = cur.findIndex(function (p) {
@@ -13906,10 +13990,10 @@ function applyDailyEdits(days, editsBySheet) {
 }
 function buildGsDailyTable(month, days, rules, edits) {
   days = applyDailyEdits(days, edits);
-  days = Object.fromEntries(Object.entries(days).map(function (_ref119) {
-    var _ref120 = _slicedToArray(_ref119, 2),
-      d = _ref120[0],
-      v = _ref120[1];
+  days = Object.fromEntries(Object.entries(days).map(function (_ref125) {
+    var _ref126 = _slicedToArray(_ref125, 2),
+      d = _ref126[0],
+      v = _ref126[1];
     return [d, _objectSpread(_objectSpread({}, v), {}, {
       products: (v && v.products || []).map(function (p) {
         var c = classifyDaily(rules, d, p);
@@ -14197,16 +14281,16 @@ function computeEmartDailySnapshot(emartOrders, date, rules) {
 }
 function packEmartMonth(v) {
   var out = {};
-  Object.entries(v && v.days || {}).forEach(function (_ref121) {
-    var _ref122 = _slicedToArray(_ref121, 2),
-      d = _ref122[0],
-      list = _ref122[1];
+  Object.entries(v && v.days || {}).forEach(function (_ref127) {
+    var _ref128 = _slicedToArray(_ref127, 2),
+      d = _ref128[0],
+      list = _ref128[1];
     return out[d] = {
-      products: (list || []).map(function (_ref123) {
-        var _ref124 = _slicedToArray(_ref123, 3),
-          name = _ref124[0],
-          si = _ref124[1],
-          qty = _ref124[2];
+      products: (list || []).map(function (_ref129) {
+        var _ref130 = _slicedToArray(_ref129, 3),
+          name = _ref130[0],
+          si = _ref130[1],
+          qty = _ref130[2];
         return {
           name: name,
           supplier: (v.sups || [])[si] || "미지정",
@@ -14248,10 +14332,10 @@ function _syncEmartDaily() {
                   }).forEach(function (d) {
                     return fresh[d] = computeEmartDailySnapshot(emartOrders, d, rules);
                   });
-                  if (!(curDays && Object.entries(fresh).every(function (_ref362) {
-                    var _ref363 = _slicedToArray(_ref362, 2),
-                      d = _ref363[0],
-                      snap = _ref363[1];
+                  if (!(curDays && Object.entries(fresh).every(function (_ref368) {
+                    var _ref369 = _slicedToArray(_ref368, 2),
+                      d = _ref369[0],
+                      snap = _ref369[1];
                     return JSON.stringify(curDays[d]) === JSON.stringify(snap);
                   }))) {
                     _context123.next = 8;
@@ -14263,10 +14347,10 @@ function _syncEmartDaily() {
                   return updateSetting(key, authToken, function (v) {
                     var sups = _toConsumableArray(v.sups || []);
                     var days = _objectSpread({}, v.days || {});
-                    Object.entries(fresh).forEach(function (_ref364) {
-                      var _ref365 = _slicedToArray(_ref364, 2),
-                        d = _ref365[0],
-                        snap = _ref365[1];
+                    Object.entries(fresh).forEach(function (_ref370) {
+                      var _ref371 = _slicedToArray(_ref370, 2),
+                        d = _ref371[0],
+                        snap = _ref371[1];
                       days[d] = snap.products.map(function (p) {
                         var i = sups.indexOf(p.supplier);
                         if (i === -1) i = sups.push(p.supplier) - 1;
@@ -14331,10 +14415,10 @@ function buildBrandDailyTable(month, days, partOf, edits, rules) {
   var clsOf = function clsOf(date, p) {
     return classifyDaily(rules, date, p, baseOf(p));
   };
-  if (rules && rules.length) days = Object.fromEntries(Object.entries(days).map(function (_ref125) {
-    var _ref126 = _slicedToArray(_ref125, 2),
-      d = _ref126[0],
-      v = _ref126[1];
+  if (rules && rules.length) days = Object.fromEntries(Object.entries(days).map(function (_ref131) {
+    var _ref132 = _slicedToArray(_ref131, 2),
+      d = _ref132[0],
+      v = _ref132[1];
     return [d, _objectSpread(_objectSpread({}, v), {}, {
       products: (v && v.products || []).filter(function (p) {
         return !clsOf(d, p).excluded;
@@ -14867,24 +14951,24 @@ function _downloadGsDailyExcel() {
   }));
   return _downloadGsDailyExcel.apply(this, arguments);
 }
-function GsDailyPage(_ref127) {
-  var orders = _ref127.orders,
-    _ref127$emartOrders = _ref127.emartOrders,
-    emartOrders = _ref127$emartOrders === void 0 ? [] : _ref127$emartOrders,
-    _ref127$frozenOrders = _ref127.frozenOrders,
-    frozenOrders = _ref127$frozenOrders === void 0 ? [] : _ref127$frozenOrders,
-    _ref127$emFrozenOrder = _ref127.emFrozenOrders,
-    emFrozenOrders = _ref127$emFrozenOrder === void 0 ? [] : _ref127$emFrozenOrder,
-    _ref127$sevenOrders = _ref127.sevenOrders,
-    sevenOrders = _ref127$sevenOrders === void 0 ? [] : _ref127$sevenOrders,
-    _ref127$sevenFrozenOr = _ref127.sevenFrozenOrders,
-    sevenFrozenOrders = _ref127$sevenFrozenOr === void 0 ? [] : _ref127$sevenFrozenOr,
-    _ref127$bgfOrders = _ref127.bgfOrders,
-    bgfOrders = _ref127$bgfOrders === void 0 ? [] : _ref127$bgfOrders,
-    _ref127$bgfFrozenOrde = _ref127.bgfFrozenOrders,
-    bgfFrozenOrders = _ref127$bgfFrozenOrde === void 0 ? [] : _ref127$bgfFrozenOrde,
-    authToken = _ref127.authToken,
-    productInfo = _ref127.productInfo;
+function GsDailyPage(_ref133) {
+  var orders = _ref133.orders,
+    _ref133$emartOrders = _ref133.emartOrders,
+    emartOrders = _ref133$emartOrders === void 0 ? [] : _ref133$emartOrders,
+    _ref133$frozenOrders = _ref133.frozenOrders,
+    frozenOrders = _ref133$frozenOrders === void 0 ? [] : _ref133$frozenOrders,
+    _ref133$emFrozenOrder = _ref133.emFrozenOrders,
+    emFrozenOrders = _ref133$emFrozenOrder === void 0 ? [] : _ref133$emFrozenOrder,
+    _ref133$sevenOrders = _ref133.sevenOrders,
+    sevenOrders = _ref133$sevenOrders === void 0 ? [] : _ref133$sevenOrders,
+    _ref133$sevenFrozenOr = _ref133.sevenFrozenOrders,
+    sevenFrozenOrders = _ref133$sevenFrozenOr === void 0 ? [] : _ref133$sevenFrozenOr,
+    _ref133$bgfOrders = _ref133.bgfOrders,
+    bgfOrders = _ref133$bgfOrders === void 0 ? [] : _ref133$bgfOrders,
+    _ref133$bgfFrozenOrde = _ref133.bgfFrozenOrders,
+    bgfFrozenOrders = _ref133$bgfFrozenOrde === void 0 ? [] : _ref133$bgfFrozenOrde,
+    authToken = _ref133.authToken,
+    productInfo = _ref133.productInfo;
   var orderDates = useMemo(function () {
     return Array.from(new Set(orders.map(function (o) {
       return o.createdAt;
@@ -15145,7 +15229,7 @@ function GsDailyPage(_ref127) {
     }, 0);
   }, [editsSaved]);
   var saveEdit = function () {
-    var _ref128 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee50(date, colName, origVal, text, curVal, revert) {
+    var _ref134 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee50(date, colName, origVal, text, curVal, revert) {
       var t, n;
       return _regeneratorRuntime().wrap(function _callee50$(_context51) {
         while (1) switch (_context51.prev = _context51.next) {
@@ -15194,23 +15278,23 @@ function GsDailyPage(_ref127) {
       }, _callee50);
     }));
     return function saveEdit(_x71, _x72, _x73, _x74, _x75, _x76) {
-      return _ref128.apply(this, arguments);
+      return _ref134.apply(this, arguments);
     };
   }();
   var editList = useMemo(function () {
     var out = [];
-    Object.entries(editsSaved || {}).forEach(function (_ref129) {
-      var _ref130 = _slicedToArray(_ref129, 2),
-        sk = _ref130[0],
-        byDate = _ref130[1];
-      return Object.entries(byDate || {}).forEach(function (_ref131) {
-        var _ref132 = _slicedToArray(_ref131, 2),
-          date = _ref132[0],
-          m = _ref132[1];
-        return Object.entries(m || {}).forEach(function (_ref133) {
-          var _ref134 = _slicedToArray(_ref133, 2),
-            name = _ref134[0],
-            q = _ref134[1];
+    Object.entries(editsSaved || {}).forEach(function (_ref135) {
+      var _ref136 = _slicedToArray(_ref135, 2),
+        sk = _ref136[0],
+        byDate = _ref136[1];
+      return Object.entries(byDate || {}).forEach(function (_ref137) {
+        var _ref138 = _slicedToArray(_ref137, 2),
+          date = _ref138[0],
+          m = _ref138[1];
+        return Object.entries(m || {}).forEach(function (_ref139) {
+          var _ref140 = _slicedToArray(_ref139, 2),
+            name = _ref140[0],
+            q = _ref140[1];
           return out.push({
             sk: sk,
             date: date,
@@ -15225,7 +15309,7 @@ function GsDailyPage(_ref127) {
     });
   }, [editsSaved]);
   var revertOne = function () {
-    var _ref135 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee51(sk, date, name) {
+    var _ref141 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee51(sk, date, name) {
       return _regeneratorRuntime().wrap(function _callee51$(_context52) {
         while (1) switch (_context52.prev = _context52.next) {
           case 0:
@@ -15246,7 +15330,7 @@ function GsDailyPage(_ref127) {
       }, _callee51);
     }));
     return function revertOne(_x77, _x78, _x79) {
-      return _ref135.apply(this, arguments);
+      return _ref141.apply(this, arguments);
     };
   }();
   var colIdx = useMemo(function () {
@@ -15258,7 +15342,7 @@ function GsDailyPage(_ref127) {
     });
   }, [sh, colQ]);
   var clearAllEdits = function () {
-    var _ref136 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee52() {
+    var _ref142 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee52() {
       return _regeneratorRuntime().wrap(function _callee52$(_context53) {
         while (1) switch (_context53.prev = _context53.next) {
           case 0:
@@ -15279,17 +15363,17 @@ function GsDailyPage(_ref127) {
       }, _callee52);
     }));
     return function clearAllEdits() {
-      return _ref136.apply(this, arguments);
+      return _ref142.apply(this, arguments);
     };
   }();
   var chKey = dailyChannelOfSheet(sheet);
   var ch = DAILY_CHANNELS[chKey];
   var chDays = useMemo(function () {
     var src = chKey === "이마트" ? emDays : chKey === "GS냉동" ? frDays : chKey === "이마트냉동" ? efDays : chKey === "세븐일레븐" ? svDays : chKey === "세븐냉동" ? sfDays : chKey === "BGF" ? bgDays : chKey === "BGF냉동" ? bfDays : chKey === "이마트델리" ? dlDays : chKey === "GS" || chKey === "GS슈퍼" ? days : {};
-    return Object.fromEntries(Object.entries(src).map(function (_ref137) {
-      var _ref138 = _slicedToArray(_ref137, 2),
-        d = _ref138[0],
-        v = _ref138[1];
+    return Object.fromEntries(Object.entries(src).map(function (_ref143) {
+      var _ref144 = _slicedToArray(_ref143, 2),
+        d = _ref144[0],
+        v = _ref144[1];
       return [d, _objectSpread(_objectSpread({}, v), {}, {
         products: (v && v.products || []).filter(ch.filter)
       })];
@@ -15807,12 +15891,12 @@ function saveDailyRules(authToken, fn) {
     return fn(cur);
   });
 }
-function DailyDeletedTab(_ref139) {
-  var rules = _ref139.rules,
-    save = _ref139.save,
-    saving = _ref139.saving,
-    setSaving = _ref139.setSaving,
-    chLabel = _ref139.chLabel;
+function DailyDeletedTab(_ref145) {
+  var rules = _ref145.rules,
+    save = _ref145.save,
+    saving = _ref145.saving,
+    setSaving = _ref145.setSaving,
+    chLabel = _ref145.chLabel;
   var list = rules.filter(function (r) {
     return r.action === "exclude";
   });
@@ -15826,7 +15910,7 @@ function DailyDeletedTab(_ref139) {
     return r.scope === "supplier" ? "[".concat(r.supplier, "] \uACF5\uAE09\uC0AC \uC804\uCCB4") : r.scope === "region" ? "[".concat(r.supplier, "] ").concat((r.regions || []).map(dailyRegionName).join("·")) : "[".concat(r.name, "]");
   };
   var restore = function () {
-    var _ref140 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee53(r) {
+    var _ref146 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee53(r) {
       return _regeneratorRuntime().wrap(function _callee53$(_context54) {
         while (1) switch (_context54.prev = _context54.next) {
           case 0:
@@ -15857,7 +15941,7 @@ function DailyDeletedTab(_ref139) {
       }, _callee53, null, [[3,, 6, 9]]);
     }));
     return function restore(_x80) {
-      return _ref140.apply(this, arguments);
+      return _ref146.apply(this, arguments);
     };
   }();
   var tag = function tag(r) {
@@ -15949,15 +16033,15 @@ function DailyDeletedTab(_ref139) {
     }, "\u21BA \uBCF5\uAD6C"));
   })));
 }
-function DailyRegionExcludeTab(_ref141) {
-  var ch = _ref141.ch,
-    orders = _ref141.orders,
-    suppliers = _ref141.suppliers,
-    dates = _ref141.dates,
-    rules = _ref141.rules,
-    save = _ref141.save,
-    saving = _ref141.saving,
-    setSaving = _ref141.setSaving;
+function DailyRegionExcludeTab(_ref147) {
+  var ch = _ref147.ch,
+    orders = _ref147.orders,
+    suppliers = _ref147.suppliers,
+    dates = _ref147.dates,
+    rules = _ref147.rules,
+    save = _ref147.save,
+    saving = _ref147.saving,
+    setSaving = _ref147.setSaving;
   var src = DAILY_REGION_SOURCES[ch.region];
   var _useState225 = useState(""),
     _useState226 = _slicedToArray(_useState225, 2),
@@ -16066,7 +16150,7 @@ function DailyRegionExcludeTab(_ref141) {
     return parts.join(" / ") || "-";
   };
   var doSave = function () {
-    var _ref142 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee54() {
+    var _ref148 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee54() {
       var list, text;
       return _regeneratorRuntime().wrap(function _callee54$(_context55) {
         while (1) switch (_context55.prev = _context55.next) {
@@ -16135,11 +16219,11 @@ function DailyRegionExcludeTab(_ref141) {
       }, _callee54, null, [[10, 17, 20, 23]]);
     }));
     return function doSave() {
-      return _ref142.apply(this, arguments);
+      return _ref148.apply(this, arguments);
     };
   }();
   var removeRule = function () {
-    var _ref143 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee55(r) {
+    var _ref149 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee55(r) {
       return _regeneratorRuntime().wrap(function _callee55$(_context56) {
         while (1) switch (_context56.prev = _context56.next) {
           case 0:
@@ -16170,7 +16254,7 @@ function DailyRegionExcludeTab(_ref141) {
       }, _callee55, null, [[3,, 6, 9]]);
     }));
     return function removeRule(_x81) {
-      return _ref143.apply(this, arguments);
+      return _ref149.apply(this, arguments);
     };
   }();
   var radio = function radio(k, label) {
@@ -16543,16 +16627,16 @@ function DailyRegionExcludeTab(_ref141) {
     }
   }, "\uC544\uC9C1 \uC5C6\uC5B4\uC694. \uBAA8\uB4E0 \uC9C0\uC5ED\uC744 \uC9D1\uACC4 \uC911\uC774\uC5D0\uC694."))))));
 }
-function DailySettingsModal(_ref144) {
-  var _ref144$ch = _ref144.ch,
-    ch = _ref144$ch === void 0 ? DAILY_CHANNELS.GS : _ref144$ch,
-    _ref144$orders = _ref144.orders,
-    orders = _ref144$orders === void 0 ? [] : _ref144$orders,
-    days = _ref144.days,
-    rulesSaved = _ref144.rulesSaved,
-    rules = _ref144.rules,
-    authToken = _ref144.authToken,
-    onClose = _ref144.onClose;
+function DailySettingsModal(_ref150) {
+  var _ref150$ch = _ref150.ch,
+    ch = _ref150$ch === void 0 ? DAILY_CHANNELS.GS : _ref150$ch,
+    _ref150$orders = _ref150.orders,
+    orders = _ref150$orders === void 0 ? [] : _ref150$orders,
+    days = _ref150.days,
+    rulesSaved = _ref150.rulesSaved,
+    rules = _ref150.rules,
+    authToken = _ref150.authToken,
+    onClose = _ref150.onClose;
   var products = useMemo(function () {
     return dailyProductList(days, ch);
   }, [days]);
@@ -16653,7 +16737,7 @@ function DailySettingsModal(_ref144) {
     return !r.from && !r.to ? "계속" : r.from === r.to ? "".concat(r.from.slice(5).replace("-", "/"), " \uD558\uB8E8") : "".concat(r.from ? r.from.slice(5).replace("-", "/") : "처음", " ~ ").concat(r.to ? r.to.slice(5).replace("-", "/") : "계속");
   };
   var setRule = function () {
-    var _ref145 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee56(scope, target, action) {
+    var _ref151 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee56(scope, target, action) {
       var g, per;
       return _regeneratorRuntime().wrap(function _callee56$(_context57) {
         while (1) switch (_context57.prev = _context57.next) {
@@ -16733,11 +16817,11 @@ function DailySettingsModal(_ref144) {
       }, _callee56, null, [[6, 11, 14, 17]]);
     }));
     return function setRule(_x82, _x83, _x84) {
-      return _ref145.apply(this, arguments);
+      return _ref151.apply(this, arguments);
     };
   }();
   var clearSupplierRule = function () {
-    var _ref146 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee57(supplier, g) {
+    var _ref152 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee57(supplier, g) {
       return _regeneratorRuntime().wrap(function _callee57$(_context58) {
         while (1) switch (_context58.prev = _context58.next) {
           case 0:
@@ -16762,11 +16846,11 @@ function DailySettingsModal(_ref144) {
       }, _callee57, null, [[1,, 4, 7]]);
     }));
     return function clearSupplierRule(_x85, _x86) {
-      return _ref146.apply(this, arguments);
+      return _ref152.apply(this, arguments);
     };
   }();
   var markKnown = function () {
-    var _ref147 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee58(keys) {
+    var _ref153 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee58(keys) {
       return _regeneratorRuntime().wrap(function _callee58$(_context59) {
         while (1) switch (_context59.prev = _context59.next) {
           case 0:
@@ -16789,11 +16873,11 @@ function DailySettingsModal(_ref144) {
       }, _callee58, null, [[1,, 4, 7]]);
     }));
     return function markKnown(_x87) {
-      return _ref147.apply(this, arguments);
+      return _ref153.apply(this, arguments);
     };
   }();
   var editRule = function () {
-    var _ref148 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee59(id, patch) {
+    var _ref154 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee59(id, patch) {
       return _regeneratorRuntime().wrap(function _callee59$(_context60) {
         while (1) switch (_context60.prev = _context60.next) {
           case 0:
@@ -16820,14 +16904,14 @@ function DailySettingsModal(_ref144) {
       }, _callee59, null, [[1,, 4, 7]]);
     }));
     return function editRule(_x88, _x89) {
-      return _ref148.apply(this, arguments);
+      return _ref154.apply(this, arguments);
     };
   }();
-  var Seg = function Seg(_ref149) {
-    var options = _ref149.options,
-      value = _ref149.value,
-      src = _ref149.src,
-      onPick = _ref149.onPick;
+  var Seg = function Seg(_ref155) {
+    var options = _ref155.options,
+      value = _ref155.value,
+      src = _ref155.src,
+      onPick = _ref155.onPick;
     return React.createElement("div", {
       style: {
         display: "inline-flex",
@@ -16972,10 +17056,10 @@ function DailySettingsModal(_ref144) {
     return r.scope === "region";
   }).length, ")") : "")]] : []), [["deleted", "\uD83D\uDDD1 \uC9D1\uACC4 \uC548 \uD558\uB294 \uBAA9\uB85D (".concat(rules.filter(function (r) {
     return r.action === "exclude";
-  }).length, ") \xB7 \uBCF5\uAD6C")], ["rules", "\uC801\uC6A9 \uC911\uC778 \uC124\uC815 (".concat(rules.length, ")")]]).map(function (_ref150) {
-    var _ref151 = _slicedToArray(_ref150, 2),
-      k = _ref151[0],
-      label = _ref151[1];
+  }).length, ") \xB7 \uBCF5\uAD6C")], ["rules", "\uC801\uC6A9 \uC911\uC778 \uC124\uC815 (".concat(rules.length, ")")]]).map(function (_ref156) {
+    var _ref157 = _slicedToArray(_ref156, 2),
+      k = _ref157[0],
+      label = _ref157[1];
     return React.createElement("button", {
       key: k,
       onClick: function onClick() {
@@ -17168,10 +17252,10 @@ function DailySettingsModal(_ref144) {
       fontSize: 13,
       fontWeight: 800
     }
-  }, sup, " \uC804\uCCB4 \uC0C1\uD488"), [["count", ["exclude", "include"]], ["part", ["p1", "p2"]]].concat(_toConsumableArray(ch.showTemp ? [["temp", ["normal", "cold"]]] : [])).map(function (_ref152) {
-    var _ref153 = _slicedToArray(_ref152, 2),
-      g = _ref153[0],
-      opts = _ref153[1];
+  }, sup, " \uC804\uCCB4 \uC0C1\uD488"), [["count", ["exclude", "include"]], ["part", ["p1", "p2"]]].concat(_toConsumableArray(ch.showTemp ? [["temp", ["normal", "cold"]]] : [])).map(function (_ref158) {
+    var _ref159 = _slicedToArray(_ref158, 2),
+      g = _ref159[0],
+      opts = _ref159[1];
     return React.createElement("span", {
       key: g,
       style: {
@@ -17996,7 +18080,7 @@ function _loadEmartTemplate() {
           zip = _context127.sent;
           parser = new DOMParser();
           readXml = function () {
-            var _ref366 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee122(p) {
+            var _ref372 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee122(p) {
               return _regeneratorRuntime().wrap(function _callee122$(_context126) {
                 while (1) switch (_context126.prev = _context126.next) {
                   case 0:
@@ -18013,7 +18097,7 @@ function _loadEmartTemplate() {
               }, _callee122);
             }));
             return function readXml(_x228) {
-              return _ref366.apply(this, arguments);
+              return _ref372.apply(this, arguments);
             };
           }();
           _context127.next = 7;
@@ -18147,7 +18231,7 @@ function analyzeEmartTemplate(tpl) {
     try {
       for (_iterator10.s(); !(_step10 = _iterator10.n()).done;) {
         var _step10$value = _slicedToArray(_step10.value, 2),
-          _ref154 = _step10$value[0],
+          _ref160 = _step10$value[0],
           _c3 = _step10$value[1];
         if (!_c3.f) continue;
         var m = /VLOOKUP\(\$?A\$?\d+,\s*('(?:[^']|'')*'|[^!,]+)!\$?A[^,]*,(\d+),/.exec(_c3.f);
@@ -18157,7 +18241,7 @@ function analyzeEmartTemplate(tpl) {
           link = {
             pivot: pivot,
             k: Number(m[2]),
-            col: splitRef(_ref154).c
+            col: splitRef(_ref160).c
           };
           break;
         }
@@ -18973,11 +19057,11 @@ function xlFitCellText(sheet, ref, text, ctx) {
     var pa = a && splitRef(a),
       pb = b && splitRef(b);
     if (pa && pb && pa.c <= p.c && p.c <= pb.c && pa.r <= p.r && p.r <= pb.r) {
-      var _ref155 = [pa.c, pb.c, pa.r, pb.r];
-      c1 = _ref155[0];
-      c2 = _ref155[1];
-      r1 = _ref155[2];
-      r2 = _ref155[3];
+      var _ref161 = [pa.c, pb.c, pa.r, pb.r];
+      c1 = _ref161[0];
+      c2 = _ref161[1];
+      r1 = _ref161[2];
+      r2 = _ref161[3];
     }
   });
   var fmt = doc.getElementsByTagName("sheetFormatPr")[0];
@@ -19311,10 +19395,10 @@ function _buildEmartPickingWorkbook() {
               }, 0);
             };
             mergeInto = function mergeInto(dst, src) {
-              Object.entries(src.qty).forEach(function (_ref367) {
-                var _ref368 = _slicedToArray(_ref367, 2),
-                  c = _ref368[0],
-                  q = _ref368[1];
+              Object.entries(src.qty).forEach(function (_ref373) {
+                var _ref374 = _slicedToArray(_ref373, 2),
+                  c = _ref374[0],
+                  q = _ref374[1];
                 return dst.qty[c] = (dst.qty[c] || 0) + q;
               });
               src.names.forEach(function (n) {
@@ -19664,9 +19748,9 @@ function _buildEmartPickingWorkbook() {
           if (opts.centerOrder && (opts.centerOrder.all || opts.centerOrder.products)) {
             report.centerReordered = [];
             doneSheets = new Set();
-            coTargets = links.map(function (_ref369) {
-              var prod = _ref369.prod,
-                item = _ref369.item;
+            coTargets = links.map(function (_ref375) {
+              var prod = _ref375.prod,
+                item = _ref375.item;
               return {
                 prod: prod,
                 item: item,
@@ -19684,10 +19768,10 @@ function _buildEmartPickingWorkbook() {
                 names: [prod.title, frozenTitleOf(prod)]
               });
             });
-            coTargets.forEach(function (_ref370) {
-              var prod = _ref370.prod,
-                item = _ref370.item,
-                names = _ref370.names;
+            coTargets.forEach(function (_ref376) {
+              var prod = _ref376.prod,
+                item = _ref376.item,
+                names = _ref376.names;
               if (doneSheets.has(prod.sheet)) return;
               var want = centerOrderOf(opts.centerOrder, names);
               if (!want) return;
@@ -19821,19 +19905,19 @@ function _buildEmartPickingWorkbook() {
             }
           }
           byPivot = {};
-          links.forEach(function (_ref371) {
-            var prod = _ref371.prod,
-              item = _ref371.item;
+          links.forEach(function (_ref377) {
+            var prod = _ref377.prod,
+              item = _ref377.item;
             (byPivot[prod.pivot] = byPivot[prod.pivot] || []).push({
               k: prod.k,
               header: displayNameAmong([item.name].concat(_toConsumableArray(item.names ? _toConsumableArray(item.names) : []), [prod.title]), DN) || (item.code && DN(item.name, item.code) !== item.name ? DN(item.name, item.code) : null) || item.name,
               qty: item.qty
             });
             var regSet = new Set(prod.regions);
-            Object.entries(item.qty).forEach(function (_ref372) {
-              var _ref373 = _slicedToArray(_ref372, 2),
-                reg = _ref373[0],
-                q = _ref373[1];
+            Object.entries(item.qty).forEach(function (_ref378) {
+              var _ref379 = _slicedToArray(_ref378, 2),
+                reg = _ref379[0],
+                q = _ref379[1];
               if (!regSet.has(reg) && !(!tpl.frozen && EMART_NOT_OUR_CENTERS.has(String(reg).replace(/\(.*$/, "").trim()))) report.missingRegions.push({
                 name: item.name,
                 sheet: prod.sheet,
@@ -19975,8 +20059,8 @@ function _buildEmartPickingWorkbook() {
                   }
                   return _context132.abrupt("return", 0);
                 case 3:
-                  link = links.find(function (_ref392) {
-                    var item = _ref392.item;
+                  link = links.find(function (_ref398) {
+                    var item = _ref398.item;
                     return dk.names.some(function (n) {
                       return (item.names || new Set([item.name])).has(n);
                     });
@@ -19985,8 +20069,8 @@ function _buildEmartPickingWorkbook() {
                     return matchEmartProduct(tpl, n);
                   }).find(Boolean);
                   supK = opts.supKey || emartVendorKey;
-                  sameVendor = links.find(function (_ref393) {
-                    var item = _ref393.item;
+                  sameVendor = links.find(function (_ref399) {
+                    var item = _ref399.item;
                     return supK(item.vendor) === dk.vendor;
                   });
                   pivot = link && link.prod.pivot || own && own.pivot || sameVendor && sameVendor.prod.pivot || (opts.pivotForVendor ? opts.pivotForVendor(tpl, dk.vendor) : emartPivotByVendorName(tpl, dk.vendor));
@@ -20090,9 +20174,9 @@ function _buildEmartPickingWorkbook() {
             });
           });
           if (opts.packOverride && opts.packOverride.size) {
-            links.forEach(function (_ref374) {
-              var prod = _ref374.prod,
-                item = _ref374.item;
+            links.forEach(function (_ref380) {
+              var prod = _ref380.prod,
+                item = _ref380.item;
               var np = opts.packOverride.get(item.name);
               if (!np || prod.isNew || !prod.pack || np === prod.pack) return;
               var s = tpl.sheets.find(function (x) {
@@ -20143,9 +20227,9 @@ function _buildEmartPickingWorkbook() {
                 });
                 azVendors.add(l ? supK(l.item.vendor) : opts.vendorOfPivot ? opts.vendorOfPivot(p.pivot) : p.pivot);
               });
-              inAz = function inAz(_ref375) {
-                var prod = _ref375.prod,
-                  item = _ref375.item;
+              inAz = function inAz(_ref381) {
+                var prod = _ref381.prod,
+                  item = _ref381.item;
                 return have.has(prod.pivot + "|" + prod.k) || azVendors.has(supK(item.vendor)) || opts.vendorOfPivot && azVendors.has(opts.vendorOfPivot(prod.pivot));
               };
               hasQty = function hasQty(item) {
@@ -20158,9 +20242,9 @@ function _buildEmartPickingWorkbook() {
               });
               if (js.zeroInProduct) {
                 report.jejuMoved = [];
-                links.filter(inAz).forEach(function (_ref376) {
-                  var prod = _ref376.prod,
-                    item = _ref376.item;
+                links.filter(inAz).forEach(function (_ref382) {
+                  var prod = _ref382.prod,
+                    item = _ref382.item;
                   var ws = tpl.sheets.find(function (x) {
                     return x.name === prod.sheet;
                   });
@@ -20254,9 +20338,9 @@ function _buildEmartPickingWorkbook() {
                   return src && srcVend && src.includes(supK(srcVend.item.vendor)) ? src.replace(supK(srcVend.item.vendor), vend) : js.titleOf ? js.titleOf(vend) : "".concat(vend, " \u25A1");
                 };
                 last = 0;
-                need.forEach(function (_ref377, i) {
-                  var prod = _ref377.prod,
-                    item = _ref377.item;
+                need.forEach(function (_ref383, i) {
+                  var prod = _ref383.prod,
+                    item = _ref383.item;
                   var S = firstNew + gap * i;
                   var d = S - L;
                   srcRows.forEach(function (r) {
@@ -20321,8 +20405,8 @@ function _buildEmartPickingWorkbook() {
                   }
                 });
                 readSheetCells(az, tpl.sst);
-                report.jejuAdded = need.map(function (_ref378) {
-                  var item = _ref378.item;
+                report.jejuAdded = need.map(function (_ref384) {
+                  var item = _ref384.item;
                   return item.name;
                 });
               }
@@ -20376,8 +20460,8 @@ function _buildEmartPickingWorkbook() {
             break;
           }
           keep = new Set();
-          links.forEach(function (_ref379) {
-            var prod = _ref379.prod;
+          links.forEach(function (_ref385) {
+            var prod = _ref385.prod;
             keep.add(prod.sheet);
             keep.add(prod.pivot);
           });
@@ -20416,8 +20500,8 @@ function _buildEmartPickingWorkbook() {
                 }
               });
             });
-            links.forEach(function (_ref380) {
-              var prod = _ref380.prod;
+            links.forEach(function (_ref386) {
+              var prod = _ref386.prod;
               var sh = tpl.sheets.find(function (x) {
                 return x.name === prod.sheet;
               });
@@ -20646,9 +20730,9 @@ function _buildEmartPickingWorkbook() {
             });
           });
           vendorOfSheet = new Map();
-          links.forEach(function (_ref381) {
-            var prod = _ref381.prod,
-              item = _ref381.item;
+          links.forEach(function (_ref387) {
+            var prod = _ref387.prod,
+              item = _ref387.item;
             var v = (opts.supKey || emartVendorKey)(item.vendor);
             if (!vendorOfSheet.has(prod.sheet)) vendorOfSheet.set(prod.sheet, v);
             if (!vendorOfSheet.has(prod.pivot)) vendorOfSheet.set(prod.pivot, v);
@@ -20704,9 +20788,9 @@ function _buildEmartPickingWorkbook() {
           nm = function nm(x) {
             return String(x == null ? "" : x).replace(/\s+/g, "").toLowerCase();
           };
-          dnTargets = links.map(function (_ref382) {
-            var prod = _ref382.prod,
-              item = _ref382.item;
+          dnTargets = links.map(function (_ref388) {
+            var prod = _ref388.prod,
+              item = _ref388.item;
             return {
               prod: prod,
               code: item.code,
@@ -20726,9 +20810,9 @@ function _buildEmartPickingWorkbook() {
           }));
           doneSheet = new Set();
           fitCells = [];
-          links.forEach(function (_ref383) {
-            var prod = _ref383.prod,
-              item = _ref383.item;
+          links.forEach(function (_ref389) {
+            var prod = _ref389.prod,
+              item = _ref389.item;
             if (!prod.isNew && !report.added.some(function (a) {
               return a.sheet === prod.sheet;
             })) return;
@@ -20742,10 +20826,10 @@ function _buildEmartPickingWorkbook() {
             if (c && !c.f && typeof c.v === "string") fitCells.push([sh, ref, c.v]);
           });
           tabRenames = [];
-          dnTargets.forEach(function (_ref384) {
-            var prod = _ref384.prod,
-              names = _ref384.names,
-              code = _ref384.code;
+          dnTargets.forEach(function (_ref390) {
+            var prod = _ref390.prod,
+              names = _ref390.names,
+              code = _ref390.code;
             if (doneSheet.has(prod.sheet)) return;
             var sh = tpl.sheets.find(function (x) {
               return x.name === prod.sheet;
@@ -20781,8 +20865,8 @@ function _buildEmartPickingWorkbook() {
             tabRenames.push([sh.name, tab]);
           });
           nameMap = new Map();
-          dnTargets.forEach(function (_ref385) {
-            var names = _ref385.names;
+          dnTargets.forEach(function (_ref391) {
+            var names = _ref391.names;
             return names.forEach(function (n) {
               var t = String(n || "").replace(/\s*\n\s*/g, "").trim();
               if (t && DN(t) !== t) nameMap.set(nm(t), String(DN(t)).trim());
@@ -20821,10 +20905,10 @@ function _buildEmartPickingWorkbook() {
                 return pre + _q(newT) + "!";
               });
             };
-            tabRenames.forEach(function (_ref386) {
-              var _ref387 = _slicedToArray(_ref386, 2),
-                oldT = _ref387[0],
-                newT = _ref387[1];
+            tabRenames.forEach(function (_ref392) {
+              var _ref393 = _slicedToArray(_ref392, 2),
+                oldT = _ref393[0],
+                newT = _ref393[1];
               var sh = tpl.sheets.find(function (x) {
                 return x.name === oldT;
               });
@@ -20850,10 +20934,10 @@ function _buildEmartPickingWorkbook() {
                 return p.sheet === oldT && (p.sheet = newT);
               });
             });
-            report.renamedSheets = tabRenames.map(function (_ref388) {
-              var _ref389 = _slicedToArray(_ref388, 2),
-                from = _ref389[0],
-                to = _ref389[1];
+            report.renamedSheets = tabRenames.map(function (_ref394) {
+              var _ref395 = _slicedToArray(_ref394, 2),
+                from = _ref395[0],
+                to = _ref395[1];
               return {
                 from: from,
                 to: to
@@ -20868,11 +20952,11 @@ function _buildEmartPickingWorkbook() {
           return xlStylesCtx(tpl.zip);
         case 168:
           sctx = _context133.sent;
-          fitCells.forEach(function (_ref390) {
-            var _ref391 = _slicedToArray(_ref390, 3),
-              sh = _ref391[0],
-              ref = _ref391[1],
-              text = _ref391[2];
+          fitCells.forEach(function (_ref396) {
+            var _ref397 = _slicedToArray(_ref396, 3),
+              sh = _ref397[0],
+              ref = _ref397[1],
+              text = _ref397[2];
             return xlFitCellText(sh, ref, text, sctx);
           });
           xlStylesSave(tpl.zip, sctx);
@@ -21185,9 +21269,9 @@ function _analyzeGsFrozenBuffer() {
               labs.sort(function (a, b) {
                 return a[0] - b[0];
               });
-              labs.forEach(function (_ref394) {
-                var _ref395 = _slicedToArray(_ref394, 2),
-                  v = _ref395[1];
+              labs.forEach(function (_ref400) {
+                var _ref401 = _slicedToArray(_ref400, 2),
+                  v = _ref401[1];
                 var code = v.slice(0, 4);
                 if (!labelOf[code]) labelOf[code] = v;
               });
@@ -21255,15 +21339,15 @@ function gsFrozenRowsOf(orders, date, tplInfo) {
   });
   return rows;
 }
-function FrozenPickSettingModal(_ref156) {
-  var item = _ref156.item,
-    tplInfo = _ref156.tplInfo,
-    pickCfg = _ref156.pickCfg,
-    orderCfg = _ref156.orderCfg,
-    authToken = _ref156.authToken,
-    onClose = _ref156.onClose,
-    _ref156$cfg = _ref156.cfg,
-    cfg = _ref156$cfg === void 0 ? GS_FROZEN_PICK_CFG : _ref156$cfg;
+function FrozenPickSettingModal(_ref162) {
+  var item = _ref162.item,
+    tplInfo = _ref162.tplInfo,
+    pickCfg = _ref162.pickCfg,
+    orderCfg = _ref162.orderCfg,
+    authToken = _ref162.authToken,
+    onClose = _ref162.onClose,
+    _ref162$cfg = _ref162.cfg,
+    cfg = _ref162$cfg === void 0 ? GS_FROZEN_PICK_CFG : _ref162$cfg;
   var p = item.prod;
   var ZL = cfg.zeroLabel || "0 처리";
   var cur = (pickCfg && pickCfg.products || {})[p.sheet] || {};
@@ -21977,12 +22061,12 @@ function FrozenPickSettingModal(_ref156) {
     }
   }, "\xB7 ", React.createElement("b", null, ZL), ": \uD53C\uD0B9\uC9C0\uC5D0 \uADF8 \uC9C0\uC5ED \uC904\uC740 \uB0A8\uACE0 \uC218\uB7C9\uB9CC 0\uC774\uC5D0\uC694.", React.createElement("br", null), "\xB7 ", React.createElement("b", null, "\uC9C0\uC5ED \uBE7C\uAE30"), ": \uADF8 \uC9C0\uC5ED \uC904\uC744 \uC228\uACA8\uC11C \uC548 \uBCF4\uC5EC\uC694 (\uD569\uACC4\uC5D0\uC11C\uB3C4 \uBE60\uC838\uC694).", DK && React.createElement(React.Fragment, null, React.createElement("br", null), "\xB7 ", React.createElement("b", null, "\uB2F9\uCC29"), ": \uD3C9\uC18C \uC2DC\uD2B8\uC5D0\uB294 0\uC73C\uB85C, \uADF8 \uC218\uB7C9\uC740 \uACF5\uAE09\uC0AC \uB9E8 \uB05D \"(\uC624\uC804\uD604\uC7A5)\" \uC2DC\uD2B8\uC640 \uB2F9\uCC29 \uAC70\uB798\uBA85\uC138\uC11C\uB85C \uB530\uB85C \uB098\uAC00\uC694. \uBC1C\uC8FC\uAC00 \uC5C6\uB294 \uB0A0\uC5D0\uB3C4 \uB2F9\uCC29 \uC13C\uD130\uB294 0\uC73C\uB85C \uB0A8\uC544\uC694."), React.createElement("br", null), "\xB7 ", React.createElement("b", null, "\uC2DC\uD2B8 \uBE7C\uAE30"), ": \uC774 \uC0C1\uD488 \uC2DC\uD2B8\uAC00 \uC5D1\uC140\uC5D0\uC11C \uC544\uC608 \uC548 \uB098\uC640\uC694 (\uC21C\uC11C \uC124\uC815\uC758 \uD53C\uD0B9 \uC548 \uD558\uB294 \uBAA9\uB85D\uC5D0\uC11C\uB3C4 \uBCF5\uAD6C \uAC00\uB2A5).", React.createElement("br", null), "\xB7 \uC77C\uBCC4 \uC9D1\uACC4 \uC22B\uC790\uB294 \uC77C\uBCC4 \uBC1C\uC8FC \uC9D1\uACC4 \u2192 ", cfg.dailyLabel, " \uC9D1\uACC4 \uC124\uC815\uC5D0\uC11C \uB530\uB85C \uBE7C\uC694."))))), document.body);
 }
-function GsFrozenPickingView(_ref157) {
-  var frozenOrders = _ref157.frozenOrders,
-    authToken = _ref157.authToken,
-    _ref157$cfg = _ref157.cfg,
-    cfg = _ref157$cfg === void 0 ? GS_FROZEN_PICK_CFG : _ref157$cfg,
-    editMode = _ref157.editMode;
+function GsFrozenPickingView(_ref163) {
+  var frozenOrders = _ref163.frozenOrders,
+    authToken = _ref163.authToken,
+    _ref163$cfg = _ref163.cfg,
+    cfg = _ref163$cfg === void 0 ? GS_FROZEN_PICK_CFG : _ref163$cfg,
+    editMode = _ref163.editMode;
   var exMapF = excludedMapOf(useSetting(EXCLUDED_ITEMS_KEY, authToken));
   var isExF = function isExF(title, names) {
     return isExcludedLine(exMapF, cfg.brand, "", title) || (names || []).some(function (n) {
@@ -22205,10 +22289,10 @@ function GsFrozenPickingView(_ref157) {
     var live = arr.filter(function (x) {
       var c = regOf(x);
       var off = new Set([].concat(_toConsumableArray(c.zero || []), _toConsumableArray(c.remove || [])));
-      return Object.entries(x.byCode || {}).some(function (_ref158) {
-        var _ref159 = _slicedToArray(_ref158, 2),
-          code = _ref159[0],
-          q = _ref159[1];
+      return Object.entries(x.byCode || {}).some(function (_ref164) {
+        var _ref165 = _slicedToArray(_ref164, 2),
+          code = _ref165[0],
+          q = _ref165[1];
         return q > 0 && !off.has(code);
       });
     });
@@ -22351,10 +22435,10 @@ function GsFrozenPickingView(_ref157) {
               return !isBrandHidden(orderCfg, cfg.supKey(r.vendor), r.name);
             });
             hideRegionRows = new Map();
-            if (!(mode && mode.customer)) Object.entries(pickCfg && pickCfg.products || {}).forEach(function (_ref163) {
-              var _ref164 = _slicedToArray(_ref163, 2),
-                sheet = _ref164[0],
-                c = _ref164[1];
+            if (!(mode && mode.customer)) Object.entries(pickCfg && pickCfg.products || {}).forEach(function (_ref169) {
+              var _ref170 = _slicedToArray(_ref169, 2),
+                sheet = _ref170[0],
+                c = _ref170[1];
               return (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove));
             });
             if (!(mode && !rowsOut.length)) {
@@ -22393,10 +22477,10 @@ function GsFrozenPickingView(_ref157) {
             deliv = fileDeliv ? mdOf(fileDeliv[0]) : "".concat(nd.getUTCMonth() + 1, "/").concat(nd.getUTCDate(), " \uB0A9\uD488");
             _context65.next = 43;
             return buildEmartPickingWorkbook(buf, rowsOut, activeDate, null, _objectSpread(_objectSpread({
-              delivOfName: delivOfName.size ? new Map(_toConsumableArray(delivOfName).map(function (_ref165) {
-                var _ref166 = _slicedToArray(_ref165, 2),
-                  n = _ref166[0],
-                  v = _ref166[1];
+              delivOfName: delivOfName.size ? new Map(_toConsumableArray(delivOfName).map(function (_ref171) {
+                var _ref172 = _slicedToArray(_ref171, 2),
+                  n = _ref172[0],
+                  v = _ref172[1];
                 return [n, mdOf(v)];
               })) : null,
               excludeSheets: hiddenSheets,
@@ -22478,10 +22562,10 @@ function GsFrozenPickingView(_ref157) {
       if (!x.total) return;
       var c = regCfgOfE(x.sheet || "new:" + x.title);
       var off = new Set([].concat(_toConsumableArray(c.zero || []), _toConsumableArray(c.remove || [])));
-      var ours = Object.entries(x.byCode || {}).reduce(function (a, _ref160) {
-        var _ref161 = _slicedToArray(_ref160, 2),
-          code = _ref161[0],
-          q = _ref161[1];
+      var ours = Object.entries(x.byCode || {}).reduce(function (a, _ref166) {
+        var _ref167 = _slicedToArray(_ref166, 2),
+          code = _ref167[0],
+          q = _ref167[1];
         return a + (off.has(code) ? 0 : q);
       }, 0);
       var g = gm.get(x.pivot) || {
@@ -22717,7 +22801,7 @@ function GsFrozenPickingView(_ref157) {
         display: "none"
       },
       onChange: (function () {
-        var _ref162 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee63(e) {
+        var _ref168 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee63(e) {
           var f, buffer, info;
           return _regeneratorRuntime().wrap(function _callee63$(_context64) {
             while (1) switch (_context64.prev = _context64.next) {
@@ -22759,7 +22843,7 @@ function GsFrozenPickingView(_ref157) {
           }, _callee63, null, [[3, 14]]);
         }));
         return function (_x112) {
-          return _ref162.apply(this, arguments);
+          return _ref168.apply(this, arguments);
         };
       }())
     }), customTpl ? React.createElement(React.Fragment, null, React.createElement("span", {
@@ -23141,15 +23225,15 @@ function GsFrozenPickingView(_ref157) {
     dnFn: DNf
   })))));
 }
-function FrozenInspectionTable(_ref167) {
-  var item = _ref167.item,
-    pickCfg = _ref167.pickCfg,
-    _ref167$codeOf = _ref167.codeOf,
-    codeOf = _ref167$codeOf === void 0 ? function (l) {
+function FrozenInspectionTable(_ref173) {
+  var item = _ref173.item,
+    pickCfg = _ref173.pickCfg,
+    _ref173$codeOf = _ref173.codeOf,
+    codeOf = _ref173$codeOf === void 0 ? function (l) {
       return String(l).slice(0, 4);
-    } : _ref167$codeOf,
-    _ref167$dnFn = _ref167.dnFn,
-    dnFn = _ref167$dnFn === void 0 ? null : _ref167$dnFn;
+    } : _ref173$codeOf,
+    _ref173$dnFn = _ref173.dnFn,
+    dnFn = _ref173$dnFn === void 0 ? null : _ref173$dnFn;
   var p = item.prod;
   var ckey = item.sheet || item.prod && item.prod.sheet;
   var c = ckey && (pickCfg && pickCfg.products || {})[ckey] || {};
@@ -23473,9 +23557,9 @@ function _analyzeEmFrozenBuffer() {
 }
 var EM_FROZEN_TPL_CACHE = null;
 function getEmFrozenTemplateInfo() {
-  if (!EM_FROZEN_TPL_CACHE) EM_FROZEN_TPL_CACHE = getEmFrozenTemplateBuffer().then(function (_ref168) {
-    var buf = _ref168.buf,
-      fallback = _ref168.fallback;
+  if (!EM_FROZEN_TPL_CACHE) EM_FROZEN_TPL_CACHE = getEmFrozenTemplateBuffer().then(function (_ref174) {
+    var buf = _ref174.buf,
+      fallback = _ref174.fallback;
     return analyzeEmFrozenBuffer(buf, fallback);
   })["catch"](function (e) {
     EM_FROZEN_TPL_CACHE = null;
@@ -23811,10 +23895,10 @@ function analyzeEmartInvoiceTemplate(tpl) {
     });
     if (!Object.keys(p.info).length) {
       var s = byName.get(sh.name);
-      Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref169) {
-        var _ref170 = _slicedToArray(_ref169, 2),
-          key = _ref170[0],
-          ref = _ref170[1];
+      Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref175) {
+        var _ref176 = _slicedToArray(_ref175, 2),
+          key = _ref176[0],
+          ref = _ref176[1];
         var c = s.cells.get(ref);
         if (c && !c.f && c.v != null && String(c.v).trim()) p.info[key] = String(c.v).trim();
       });
@@ -24037,10 +24121,10 @@ function emartInvoicePlan(inv, rows, settings) {
         k: k
       }));
       x.byK[k] = it.qty;
-      Object.entries(it.qty).forEach(function (_ref171) {
-        var _ref172 = _slicedToArray(_ref171, 2),
-          c = _ref172[0],
-          q = _ref172[1];
+      Object.entries(it.qty).forEach(function (_ref177) {
+        var _ref178 = _slicedToArray(_ref177, 2),
+          c = _ref178[0],
+          q = _ref178[1];
         x.centerQty[c] = (x.centerQty[c] || 0) + q;
         x.total += q;
       });
@@ -24107,10 +24191,10 @@ function emartInvoicePlan(inv, rows, settings) {
         k: k
       }));
       x.byK[k] = it.qty;
-      Object.entries(it.qty).forEach(function (_ref173) {
-        var _ref174 = _slicedToArray(_ref173, 2),
-          c = _ref174[0],
-          q = _ref174[1];
+      Object.entries(it.qty).forEach(function (_ref179) {
+        var _ref180 = _slicedToArray(_ref179, 2),
+          c = _ref180[0],
+          q = _ref180[1];
         x.centerQty[c] = (x.centerQty[c] || 0) + q;
         x.total += q;
       });
@@ -24404,10 +24488,10 @@ function emInvAddProducts(tpl, ws, caps, prods, expiryOf, dateSerial) {
         var m = _r7 + off;
         if (m >= mTotal) return 1;
         var has = !isEmptyRow(_r7);
-        Object.entries(caps.mirror.cols).forEach(function (_ref175) {
-          var _ref176 = _slicedToArray(_ref175, 2),
-            col = _ref176[0],
-            x = _ref176[1];
+        Object.entries(caps.mirror.cols).forEach(function (_ref181) {
+          var _ref182 = _slicedToArray(_ref181, 2),
+            col = _ref182[0],
+            x = _ref182[1];
           if (has) emInvSetFormula(ws, col + m, shiftFormula(x.f, m - caps.mirror.row - (mirrorRow - caps.mirror.row), 0), x.s);else setCellXml(ws, col + m, null);
         });
       };
@@ -24679,10 +24763,10 @@ function _buildEmartInvoiceWorkbook() {
                               }
                             }
                             var info = supSettings[label] && supSettings[label].info || {};
-                            Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref400) {
-                              var _ref401 = _slicedToArray(_ref400, 2),
-                                key = _ref401[0],
-                                ref = _ref401[1];
+                            Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref406) {
+                              var _ref407 = _slicedToArray(_ref406, 2),
+                                key = _ref407[0],
+                                ref = _ref407[1];
                               return setCellXml(tmp, ref, info[key] || null);
                             });
                           };
@@ -24965,10 +25049,10 @@ function _buildEmartInvoiceWorkbook() {
               });
               if (ov.centerName && !curN) edits.push([lay.centerName, ov.centerName]);
               if (ov.address && !curA) edits.push([lay.centerAddr, ov.address]);
-              edits.forEach(function (_ref396) {
-                var _ref397 = _slicedToArray(_ref396, 2),
-                  ref = _ref397[0],
-                  v = _ref397[1];
+              edits.forEach(function (_ref402) {
+                var _ref403 = _slicedToArray(_ref402, 2),
+                  ref = _ref403[0],
+                  v = _ref403[1];
                 return setCellXml(ws, ref, v);
               });
               if (edits.length) readSheetCells(ws, tpl.sst);
@@ -25181,10 +25265,10 @@ function _buildEmartInvoiceWorkbook() {
                 }
               }
               var info = s.info || {};
-              Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref398) {
-                var _ref399 = _slicedToArray(_ref398, 2),
-                  key = _ref399[0],
-                  ref = _ref399[1];
+              Object.entries(EM_INV_INFO_CELLS).forEach(function (_ref404) {
+                var _ref405 = _slicedToArray(_ref404, 2),
+                  key = _ref405[0],
+                  ref = _ref405[1];
                 return info[key] && setCellXml(ws, ref, info[key]);
               });
               if (info.agent) {
@@ -25954,11 +26038,11 @@ var GS_FROZEN_INV_CFG = {
   sub: "실물 GS 냉동 거래명세서 파일 그대로 만들어요 (GS 냉동 발주만). 발주량 피벗 + 센터별 명세서. 원본에 없는 공급사는 같은 모양으로 복사해 만들고, 사업자 정보는 설정에서 넣어요. 설정은 GS와 따로 저장돼요.",
   filePrefix: "GS냉동_거래명세서"
 };
-function EmartInvoiceView(_ref177) {
-  var emartOrders = _ref177.emartOrders,
-    authToken = _ref177.authToken,
-    _ref177$cfg = _ref177.cfg,
-    cfg = _ref177$cfg === void 0 ? EM_INV_CFG : _ref177$cfg;
+function EmartInvoiceView(_ref183) {
+  var emartOrders = _ref183.emartOrders,
+    authToken = _ref183.authToken,
+    _ref183$cfg = _ref183.cfg,
+    cfg = _ref183$cfg === void 0 ? EM_INV_CFG : _ref183$cfg;
   var _useState295 = useState(null),
     _useState296 = _slicedToArray(_useState295, 2),
     inv = _useState296[0],
@@ -25993,15 +26077,15 @@ function EmartInvoiceView(_ref177) {
     if (!cfg.defaultInfo) return settingsSaved;
     var base = settingsSaved || {};
     var sups = _objectSpread({}, base.suppliers || {});
-    Object.entries(cfg.defaultInfo).forEach(function (_ref178) {
-      var _ref179 = _slicedToArray(_ref178, 2),
-        k = _ref179[0],
-        info = _ref179[1];
+    Object.entries(cfg.defaultInfo).forEach(function (_ref184) {
+      var _ref185 = _slicedToArray(_ref184, 2),
+        k = _ref185[0],
+        info = _ref185[1];
       var cur = sups[k] || {};
       sups[k] = _objectSpread(_objectSpread({}, cur), {}, {
-        info: _objectSpread(_objectSpread({}, info), Object.fromEntries(Object.entries(cur.info || {}).filter(function (_ref180) {
-          var _ref181 = _slicedToArray(_ref180, 2),
-            v = _ref181[1];
+        info: _objectSpread(_objectSpread({}, info), Object.fromEntries(Object.entries(cur.info || {}).filter(function (_ref186) {
+          var _ref187 = _slicedToArray(_ref186, 2),
+            v = _ref187[1];
           return v;
         })))
       });
@@ -26136,7 +26220,7 @@ function EmartInvoiceView(_ref177) {
     return list;
   }, [inv, plan]);
   var run = function () {
-    var _ref182 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee66(key, only, rowsOverride, cfgOverride, fileLabel) {
+    var _ref188 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee66(key, only, rowsOverride, cfgOverride, fileLabel) {
       var rep, made, cc, brw, noAddr, addrNote, miss;
       return _regeneratorRuntime().wrap(function _callee66$(_context67) {
         while (1) switch (_context67.prev = _context67.next) {
@@ -26191,7 +26275,7 @@ function EmartInvoiceView(_ref177) {
       }, _callee66, null, [[2, 16, 19, 22]]);
     }));
     return function run(_x127, _x128, _x129, _x130, _x131) {
-      return _ref182.apply(this, arguments);
+      return _ref188.apply(this, arguments);
     };
   }();
   var nf = function nf(v) {
@@ -26955,9 +27039,9 @@ function sevenPartOf(name, supplier) {
   var reg = SETTING_CACHE.seven_parts && SETTING_CACHE.seven_parts.parts || null;
   if (reg) {
     var v = sevenVendorName(supplier).replace(/\s/g, "");
-    var hit = Object.entries(reg).find(function (_ref183) {
-      var _ref184 = _slicedToArray(_ref183, 1),
-        n = _ref184[0];
+    var hit = Object.entries(reg).find(function (_ref189) {
+      var _ref190 = _slicedToArray(_ref189, 1),
+        n = _ref190[0];
       return k && n.includes(k) || v && (n.includes(v) || v.includes(n));
     });
     if (hit) return hit[1];
@@ -27517,10 +27601,10 @@ function _downloadSevenPyeonsu() {
           return wb.xlsx.load(u8.buffer);
         case 14:
           txt = function txt(c) {
-            var _ref402, _c$value$result;
+            var _ref408, _c$value$result;
             return String(c && c.value != null ? _typeof(c.value) === "object" ? c.value.richText ? c.value.richText.map(function (t) {
               return t.text;
-            }).join("") : (_ref402 = (_c$value$result = c.value.result) !== null && _c$value$result !== void 0 ? _c$value$result : c.text) !== null && _ref402 !== void 0 ? _ref402 : "" : c.value : "").replace(/\s+/g, "");
+            }).join("") : (_ref408 = (_c$value$result = c.value.result) !== null && _c$value$result !== void 0 ? _c$value$result : c.text) !== null && _ref408 !== void 0 ? _ref408 : "" : c.value : "").replace(/\s+/g, "");
           };
           filled = 0;
           wb.worksheets.forEach(function (ws) {
@@ -27676,12 +27760,12 @@ function sevenPartsFromSheet(u8) {
   } catch (e) {}
   return out;
 }
-function SevenPyeonsuButton(_ref185) {
-  var orders = _ref185.orders,
-    date = _ref185.date,
-    authToken = _ref185.authToken,
-    busy = _ref185.busy,
-    setBusy = _ref185.setBusy;
+function SevenPyeonsuButton(_ref191) {
+  var orders = _ref191.orders,
+    date = _ref191.date,
+    authToken = _ref191.authToken,
+    busy = _ref191.busy,
+    setBusy = _ref191.setBusy;
   var tplSaved = useSetting("seven_pyeonsu_template", authToken);
   var ref = useRef(null);
   return React.createElement(React.Fragment, null, React.createElement("button", {
@@ -27729,7 +27813,7 @@ function SevenPyeonsuButton(_ref185) {
       display: "none"
     },
     onChange: (function () {
-      var _ref187 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee68(e) {
+      var _ref193 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee68(e) {
         var f, u8, bin, i, parts, r, np;
         return _regeneratorRuntime().wrap(function _callee68$(_context69) {
           while (1) switch (_context69.prev = _context69.next) {
@@ -27796,7 +27880,7 @@ function SevenPyeonsuButton(_ref185) {
         }, _callee68);
       }));
       return function (_x143) {
-        return _ref187.apply(this, arguments);
+        return _ref193.apply(this, arguments);
       };
     }())
   }), React.createElement("button", {
@@ -28106,9 +28190,9 @@ function getBgfTemplateInfo(frozen) {
       var v = bgfPivotKey(p.pivot);
       px[k] = px[k] === undefined || px[k] === v ? v : null;
     });
-    t.prefixVendor = Object.fromEntries(Object.entries(px).filter(function (_ref188) {
-      var _ref189 = _slicedToArray(_ref188, 2),
-        v = _ref189[1];
+    t.prefixVendor = Object.fromEntries(Object.entries(px).filter(function (_ref194) {
+      var _ref195 = _slicedToArray(_ref194, 2),
+        v = _ref195[1];
       return v;
     }));
     if (frozen) BGF_FROZEN_TPL_SYNC = t;else BGF_TPL_SYNC = t;
@@ -28541,7 +28625,7 @@ function _migrateEmdeliShiftOnce() {
           now = localDateStr();
           months = [shiftDateStr("".concat(now.slice(0, 7), "-01"), -1).slice(0, 7), now.slice(0, 7)];
           read = function () {
-            var _ref403 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee146(key) {
+            var _ref409 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee146(key) {
               var r;
               return _regeneratorRuntime().wrap(function _callee146$(_context159) {
                 while (1) switch (_context159.prev = _context159.next) {
@@ -28563,7 +28647,7 @@ function _migrateEmdeliShiftOnce() {
               }, _callee146, null, [[0, 7]]);
             }));
             return function read(_x229) {
-              return _ref403.apply(this, arguments);
+              return _ref409.apply(this, arguments);
             };
           }();
           put = function put(key, value) {
@@ -28599,10 +28683,10 @@ function _migrateEmdeliShiftOnce() {
         case 28:
           entries = [];
           Object.values(src).forEach(function (v) {
-            return Object.entries(v && v.days || {}).forEach(function (_ref404) {
-              var _ref405 = _slicedToArray(_ref404, 2),
-                d = _ref405[0],
-                items = _ref405[1];
+            return Object.entries(v && v.days || {}).forEach(function (_ref410) {
+              var _ref411 = _slicedToArray(_ref410, 2),
+                d = _ref411[0],
+                items = _ref411[1];
               return entries.push([d, items, v.sups || [], (v && v.meta || {})[d]]);
             });
           });
@@ -28620,19 +28704,19 @@ function _migrateEmdeliShiftOnce() {
               meta: {}
             };
           };
-          entries.forEach(function (_ref406) {
-            var _ref407 = _slicedToArray(_ref406, 4),
-              d = _ref407[0],
-              items = _ref407[1],
-              sups = _ref407[2],
-              meta = _ref407[3];
+          entries.forEach(function (_ref412) {
+            var _ref413 = _slicedToArray(_ref412, 4),
+              d = _ref413[0],
+              items = _ref413[1],
+              sups = _ref413[2],
+              meta = _ref413[3];
             var nd = shiftDateStr(d, 1);
             var o = outOf(nd.slice(0, 7));
-            o.days[nd] = items.map(function (_ref408) {
-              var _ref409 = _slicedToArray(_ref408, 3),
-                name = _ref409[0],
-                si = _ref409[1],
-                qty = _ref409[2];
+            o.days[nd] = items.map(function (_ref414) {
+              var _ref415 = _slicedToArray(_ref414, 3),
+                name = _ref415[0],
+                si = _ref415[1],
+                qty = _ref415[2];
               var sup = sups[si] || "이마트델리";
               var i = o.sups.indexOf(sup);
               if (i === -1) i = o.sups.push(sup) - 1;
@@ -28727,8 +28811,8 @@ function _migrateEmdeliShiftOnce() {
   }));
   return _migrateEmdeliShiftOnce.apply(this, arguments);
 }
-function EmartDeliPage(_ref190) {
-  var authToken = _ref190.authToken;
+function EmartDeliPage(_ref196) {
+  var authToken = _ref196.authToken;
   var today = localDateStr();
   var month = today.slice(0, 7);
   var prevMonth = shiftDateStr("".concat(month, "-01"), -1).slice(0, 7);
@@ -28752,19 +28836,19 @@ function EmartDeliPage(_ref190) {
   var list = useMemo(function () {
     var out = [];
     (nextMonth === month ? [cur, prev] : [next, cur, prev]).forEach(function (v) {
-      return Object.entries(v && v.days || {}).forEach(function (_ref191) {
-        var _ref192 = _slicedToArray(_ref191, 2),
-          d = _ref192[0],
-          items = _ref192[1];
+      return Object.entries(v && v.days || {}).forEach(function (_ref197) {
+        var _ref198 = _slicedToArray(_ref197, 2),
+          d = _ref198[0],
+          items = _ref198[1];
         if (!items || !items.length) return;
         var meta = (v && v.meta || {})[d] || {};
         out.push({
           date: d,
-          items: items.map(function (_ref193) {
-            var _ref194 = _slicedToArray(_ref193, 3),
-              name = _ref194[0],
-              si = _ref194[1],
-              qty = _ref194[2];
+          items: items.map(function (_ref199) {
+            var _ref200 = _slicedToArray(_ref199, 3),
+              name = _ref200[0],
+              si = _ref200[1],
+              qty = _ref200[2];
             return {
               name: name,
               supplier: (v.sups || [])[si] || "",
@@ -28783,17 +28867,17 @@ function EmartDeliPage(_ref190) {
     });
   }, [cur, prev, next]);
   var writeDaily = function () {
-    var _ref195 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee69(date, lines, metaPatch) {
+    var _ref201 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee69(date, lines, metaPatch) {
       var m, products;
       return _regeneratorRuntime().wrap(function _callee69$(_context70) {
         while (1) switch (_context70.prev = _context70.next) {
           case 0:
             m = new Map();
-            Object.values(lines).forEach(function (_ref196) {
-              var _ref197 = _slicedToArray(_ref196, 3),
-                name = _ref197[0],
-                qty = _ref197[1],
-                vendor = _ref197[2];
+            Object.values(lines).forEach(function (_ref202) {
+              var _ref203 = _slicedToArray(_ref202, 3),
+                name = _ref203[0],
+                qty = _ref203[1],
+                vendor = _ref203[2];
               var x = m.get(name) || {
                 name: name,
                 supplier: vendor || "이마트델리",
@@ -28833,11 +28917,11 @@ function EmartDeliPage(_ref190) {
       }, _callee69);
     }));
     return function writeDaily(_x152, _x153, _x154) {
-      return _ref195.apply(this, arguments);
+      return _ref201.apply(this, arguments);
     };
   }();
   var onFiles = function () {
-    var _ref198 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee70(files) {
+    var _ref204 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee70(files) {
       var all, names, _i10, _Array$from, f, wb, got, _iterator17, _step17, sn, date, rawKey, added, dup, merged, r, tot, w;
       return _regeneratorRuntime().wrap(function _callee70$(_context71) {
         while (1) switch (_context71.prev = _context71.next) {
@@ -29005,11 +29089,11 @@ function EmartDeliPage(_ref190) {
       }, _callee70, null, [[6, 68, 71, 75], [22, 33, 36, 39]]);
     }));
     return function onFiles(_x155) {
-      return _ref198.apply(this, arguments);
+      return _ref204.apply(this, arguments);
     };
   }();
   var delDate = function () {
-    var _ref199 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee71(date) {
+    var _ref205 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee71(date) {
       return _regeneratorRuntime().wrap(function _callee71$(_context72) {
         while (1) switch (_context72.prev = _context72.next) {
           case 0:
@@ -29047,7 +29131,7 @@ function EmartDeliPage(_ref190) {
       }, _callee71);
     }));
     return function delDate(_x156) {
-      return _ref199.apply(this, arguments);
+      return _ref205.apply(this, arguments);
     };
   }();
   return React.createElement("div", null, React.createElement(PageHeader, {
@@ -29228,16 +29312,16 @@ function EmartDeliPage(_ref190) {
     }, g.total.toLocaleString())))));
   }));
 }
-function EmartOrderPage(_ref200) {
-  var emartOrders = _ref200.emartOrders,
-    onUpload = _ref200.onUpload,
-    onDeleteDate = _ref200.onDeleteDate,
-    onRegisterItems = _ref200.onRegisterItems,
-    authToken = _ref200.authToken,
-    channelTag = _ref200.channelTag,
-    title = _ref200.title,
-    sub = _ref200.sub,
-    kind = _ref200.kind;
+function EmartOrderPage(_ref206) {
+  var emartOrders = _ref206.emartOrders,
+    onUpload = _ref206.onUpload,
+    onDeleteDate = _ref206.onDeleteDate,
+    onRegisterItems = _ref206.onRegisterItems,
+    authToken = _ref206.authToken,
+    channelTag = _ref206.channelTag,
+    title = _ref206.title,
+    sub = _ref206.sub,
+    kind = _ref206.kind;
   var isSevenFrozen = kind === "SEVENFROZEN";
   var isSeven = kind === "SEVEN" || isSevenFrozen;
   var isBgfFrozen = kind === "BGFFROZEN";
@@ -29278,7 +29362,7 @@ function EmartOrderPage(_ref200) {
     setUpReport = _useState332[1];
   var fileRef = useRef(null);
   var showReport = function () {
-    var _ref201 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee72(newOrders, dupLines, skipped) {
+    var _ref207 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee72(newOrders, dupLines, skipped) {
       return _regeneratorRuntime().wrap(function _callee72$(_context73) {
         while (1) switch (_context73.prev = _context73.next) {
           case 0:
@@ -29313,7 +29397,7 @@ function EmartOrderPage(_ref200) {
       }, _callee72, null, [[2, 10]]);
     }));
     return function showReport(_x157, _x158, _x159) {
-      return _ref201.apply(this, arguments);
+      return _ref207.apply(this, arguments);
     };
   }();
   var dateGroups = useMemo(function () {
@@ -29324,10 +29408,10 @@ function EmartOrderPage(_ref200) {
     });
     return Array.from(m.entries()).sort(function (a, b) {
       return a[0] < b[0] ? 1 : -1;
-    }).map(function (_ref202) {
-      var _ref203 = _slicedToArray(_ref202, 2),
-        date = _ref203[0],
-        orders = _ref203[1];
+    }).map(function (_ref208) {
+      var _ref209 = _slicedToArray(_ref208, 2),
+        date = _ref209[0],
+        orders = _ref209[1];
       return {
         date: date,
         orders: orders,
@@ -29528,10 +29612,10 @@ function EmartOrderPage(_ref200) {
                       _context75.next = 54;
                       break;
                     }
-                    lines = _toConsumableArray(newC).map(function (_ref205) {
-                      var _ref206 = _slicedToArray(_ref205, 2),
-                        k = _ref206[0],
-                        v = _ref206[1];
+                    lines = _toConsumableArray(newC).map(function (_ref211) {
+                      var _ref212 = _slicedToArray(_ref211, 2),
+                        k = _ref212[0],
+                        v = _ref212[1];
                       return "\xB7 ".concat(k, " \u2192 ").concat(v.how === "fuzzy" ? "\"".concat(v.center, "\"(\uC774\uB984\uC73C\uB85C \uC5F0\uACB0)") : "피킹지에 없는 센터 (새 줄로 생겨요)");
                     });
                     if (window.confirm("[".concat(f.name, "]\n\uD53C\uD0B9\uC9C0 \uC6D0\uBCF8\uC5D0 \uC5C6\uB294 BGF \uC13C\uD130\uAC00 \uC788\uC5B4\uC694.\n").concat(lines.join("\n"), "\n\n[\uD655\uC778] \uC774\uB300\uB85C \uC62C\uB9AC\uAE30\n[\uCDE8\uC18C] \uC62C\uB9AC\uC9C0 \uC54A\uAE30\n\n\uC0C8 \uC13C\uD130\uBA74 \uC54C\uB824\uC8FC\uC138\uC694 (\uD53C\uD0B9\uC9C0\xB7\uCF54\uB4DC \uD45C\uC5D0 \uCD94\uAC00\uD574\uC57C \uD574\uC694)."))) {
@@ -29618,10 +29702,10 @@ function EmartOrderPage(_ref200) {
                       _context75.next = 88;
                       break;
                     }
-                    _lines = _toConsumableArray(newCodes).map(function (_ref207) {
-                      var _ref208 = _slicedToArray(_ref207, 2),
-                        cd = _ref208[0],
-                        v = _ref208[1];
+                    _lines = _toConsumableArray(newCodes).map(function (_ref213) {
+                      var _ref214 = _slicedToArray(_ref213, 2),
+                        cd = _ref214[0],
+                        v = _ref214[1];
                       return "\xB7 ".concat(cd, " ").concat(v.name, " \u2192 ").concat(v.how === "name" ? "\"".concat(v.center, "\"(\uC774\uB984\uC73C\uB85C \uC5F0\uACB0)") : "연결할 센터 없음 (피킹지에 새 줄로 생겨요)");
                     });
                     go = window.confirm("[".concat(f.name, "]\n\uCF54\uB4DC \uD45C\uC5D0 \uC5C6\uB294 \uC138\uBE10 \uC810\uD3EC(\uC13C\uD130)\uCF54\uB4DC\uAC00 \uC788\uC5B4\uC694.\n").concat(_lines.join("\n"), "\n\n[\uD655\uC778] \uC774\uB300\uB85C \uC62C\uB9AC\uAE30\n[\uCDE8\uC18C] \uC62C\uB9AC\uC9C0 \uC54A\uAE30\n\n\uC0C8 \uC13C\uD130\uBA74 \uCF54\uB4DC\uB97C \uC54C\uB824\uC8FC\uC138\uC694 (\uCF54\uB4DC \uD45C\uC5D0 \uCD94\uAC00\uD574\uC57C \uD574\uC694)."));
@@ -29730,10 +29814,10 @@ function EmartOrderPage(_ref200) {
             all.forEach(function (r) {
               return !r.synthetic && r.vendorCode && r.vendor && (learn[r.vendorCode] = r.vendor);
             });
-            Object.entries(vendorByCode).forEach(function (_ref209) {
-              var _ref210 = _slicedToArray(_ref209, 2),
-                k = _ref210[0],
-                v = _ref210[1];
+            Object.entries(vendorByCode).forEach(function (_ref215) {
+              var _ref216 = _slicedToArray(_ref215, 2),
+                k = _ref216[0],
+                v = _ref216[1];
               return !learn[k] && (learn[k] = v);
             });
             before = codeMapSaved && codeMapSaved.map || {};
@@ -30125,13 +30209,13 @@ function EmartOrderPage(_ref200) {
     }), " ", deletingDate === g.date ? "삭제 중..." : "이 날짜 삭제")));
   }))));
 }
-function EmartPickReportModal(_ref211) {
-  var report = _ref211.report,
-    tplInfo = _ref211.tplInfo,
-    authToken = _ref211.authToken,
-    onClose = _ref211.onClose,
-    _ref211$aliasKey = _ref211.aliasKey,
-    aliasKey = _ref211$aliasKey === void 0 ? "emart_product_alias" : _ref211$aliasKey;
+function EmartPickReportModal(_ref217) {
+  var report = _ref217.report,
+    tplInfo = _ref217.tplInfo,
+    authToken = _ref217.authToken,
+    onClose = _ref217.onClose,
+    _ref217$aliasKey = _ref217.aliasKey,
+    aliasKey = _ref217$aliasKey === void 0 ? "emart_product_alias" : _ref217$aliasKey;
   var _useState333 = useState({}),
     _useState334 = _slicedToArray(_useState333, 2),
     linked = _useState334[0],
@@ -30153,7 +30237,7 @@ function EmartPickReportModal(_ref211) {
     return Array.from(m.entries());
   }, [tplInfo]);
   var link = function () {
-    var _ref212 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee75(name, code) {
+    var _ref218 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee75(name, code) {
       var sheet;
       return _regeneratorRuntime().wrap(function _callee75$(_context77) {
         while (1) switch (_context77.prev = _context77.next) {
@@ -30195,7 +30279,7 @@ function EmartPickReportModal(_ref211) {
       }, _callee75, null, [[4, 10, 13, 16]]);
     }));
     return function link(_x161, _x162) {
-      return _ref212.apply(this, arguments);
+      return _ref218.apply(this, arguments);
     };
   }();
   var linker = function linker(name, code, preferPivot) {
@@ -30229,10 +30313,10 @@ function EmartPickReportModal(_ref211) {
       value: ""
     }, "\uAE30\uC874 \uC2DC\uD2B8\uC5D0 \uC5F0\uACB0 (\uAC19\uC740 \uC0C1\uD488\uC778\uB370 \uC774\uB984\uB9CC \uB2E4\uB97C \uB54C)"), _toConsumableArray(pivots).sort(function (a, b) {
       return a[0] === preferPivot ? -1 : b[0] === preferPivot ? 1 : 0;
-    }).map(function (_ref214) {
-      var _ref215 = _slicedToArray(_ref214, 2),
-        pv = _ref215[0],
-        list = _ref215[1];
+    }).map(function (_ref220) {
+      var _ref221 = _slicedToArray(_ref220, 2),
+        pv = _ref221[0],
+        list = _ref221[1];
       return React.createElement("optgroup", {
         key: pv,
         label: pv
@@ -30338,10 +30422,10 @@ function EmartPickReportModal(_ref211) {
   }, Object.entries(report.missingRegions.reduce(function (m, x) {
     (m[x.sheet] = m[x.sheet] || []).push("".concat(String(x.region).replace(/\(.*$/, ""), " ").concat(x.qty));
     return m;
-  }, {})).map(function (_ref216) {
-    var _ref217 = _slicedToArray(_ref216, 2),
-      sheet = _ref217[0],
-      list = _ref217[1];
+  }, {})).map(function (_ref222) {
+    var _ref223 = _slicedToArray(_ref222, 2),
+      sheet = _ref223[0],
+      list = _ref223[1];
     return React.createElement("div", {
       key: sheet
     }, React.createElement("b", null, sheet), ": ", list.join(", "));
@@ -30404,14 +30488,14 @@ var centerOrderOf = function centerOrderOf(cfg, names) {
   }
   return Array.isArray(cfg.all) && cfg.all.length ? cfg.all : null;
 };
-function CenterOrderModal(_ref218) {
-  var pv = _ref218.pv,
-    tplInfo = _ref218.tplInfo,
-    productNames = _ref218.productNames,
-    _ref218$productList = _ref218.productList,
-    productList = _ref218$productList === void 0 ? [] : _ref218$productList,
-    authToken = _ref218.authToken,
-    onClose = _ref218.onClose;
+function CenterOrderModal(_ref224) {
+  var pv = _ref224.pv,
+    tplInfo = _ref224.tplInfo,
+    productNames = _ref224.productNames,
+    _ref224$productList = _ref224.productList,
+    productList = _ref224$productList === void 0 ? [] : _ref224$productList,
+    authToken = _ref224.authToken,
+    onClose = _ref224.onClose;
   var saved = useSetting(pv.centerOrderKey, authToken) || {};
   var _useState339 = useState("all"),
     _useState340 = _slicedToArray(_useState339, 2),
@@ -30468,9 +30552,9 @@ function CenterOrderModal(_ref218) {
     var j = i + d;
     if (j < 0 || j >= labels.length) return;
     var n = labels.slice();
-    var _ref219 = [n[j], n[i]];
-    n[i] = _ref219[0];
-    n[j] = _ref219[1];
+    var _ref225 = [n[j], n[i]];
+    n[i] = _ref225[0];
+    n[j] = _ref225[1];
     setList(n);
     setMsg("");
   };
@@ -30719,13 +30803,13 @@ function CenterOrderModal(_ref218) {
     })
   }, busy ? "저장 중..." : "저장")));
 }
-function EmartPickingView(_ref220) {
-  var emartOrders = _ref220.emartOrders,
-    authToken = _ref220.authToken,
-    _ref220$pv = _ref220.pv,
-    pv = _ref220$pv === void 0 ? EM_PV_CFG : _ref220$pv,
-    onZeroLines = _ref220.onZeroLines,
-    editMode = _ref220.editMode;
+function EmartPickingView(_ref226) {
+  var emartOrders = _ref226.emartOrders,
+    authToken = _ref226.authToken,
+    _ref226$pv = _ref226.pv,
+    pv = _ref226$pv === void 0 ? EM_PV_CFG : _ref226$pv,
+    onZeroLines = _ref226.onZeroLines,
+    editMode = _ref226.editMode;
   var centerOrderCfg = useSetting(pv.centerOrderKey || "center_order_none", authToken);
   var _useState347 = useState(false),
     _useState348 = _slicedToArray(_useState347, 2),
@@ -31149,10 +31233,10 @@ function EmartPickingView(_ref220) {
               });
             });
             hideRegionRows = new Map();
-            Object.entries(pickCfg && pickCfg.products || {}).forEach(function (_ref226) {
-              var _ref227 = _slicedToArray(_ref226, 2),
-                sheet = _ref227[0],
-                c = _ref227[1];
+            Object.entries(pickCfg && pickCfg.products || {}).forEach(function (_ref232) {
+              var _ref233 = _slicedToArray(_ref232, 2),
+                sheet = _ref233[0],
+                c = _ref233[1];
               return (c.remove || []).length && hideRegionRows.set(sheet, new Set(c.remove));
             });
             if (mode && mode.customer) {
@@ -31164,7 +31248,7 @@ function EmartPickingView(_ref220) {
               hideRegionRows.clear();
             }
             verifyFn = function () {
-              var _ref228 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee80(bytes, rep) {
+              var _ref234 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee80(bytes, rep) {
                 var moved, movedKey, result, bad;
                 return _regeneratorRuntime().wrap(function _callee80$(_context82) {
                   while (1) switch (_context82.prev = _context82.next) {
@@ -31222,7 +31306,7 @@ function EmartPickingView(_ref220) {
                 }, _callee80);
               }));
               return function verifyFn(_x166, _x167) {
-                return _ref228.apply(this, arguments);
+                return _ref234.apply(this, arguments);
               };
             }();
             productRank = sheetRank ? new Map(products.map(function (p, i) {
@@ -31415,10 +31499,10 @@ function EmartPickingView(_ref220) {
           customer: 0
         };
         var ours = 0;
-        Object.entries(p.qty).forEach(function (_ref221) {
-          var _ref222 = _slicedToArray(_ref221, 2),
-            c = _ref222[0],
-            q = _ref222[1];
+        Object.entries(p.qty).forEach(function (_ref227) {
+          var _ref228 = _slicedToArray(_ref227, 2),
+            c = _ref228[0],
+            q = _ref228[1];
           if (!regAdjOf(p.name, p.tpl, c) && !(jejuRegs.includes(c) && azVendorSet.has(p.vendor))) ours += q;
         });
         g.products.push(_objectSpread(_objectSpread({}, p), {}, {
@@ -31706,7 +31790,7 @@ function EmartPickingView(_ref220) {
         display: "none"
       },
       onChange: (function () {
-        var _ref223 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee77(e) {
+        var _ref229 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee77(e) {
           var f;
           return _regeneratorRuntime().wrap(function _callee77$(_context79) {
             while (1) switch (_context79.prev = _context79.next) {
@@ -31734,7 +31818,7 @@ function EmartPickingView(_ref220) {
           }, _callee77);
         }));
         return function (_x165) {
-          return _ref223.apply(this, arguments);
+          return _ref229.apply(this, arguments);
         };
       }())
     }), customTpl ? React.createElement(React.Fragment, null, React.createElement("span", {
@@ -32449,8 +32533,8 @@ function itemBrandsOf(i) {
     return s.trim();
   }).filter(Boolean);
 }
-function BrandBadge(_ref229) {
-  var brand = _ref229.brand;
+function BrandBadge(_ref235) {
+  var brand = _ref235.brand;
   var c = BRAND_COLOR[brand] || {
     bg: "#EEF1F4",
     fg: "#3E4750"
@@ -32480,19 +32564,19 @@ function publishSetting(key, value) {
   });
 }
 function pickProductFormMapOf(saved) {
-  return new Map(Object.entries(saved && saved.products || {}).filter(function (_ref230) {
-    var _ref231 = _slicedToArray(_ref230, 2),
-      k = _ref231[0],
-      v = _ref231[1];
+  return new Map(Object.entries(saved && saved.products || {}).filter(function (_ref236) {
+    var _ref237 = _slicedToArray(_ref236, 2),
+      k = _ref237[0],
+      v = _ref237[1];
     return k && v;
   }));
 }
 function pickFormMapOf(cfg, saved) {
   var m = _objectSpread(_objectSpread({}, cfg && cfg.formDefaults || {}), saved && saved.map || {});
-  return new Map(Object.entries(m).filter(function (_ref232) {
-    var _ref233 = _slicedToArray(_ref232, 2),
-      k = _ref233[0],
-      v = _ref233[1];
+  return new Map(Object.entries(m).filter(function (_ref238) {
+    var _ref239 = _slicedToArray(_ref238, 2),
+      k = _ref239[0],
+      v = _ref239[1];
     return k && v;
   }));
 }
@@ -32740,10 +32824,10 @@ function _setBrandHidden() {
             var h = brandHiddenOf(v);
             var n = {
               suppliers: _toConsumableArray(h.suppliers),
-              products: Object.fromEntries(Object.entries(h.products).map(function (_ref410) {
-                var _ref411 = _slicedToArray(_ref410, 2),
-                  k = _ref411[0],
-                  a = _ref411[1];
+              products: Object.fromEntries(Object.entries(h.products).map(function (_ref416) {
+                var _ref417 = _slicedToArray(_ref416, 2),
+                  k = _ref417[0],
+                  a = _ref417[1];
                 return [k, _toConsumableArray(a || [])];
               })),
               at: _objectSpread({}, h.at)
@@ -32774,22 +32858,22 @@ function _setBrandHidden() {
   }));
   return _setBrandHidden.apply(this, arguments);
 }
-function BrandHiddenList(_ref234) {
-  var cfg = _ref234.cfg,
-    title = _ref234.title,
-    emptyText = _ref234.emptyText,
-    onRestore = _ref234.onRestore,
-    busy = _ref234.busy;
+function BrandHiddenList(_ref240) {
+  var cfg = _ref240.cfg,
+    title = _ref240.title,
+    emptyText = _ref240.emptyText,
+    onRestore = _ref240.onRestore,
+    busy = _ref240.busy;
   var h = brandHiddenOf(cfg);
   var items = [].concat(_toConsumableArray(h.suppliers.map(function (sup) {
     return {
       sup: sup,
       name: null
     };
-  })), _toConsumableArray(Object.entries(h.products).flatMap(function (_ref235) {
-    var _ref236 = _slicedToArray(_ref235, 2),
-      sup = _ref236[0],
-      arr = _ref236[1];
+  })), _toConsumableArray(Object.entries(h.products).flatMap(function (_ref241) {
+    var _ref242 = _slicedToArray(_ref241, 2),
+      sup = _ref242[0],
+      arr = _ref242[1];
     return (arr || []).map(function (name) {
       return {
         sup: sup,
@@ -32893,14 +32977,14 @@ function applyBrandOrder(list, cfg, supOf, nameOf) {
     return supRank(supOf(a)) - supRank(supOf(b)) || prodRank(a) - prodRank(b);
   });
 }
-function BrandModalFrame(_ref237) {
-  var title = _ref237.title,
-    sub = _ref237.sub,
-    onClose = _ref237.onClose,
-    children = _ref237.children,
-    _ref237$maxWidth = _ref237.maxWidth,
-    maxWidth = _ref237$maxWidth === void 0 ? 1100 : _ref237$maxWidth,
-    height = _ref237.height;
+function BrandModalFrame(_ref243) {
+  var title = _ref243.title,
+    sub = _ref243.sub,
+    onClose = _ref243.onClose,
+    children = _ref243.children,
+    _ref243$maxWidth = _ref243.maxWidth,
+    maxWidth = _ref243$maxWidth === void 0 ? 1100 : _ref243$maxWidth,
+    height = _ref243.height;
   useEffect(function () {
     var onKey = function onKey(e) {
       return e.key === "Escape" && onClose();
@@ -33157,10 +33241,10 @@ function pvSourceChecks(dayOrders, supKeyOf, include, res) {
   });
   cross.forEach(function (c) {
     if (c.orders.size < 2) return;
-    var parts = Array.from(c.orders.entries()).map(function (_ref238) {
-      var _ref239 = _slicedToArray(_ref238, 2),
-        no = _ref239[0],
-        q = _ref239[1];
+    var parts = Array.from(c.orders.entries()).map(function (_ref244) {
+      var _ref245 = _slicedToArray(_ref244, 2),
+        no = _ref245[0],
+        q = _ref245[1];
       return "".concat(no, " ").concat(q, "\uAC1C");
     });
     res.warns.push({
@@ -33260,13 +33344,13 @@ function gsZeroReason(p, key) {
   if (isQtyZeroOverride(zk, key)) return "\uACF5\uAE09\uC0AC 0\uACE0\uC815 (".concat(zk, " \xB7 \uC774 \uC9C0\uC5ED\uC740 0\uC73C\uB85C \uACE0\uC815)");
   return null;
 }
-function verifyGsPicking(_ref240) {
-  var orders = _ref240.orders,
-    date = _ref240.date,
-    buffer = _ref240.buffer,
-    sheetLog = _ref240.sheetLog,
-    products = _ref240.products,
-    fullExport = _ref240.fullExport;
+function verifyGsPicking(_ref246) {
+  var orders = _ref246.orders,
+    date = _ref246.date,
+    buffer = _ref246.buffer,
+    sheetLog = _ref246.sheetLog,
+    products = _ref246.products,
+    fullExport = _ref246.fullExport;
   var res = pvNewResult();
   var day = orders.filter(function (o) {
     return o.createdAt === date;
@@ -33367,10 +33451,10 @@ function verifyGsPicking(_ref240) {
           return rr && rr.label || key;
         };
         var want = {};
-        Object.entries(r0).forEach(function (_ref241) {
-          var _ref242 = _slicedToArray(_ref241, 2),
-            k = _ref242[0],
-            q = _ref242[1];
+        Object.entries(r0).forEach(function (_ref247) {
+          var _ref248 = _slicedToArray(_ref247, 2),
+            k = _ref248[0],
+            q = _ref248[1];
           return want[labelOf(k)] = (want[labelOf(k)] || 0) + q;
         });
         new Set([].concat(_toConsumableArray(Object.keys(want)), _toConsumableArray(Object.keys(col)))).forEach(function (lb) {
@@ -33421,16 +33505,16 @@ function verifyGsPicking(_ref240) {
   }, res);
   return pvFinish(res);
 }
-function verifyEmartPicking(_ref243) {
-  var emartOrders = _ref243.emartOrders,
-    date = _ref243.date,
-    bytes = _ref243.bytes,
-    report = _ref243.report,
-    rows = _ref243.rows,
-    allRows = _ref243.allRows,
-    isHiddenRow = _ref243.isHiddenRow,
-    fullExport = _ref243.fullExport,
-    adjusted = _ref243.adjusted;
+function verifyEmartPicking(_ref249) {
+  var emartOrders = _ref249.emartOrders,
+    date = _ref249.date,
+    bytes = _ref249.bytes,
+    report = _ref249.report,
+    rows = _ref249.rows,
+    allRows = _ref249.allRows,
+    isHiddenRow = _ref249.isHiddenRow,
+    fullExport = _ref249.fullExport,
+    adjusted = _ref249.adjusted;
   var res = pvNewResult();
   (adjusted || []).forEach(function (a) {
     return pvAddFixed(res, a.name, a.center, a.qty, a.reason);
@@ -33472,18 +33556,18 @@ function verifyEmartPicking(_ref243) {
     var names = new Set(codes.values());
     if (codes.size > 1 && names.size > 1) res.warns.push({
       type: "합침",
-      text: "[".concat(sheet, "] \uC0C1\uD488\uCF54\uB4DC\uAC00 \uB2E4\uB978 \uC0C1\uD488 ").concat(codes.size, "\uAC1C\uAC00 \uD55C \uC2DC\uD2B8\uC5D0 \uD569\uCCD0\uC84C\uC5B4\uC694: ").concat(_toConsumableArray(codes).map(function (_ref244) {
-        var _ref245 = _slicedToArray(_ref244, 2),
-          c = _ref245[0],
-          n = _ref245[1];
+      text: "[".concat(sheet, "] \uC0C1\uD488\uCF54\uB4DC\uAC00 \uB2E4\uB978 \uC0C1\uD488 ").concat(codes.size, "\uAC1C\uAC00 \uD55C \uC2DC\uD2B8\uC5D0 \uD569\uCCD0\uC84C\uC5B4\uC694: ").concat(_toConsumableArray(codes).map(function (_ref250) {
+        var _ref251 = _slicedToArray(_ref250, 2),
+          c = _ref251[0],
+          n = _ref251[1];
         return "".concat(n, "(").concat(c, ")");
       }).join(", "), " \u2014 \uAC19\uC740 \uC0C1\uD488\uC774 \uC544\uB2C8\uBA74 \uC54C\uB824 \uC8FC\uC138\uC694.")
     });
   });
   var pivotCache = new Map();
-  want.forEach(function (_ref246) {
-    var m = _ref246.m,
-      qty = _ref246.qty;
+  want.forEach(function (_ref252) {
+    var m = _ref252.m,
+      qty = _ref252.qty;
     res.stats.sheets++;
     res.stats.products++;
     var sh = pvReadProductSheet(pvSheetRows(wb, m.sheet), (m.col || 3) - 1);
@@ -33529,10 +33613,10 @@ function verifyEmartPicking(_ref243) {
           return pv.data[n];
         });
         var _col3 = m.k && pv.byCol[m.k - 1] || hd && pv.data[hd] || {};
-        Object.entries(qty).forEach(function (_ref247) {
-          var _ref248 = _slicedToArray(_ref247, 2),
-            center = _ref248[0],
-            a = _ref248[1];
+        Object.entries(qty).forEach(function (_ref253) {
+          var _ref254 = _slicedToArray(_ref253, 2),
+            center = _ref254[0],
+            a = _ref254[1];
           if (!(center in sh.byLabel)) return;
           var b = _col3[center] || 0;
           if (a !== b) res.errors.push({
@@ -33594,9 +33678,9 @@ function verifyEmartPicking(_ref243) {
   }, res);
   return pvFinish(res);
 }
-function PickVerifyBanner(_ref249) {
-  var result = _ref249.result,
-    onOpen = _ref249.onOpen;
+function PickVerifyBanner(_ref255) {
+  var result = _ref255.result,
+    onOpen = _ref255.onOpen;
   if (!result) return null;
   var bad = result.errors.length > 0;
   var warn = result.warns.length > 0;
@@ -33634,11 +33718,11 @@ function PickVerifyBanner(_ref249) {
     })
   }, "\uC790\uC138\uD788 \uBCF4\uAE30"));
 }
-function PickVerifyModal(_ref250) {
-  var result = _ref250.result,
-    label = _ref250.label,
-    onClose = _ref250.onClose,
-    onDownloadAnyway = _ref250.onDownloadAnyway;
+function PickVerifyModal(_ref256) {
+  var result = _ref256.result,
+    label = _ref256.label,
+    onClose = _ref256.onClose,
+    onDownloadAnyway = _ref256.onDownloadAnyway;
   var _useState383 = useState(false),
     _useState384 = _slicedToArray(_useState383, 2),
     showFixed = _useState384[0],
@@ -33704,11 +33788,11 @@ function PickVerifyModal(_ref250) {
       flexWrap: "wrap",
       marginBottom: 14
     }
-  }, [["❌ 오류", result.errors.length, T.danger], ["⚠ 확인 필요", result.warns.length, T.amberDeep], ["🔒 고정값", result.fixed.length, T.inkSoft], ["대조한 센터 칸", result.stats.cells, T.teal]].map(function (_ref251) {
-    var _ref252 = _slicedToArray(_ref251, 3),
-      t = _ref252[0],
-      n = _ref252[1],
-      c = _ref252[2];
+  }, [["❌ 오류", result.errors.length, T.danger], ["⚠ 확인 필요", result.warns.length, T.amberDeep], ["🔒 고정값", result.fixed.length, T.inkSoft], ["대조한 센터 칸", result.stats.cells, T.teal]].map(function (_ref257) {
+    var _ref258 = _slicedToArray(_ref257, 3),
+      t = _ref258[0],
+      n = _ref258[1],
+      c = _ref258[2];
     return React.createElement("div", {
       key: t,
       style: {
@@ -33770,10 +33854,10 @@ function PickVerifyModal(_ref250) {
       fontSize: 12.5,
       lineHeight: 1.7
     }
-  }, Object.entries(fixedGroups).map(function (_ref253) {
-    var _ref254 = _slicedToArray(_ref253, 2),
-      reason = _ref254[0],
-      list = _ref254[1];
+  }, Object.entries(fixedGroups).map(function (_ref259) {
+    var _ref260 = _slicedToArray(_ref259, 2),
+      reason = _ref260[0],
+      list = _ref260[1];
     return React.createElement("div", {
       key: reason,
       style: {
@@ -33870,10 +33954,10 @@ var daysBetween = function daysBetween(a, b) {
     return i === 1 ? x - 1 : +x;
   })))) / 86400000);
 };
-function NewSinceBadge(_ref255) {
-  var firstSeen = _ref255.firstSeen,
-    code = _ref255.code,
-    activeDate = _ref255.activeDate;
+function NewSinceBadge(_ref261) {
+  var firstSeen = _ref261.firstSeen,
+    code = _ref261.code,
+    activeDate = _ref261.activeDate;
   var d = firstSeen && firstSeen.get(String(code || "").trim());
   if (!d || !activeDate) return null;
   var gap = daysBetween(d, activeDate);
@@ -33898,12 +33982,12 @@ function NewSinceBadge(_ref255) {
     }
   }, txt);
 }
-function NewProductAlert(_ref256) {
-  var channel = _ref256.channel,
-    label = _ref256.label,
-    orders = _ref256.orders,
-    activeDate = _ref256.activeDate,
-    authToken = _ref256.authToken;
+function NewProductAlert(_ref262) {
+  var channel = _ref262.channel,
+    label = _ref262.label,
+    orders = _ref262.orders,
+    activeDate = _ref262.activeDate,
+    authToken = _ref262.authToken;
   var key = "known_products_".concat(channel);
   var saved = useSetting(key, authToken);
   var _useState385 = useState(key in SETTING_CACHE),
@@ -33967,7 +34051,7 @@ function NewProductAlert(_ref256) {
   }).length;
   var nRen = found.length - nNew;
   var confirm = function () {
-    var _ref257 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee82() {
+    var _ref263 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee82() {
       return _regeneratorRuntime().wrap(function _callee82$(_context84) {
         while (1) switch (_context84.prev = _context84.next) {
           case 0:
@@ -34011,7 +34095,7 @@ function NewProductAlert(_ref256) {
       }, _callee82, null, [[1, 7, 10, 13]]);
     }));
     return function confirm() {
-      return _ref257.apply(this, arguments);
+      return _ref263.apply(this, arguments);
     };
   }();
   var groups = [];
@@ -34245,12 +34329,12 @@ function buildUploadReport(_x177) {
   return _buildUploadReport.apply(this, arguments);
 }
 function _buildUploadReport() {
-  _buildUploadReport = _asyncToGenerator(_regeneratorRuntime().mark(function _callee152(_ref258) {
-    var channel, newOrders, prevOrders, _ref258$dupLines, dupLines, _ref258$skipped, skipped, unmatchedSkus, label, dates, allOrders, tplSupK, newSv, prevDates, items, push, _iterator40, _step40, _loop28, counts;
+  _buildUploadReport = _asyncToGenerator(_regeneratorRuntime().mark(function _callee152(_ref264) {
+    var channel, newOrders, prevOrders, _ref264$dupLines, dupLines, _ref264$skipped, skipped, unmatchedSkus, label, dates, allOrders, tplSupK, newSv, prevDates, items, push, _iterator40, _step40, _loop28, counts;
     return _regeneratorRuntime().wrap(function _callee152$(_context166) {
       while (1) switch (_context166.prev = _context166.next) {
         case 0:
-          channel = _ref258.channel, newOrders = _ref258.newOrders, prevOrders = _ref258.prevOrders, _ref258$dupLines = _ref258.dupLines, dupLines = _ref258$dupLines === void 0 ? 0 : _ref258$dupLines, _ref258$skipped = _ref258.skipped, skipped = _ref258$skipped === void 0 ? 0 : _ref258$skipped, unmatchedSkus = _ref258.unmatchedSkus;
+          channel = _ref264.channel, newOrders = _ref264.newOrders, prevOrders = _ref264.prevOrders, _ref264$dupLines = _ref264.dupLines, dupLines = _ref264$dupLines === void 0 ? 0 : _ref264$dupLines, _ref264$skipped = _ref264.skipped, skipped = _ref264$skipped === void 0 ? 0 : _ref264$skipped, unmatchedSkus = _ref264.unmatchedSkus;
           label = {
             GS: "GS",
             GSFROZEN: "GS 냉동",
@@ -34593,9 +34677,9 @@ function _buildUploadReport() {
   }));
   return _buildUploadReport.apply(this, arguments);
 }
-function UploadReportModal(_ref259) {
-  var report = _ref259.report,
-    onClose = _ref259.onClose;
+function UploadReportModal(_ref265) {
+  var report = _ref265.report,
+    onClose = _ref265.onClose;
   var problem = report.counts.warn + report.counts["new"] + report.counts.none;
   var _useState391 = useState(problem > 0),
     _useState392 = _slicedToArray(_useState391, 2),
@@ -34821,12 +34905,12 @@ function UploadReportModal(_ref259) {
     style: primaryBtnStyle
   }, "\uD655\uC778")));
 }
-function BrandOrderSettingsModal(_ref260) {
-  var brand = _ref260.brand,
-    label = _ref260.label,
-    authToken = _ref260.authToken,
-    detected = _ref260.detected,
-    onClose = _ref260.onClose;
+function BrandOrderSettingsModal(_ref266) {
+  var brand = _ref266.brand,
+    label = _ref266.label,
+    authToken = _ref266.authToken,
+    detected = _ref266.detected,
+    onClose = _ref266.onClose;
   var key = brandSettingKey("picking_order", brand);
   var saved = useSetting(key, authToken);
   var _useState395 = useState(null),
@@ -34886,7 +34970,7 @@ function BrandOrderSettingsModal(_ref260) {
     return !(hiddenCfg.products[curSup] || []).includes(n);
   });
   var hideOrRestore = function () {
-    var _ref261 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee83(op) {
+    var _ref267 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee83(op) {
       var what, text, r;
       return _regeneratorRuntime().wrap(function _callee83$(_context85) {
         while (1) switch (_context85.prev = _context85.next) {
@@ -34913,7 +34997,7 @@ function BrandOrderSettingsModal(_ref260) {
       }, _callee83);
     }));
     return function hideOrRestore(_x178) {
-      return _ref261.apply(this, arguments);
+      return _ref267.apply(this, arguments);
     };
   }();
   var change = function change(fn) {
@@ -35312,12 +35396,12 @@ function BrandOrderSettingsModal(_ref260) {
     }
   }))));
 }
-function BrandInvoiceSettingsModal(_ref262) {
-  var brand = _ref262.brand,
-    label = _ref262.label,
-    authToken = _ref262.authToken,
-    detected = _ref262.detected,
-    onClose = _ref262.onClose;
+function BrandInvoiceSettingsModal(_ref268) {
+  var brand = _ref268.brand,
+    label = _ref268.label,
+    authToken = _ref268.authToken,
+    detected = _ref268.detected,
+    onClose = _ref268.onClose;
   var key = brandSettingKey("invoice_settings", brand);
   var saved = useSetting(key, authToken);
   var savedSup = saved && saved.suppliers || {};
@@ -35387,11 +35471,11 @@ function BrandInvoiceSettingsModal(_ref262) {
       list: _toConsumableArray(s.centers && s.centers.list || [])
     };
     var products = {};
-    Object.entries(s.products || {}).forEach(function (_ref263) {
+    Object.entries(s.products || {}).forEach(function (_ref269) {
       var _v$displayName, _v$packQty, _v$expiryDays;
-      var _ref264 = _slicedToArray(_ref263, 2),
-        n = _ref264[0],
-        v = _ref264[1];
+      var _ref270 = _slicedToArray(_ref269, 2),
+        n = _ref270[0],
+        v = _ref270[1];
       return products[n] = {
         displayName: (_v$displayName = v.displayName) !== null && _v$displayName !== void 0 ? _v$displayName : "",
         packQty: (_v$packQty = v.packQty) !== null && _v$packQty !== void 0 ? _v$packQty : "",
@@ -35435,7 +35519,7 @@ function BrandInvoiceSettingsModal(_ref262) {
     };
   });
   var hideOrRestore = function () {
-    var _ref265 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee85(op) {
+    var _ref271 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee85(op) {
       var what, text, r;
       return _regeneratorRuntime().wrap(function _callee85$(_context87) {
         while (1) switch (_context87.prev = _context87.next) {
@@ -35469,7 +35553,7 @@ function BrandInvoiceSettingsModal(_ref262) {
       }, _callee85);
     }));
     return function hideOrRestore(_x179) {
-      return _ref265.apply(this, arguments);
+      return _ref271.apply(this, arguments);
     };
   }();
   function save() {
@@ -35649,8 +35733,8 @@ function BrandInvoiceSettingsModal(_ref262) {
     return !q.trim() || k.toLowerCase().includes(q.trim().toLowerCase());
   });
   var pv = function pv(n, f) {
-    var _ref266;
-    return (_ref266 = form && form.products[n] ? form.products[n][f] : "") !== null && _ref266 !== void 0 ? _ref266 : "";
+    var _ref272;
+    return (_ref272 = form && form.products[n] ? form.products[n][f] : "") !== null && _ref272 !== void 0 ? _ref272 : "";
   };
   var setPv = function setPv(n, f, v) {
     return upd(function (x) {
@@ -36172,13 +36256,13 @@ function useEmartTplInfo() {
   }, []);
   return info;
 }
-function BrandTabs(_ref267) {
-  var channel = _ref267.channel,
-    onChannel = _ref267.onChannel,
-    title = _ref267.title,
-    renderReady = _ref267.renderReady,
-    placeholderAction = _ref267.placeholderAction,
-    hideHeaderFallback = _ref267.hideHeaderFallback;
+function BrandTabs(_ref273) {
+  var channel = _ref273.channel,
+    onChannel = _ref273.onChannel,
+    title = _ref273.title,
+    renderReady = _ref273.renderReady,
+    placeholderAction = _ref273.placeholderAction,
+    hideHeaderFallback = _ref273.hideHeaderFallback;
   var ch = PICKING_CHANNELS.find(function (c) {
     return c.key === channel;
   }) || PICKING_CHANNELS[0];
@@ -36225,10 +36309,10 @@ function BrandTabs(_ref267) {
     text: "\uD83D\uDEA7 \uACF5\uC0AC\uC911"
   }))));
 }
-function BrandOrderSettingsButton(_ref268) {
-  var ch = _ref268.ch,
-    authToken = _ref268.authToken,
-    detected = _ref268.detected;
+function BrandOrderSettingsButton(_ref274) {
+  var ch = _ref274.ch,
+    authToken = _ref274.authToken,
+    detected = _ref274.detected;
   var _useState431 = useState(false),
     _useState432 = _slicedToArray(_useState431, 2),
     open = _useState432[0],
@@ -36252,10 +36336,10 @@ function BrandOrderSettingsButton(_ref268) {
     }
   }));
 }
-function BrandInvoiceSettingsButton(_ref269) {
-  var ch = _ref269.ch,
-    authToken = _ref269.authToken,
-    detected = _ref269.detected;
+function BrandInvoiceSettingsButton(_ref275) {
+  var ch = _ref275.ch,
+    authToken = _ref275.authToken,
+    detected = _ref275.detected;
   var _useState433 = useState(false),
     _useState434 = _slicedToArray(_useState433, 2),
     open = _useState434[0],
@@ -36626,10 +36710,10 @@ function hsl255ToRgb(H, S, L) {
     p = 2 * l - q;
   return [hue(p, q, h + 1 / 3) * 255, hue(p, q, h) * 255, hue(p, q, h - 1 / 3) * 255];
 }
-function ExcelMoreColorsDialog(_ref270) {
-  var value = _ref270.value,
-    onOk = _ref270.onOk,
-    onClose = _ref270.onClose;
+function ExcelMoreColorsDialog(_ref276) {
+  var value = _ref276.value,
+    onOk = _ref276.onOk,
+    onClose = _ref276.onClose;
   var start = value && /^[0-9A-F]{6}$/i.test(value) ? value.toUpperCase() : "FFFFFF";
   var _useState435 = useState("standard"),
     _useState436 = _slicedToArray(_useState435, 2),
@@ -37008,9 +37092,9 @@ function ExcelMoreColorsDialog(_ref270) {
     }
   }), "\uD604\uC7AC \uC0C9"))))), document.body);
 }
-function ExcelColorPicker(_ref271) {
-  var value = _ref271.value,
-    onChange = _ref271.onChange;
+function ExcelColorPicker(_ref277) {
+  var value = _ref277.value,
+    onChange = _ref277.onChange;
   var _useState445 = useState(false),
     _useState446 = _slicedToArray(_useState445, 2),
     open = _useState446[0],
@@ -37194,11 +37278,11 @@ function ExcelColorPicker(_ref271) {
     }
   }));
 }
-function SheetColorModal(_ref272) {
-  var kind = _ref272.kind,
-    suppliers = _ref272.suppliers,
-    authToken = _ref272.authToken,
-    onClose = _ref272.onClose;
+function SheetColorModal(_ref278) {
+  var kind = _ref278.kind,
+    suppliers = _ref278.suppliers,
+    authToken = _ref278.authToken,
+    onClose = _ref278.onClose;
   var saved = useSetting("sheet_colors", authToken);
   var def = SHEET_COLOR_KINDS[kind];
   var _useState449 = useState(null),
@@ -37478,10 +37562,10 @@ function SheetColorModal(_ref272) {
     }));
   })))));
 }
-function SheetColorButton(_ref273) {
-  var kind = _ref273.kind,
-    suppliers = _ref273.suppliers,
-    authToken = _ref273.authToken;
+function SheetColorButton(_ref279) {
+  var kind = _ref279.kind,
+    suppliers = _ref279.suppliers,
+    authToken = _ref279.authToken;
   var _useState459 = useState(false),
     _useState460 = _slicedToArray(_useState459, 2),
     open = _useState460[0],
@@ -37518,25 +37602,25 @@ function SheetColorButton(_ref273) {
     }
   }));
 }
-function PickingCenter(_ref274) {
-  var channel = _ref274.channel,
-    onChannel = _ref274.onChannel,
-    gsView = _ref274.gsView,
-    emartOrders = _ref274.emartOrders,
-    _ref274$frozenOrders = _ref274.frozenOrders,
-    frozenOrders = _ref274$frozenOrders === void 0 ? [] : _ref274$frozenOrders,
-    _ref274$emFrozenOrder = _ref274.emFrozenOrders,
-    emFrozenOrders = _ref274$emFrozenOrder === void 0 ? [] : _ref274$emFrozenOrder,
-    _ref274$sevenOrders = _ref274.sevenOrders,
-    sevenOrders = _ref274$sevenOrders === void 0 ? [] : _ref274$sevenOrders,
-    _ref274$sevenFrozenOr = _ref274.sevenFrozenOrders,
-    sevenFrozenOrders = _ref274$sevenFrozenOr === void 0 ? [] : _ref274$sevenFrozenOr,
-    _ref274$bgfOrders = _ref274.bgfOrders,
-    bgfOrders = _ref274$bgfOrders === void 0 ? [] : _ref274$bgfOrders,
-    _ref274$bgfFrozenOrde = _ref274.bgfFrozenOrders,
-    bgfFrozenOrders = _ref274$bgfFrozenOrde === void 0 ? [] : _ref274$bgfFrozenOrde,
-    authToken = _ref274.authToken,
-    onZeroLines = _ref274.onZeroLines;
+function PickingCenter(_ref280) {
+  var channel = _ref280.channel,
+    onChannel = _ref280.onChannel,
+    gsView = _ref280.gsView,
+    emartOrders = _ref280.emartOrders,
+    _ref280$frozenOrders = _ref280.frozenOrders,
+    frozenOrders = _ref280$frozenOrders === void 0 ? [] : _ref280$frozenOrders,
+    _ref280$emFrozenOrder = _ref280.emFrozenOrders,
+    emFrozenOrders = _ref280$emFrozenOrder === void 0 ? [] : _ref280$emFrozenOrder,
+    _ref280$sevenOrders = _ref280.sevenOrders,
+    sevenOrders = _ref280$sevenOrders === void 0 ? [] : _ref280$sevenOrders,
+    _ref280$sevenFrozenOr = _ref280.sevenFrozenOrders,
+    sevenFrozenOrders = _ref280$sevenFrozenOr === void 0 ? [] : _ref280$sevenFrozenOr,
+    _ref280$bgfOrders = _ref280.bgfOrders,
+    bgfOrders = _ref280$bgfOrders === void 0 ? [] : _ref280$bgfOrders,
+    _ref280$bgfFrozenOrde = _ref280.bgfFrozenOrders,
+    bgfFrozenOrders = _ref280$bgfFrozenOrde === void 0 ? [] : _ref280$bgfFrozenOrde,
+    authToken = _ref280.authToken,
+    onZeroLines = _ref280.onZeroLines;
   return React.createElement(BrandTabs, {
     channel: channel,
     onChannel: onChannel,
@@ -37589,24 +37673,24 @@ function PickingCenter(_ref274) {
     }
   });
 }
-function InvoiceCenter(_ref275) {
-  var channel = _ref275.channel,
-    onChannel = _ref275.onChannel,
-    gsView = _ref275.gsView,
-    emartOrders = _ref275.emartOrders,
-    _ref275$frozenOrders = _ref275.frozenOrders,
-    frozenOrders = _ref275$frozenOrders === void 0 ? [] : _ref275$frozenOrders,
-    _ref275$emFrozenOrder = _ref275.emFrozenOrders,
-    emFrozenOrders = _ref275$emFrozenOrder === void 0 ? [] : _ref275$emFrozenOrder,
-    _ref275$sevenOrders = _ref275.sevenOrders,
-    sevenOrders = _ref275$sevenOrders === void 0 ? [] : _ref275$sevenOrders,
-    _ref275$sevenFrozenOr = _ref275.sevenFrozenOrders,
-    sevenFrozenOrders = _ref275$sevenFrozenOr === void 0 ? [] : _ref275$sevenFrozenOr,
-    _ref275$bgfOrders = _ref275.bgfOrders,
-    bgfOrders = _ref275$bgfOrders === void 0 ? [] : _ref275$bgfOrders,
-    _ref275$bgfFrozenOrde = _ref275.bgfFrozenOrders,
-    bgfFrozenOrders = _ref275$bgfFrozenOrde === void 0 ? [] : _ref275$bgfFrozenOrde,
-    authToken = _ref275.authToken;
+function InvoiceCenter(_ref281) {
+  var channel = _ref281.channel,
+    onChannel = _ref281.onChannel,
+    gsView = _ref281.gsView,
+    emartOrders = _ref281.emartOrders,
+    _ref281$frozenOrders = _ref281.frozenOrders,
+    frozenOrders = _ref281$frozenOrders === void 0 ? [] : _ref281$frozenOrders,
+    _ref281$emFrozenOrder = _ref281.emFrozenOrders,
+    emFrozenOrders = _ref281$emFrozenOrder === void 0 ? [] : _ref281$emFrozenOrder,
+    _ref281$sevenOrders = _ref281.sevenOrders,
+    sevenOrders = _ref281$sevenOrders === void 0 ? [] : _ref281$sevenOrders,
+    _ref281$sevenFrozenOr = _ref281.sevenFrozenOrders,
+    sevenFrozenOrders = _ref281$sevenFrozenOr === void 0 ? [] : _ref281$sevenFrozenOr,
+    _ref281$bgfOrders = _ref281.bgfOrders,
+    bgfOrders = _ref281$bgfOrders === void 0 ? [] : _ref281$bgfOrders,
+    _ref281$bgfFrozenOrde = _ref281.bgfFrozenOrders,
+    bgfFrozenOrders = _ref281$bgfFrozenOrde === void 0 ? [] : _ref281$bgfFrozenOrde,
+    authToken = _ref281.authToken;
   var tplInfo = useEmartTplInfo();
   var emartDet = useMemo(function () {
     return channel === "emart" ? emartDetected(emartOrders, tplInfo) : [];
@@ -37661,21 +37745,21 @@ function InvoiceCenter(_ref275) {
     }
   });
 }
-function ProductInfoCenter(_ref276) {
-  var orders = _ref276.orders,
-    items = _ref276.items,
-    emartOrders = _ref276.emartOrders,
-    _ref276$sevenOrders = _ref276.sevenOrders,
-    sevenOrders = _ref276$sevenOrders === void 0 ? [] : _ref276$sevenOrders,
-    _ref276$sevenFrozenOr = _ref276.sevenFrozenOrders,
-    sevenFrozenOrders = _ref276$sevenFrozenOr === void 0 ? [] : _ref276$sevenFrozenOr,
-    _ref276$bgfOrders = _ref276.bgfOrders,
-    bgfOrders = _ref276$bgfOrders === void 0 ? [] : _ref276$bgfOrders,
-    _ref276$bgfFrozenOrde = _ref276.bgfFrozenOrders,
-    bgfFrozenOrders = _ref276$bgfFrozenOrde === void 0 ? [] : _ref276$bgfFrozenOrde,
-    authToken = _ref276.authToken,
-    productInfo = _ref276.productInfo,
-    onSaved = _ref276.onSaved;
+function ProductInfoCenter(_ref282) {
+  var orders = _ref282.orders,
+    items = _ref282.items,
+    emartOrders = _ref282.emartOrders,
+    _ref282$sevenOrders = _ref282.sevenOrders,
+    sevenOrders = _ref282$sevenOrders === void 0 ? [] : _ref282$sevenOrders,
+    _ref282$sevenFrozenOr = _ref282.sevenFrozenOrders,
+    sevenFrozenOrders = _ref282$sevenFrozenOr === void 0 ? [] : _ref282$sevenFrozenOr,
+    _ref282$bgfOrders = _ref282.bgfOrders,
+    bgfOrders = _ref282$bgfOrders === void 0 ? [] : _ref282$bgfOrders,
+    _ref282$bgfFrozenOrde = _ref282.bgfFrozenOrders,
+    bgfFrozenOrders = _ref282$bgfFrozenOrde === void 0 ? [] : _ref282$bgfFrozenOrde,
+    authToken = _ref282.authToken,
+    productInfo = _ref282.productInfo,
+    onSaved = _ref282.onSaved;
   var _useState461 = useState("gs"),
     _useState462 = _slicedToArray(_useState461, 2),
     channel = _useState462[0],
@@ -37861,17 +37945,17 @@ function ProductInfoCenter(_ref276) {
     }
   });
 }
-function OwnBrandModal(_ref277) {
-  var brand = _ref277.brand,
-    label = _ref277.label,
-    rows = _ref277.rows,
-    info = _ref277.info,
-    infoKey = _ref277.infoKey,
-    brandOfRow = _ref277.brandOfRow,
-    authToken = _ref277.authToken,
-    productInfo = _ref277.productInfo,
-    onSaved = _ref277.onSaved,
-    onClose = _ref277.onClose;
+function OwnBrandModal(_ref283) {
+  var brand = _ref283.brand,
+    label = _ref283.label,
+    rows = _ref283.rows,
+    info = _ref283.info,
+    infoKey = _ref283.infoKey,
+    brandOfRow = _ref283.brandOfRow,
+    authToken = _ref283.authToken,
+    productInfo = _ref283.productInfo,
+    onSaved = _ref283.onSaved,
+    onClose = _ref283.onClose;
   var _useState471 = useState({}),
     _useState472 = _slicedToArray(_useState471, 2),
     draft = _useState472[0],
@@ -38206,14 +38290,14 @@ function OwnBrandModal(_ref277) {
     text: "\uC870\uAC74\uC5D0 \uB9DE\uB294 \uC0C1\uD488\uC774 \uC5C6\uC5B4\uC694."
   })));
 }
-function BrandProductInfoView(_ref278) {
-  var brand = _ref278.brand,
-    label = _ref278.label,
-    allRowsIn = _ref278.rows,
-    authToken = _ref278.authToken,
-    loading = _ref278.loading,
-    productInfo = _ref278.productInfo,
-    onSaved = _ref278.onSaved;
+function BrandProductInfoView(_ref284) {
+  var brand = _ref284.brand,
+    label = _ref284.label,
+    allRowsIn = _ref284.rows,
+    authToken = _ref284.authToken,
+    loading = _ref284.loading,
+    productInfo = _ref284.productInfo,
+    onSaved = _ref284.onSaved;
   var key = brandSettingKey("product_info", brand);
   var info = useSetting(key, authToken) || {};
   var _useState487 = useState(false),
@@ -38668,7 +38752,7 @@ function BrandProductInfoView(_ref278) {
       return setEditing(null);
     },
     onSave: (function () {
-      var _ref279 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee90(vals) {
+      var _ref285 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee90(vals) {
         return _regeneratorRuntime().wrap(function _callee90$(_context92) {
           while (1) switch (_context92.prev = _context92.next) {
             case 0:
@@ -38688,17 +38772,17 @@ function BrandProductInfoView(_ref278) {
         }, _callee90);
       }));
       return function (_x184) {
-        return _ref279.apply(this, arguments);
+        return _ref285.apply(this, arguments);
       };
     }())
   }));
 }
-function BrandProductInfoModal(_ref280) {
+function BrandProductInfoModal(_ref286) {
   var _ov$packQty, _ov$expiryDays;
-  var row = _ref280.row,
-    label = _ref280.label,
-    onClose = _ref280.onClose,
-    onSave = _ref280.onSave;
+  var row = _ref286.row,
+    label = _ref286.label,
+    onClose = _ref286.onClose,
+    onSave = _ref286.onSave;
   var ov = row.ov || {};
   var _useState501 = useState(ov.displayName || ""),
     _useState502 = _slicedToArray(_useState501, 2),
@@ -38859,11 +38943,11 @@ var PICK_FORM_CHANNELS = [{
     }
   }]
 }];
-function GsDragList(_ref281) {
-  var items = _ref281.items,
-    onChange = _ref281.onChange,
-    renderItem = _ref281.renderItem,
-    highlight = _ref281.highlight;
+function GsDragList(_ref287) {
+  var items = _ref287.items,
+    onChange = _ref287.onChange,
+    renderItem = _ref287.renderItem,
+    highlight = _ref287.highlight;
   var _useState509 = useState(null),
     _useState510 = _slicedToArray(_useState509, 2),
     dragCode = _useState510[0],
@@ -38886,9 +38970,9 @@ function GsDragList(_ref281) {
     var j = i + d;
     if (j < 0 || j >= items.length) return;
     var a = _toConsumableArray(items);
-    var _ref282 = [a[j], a[i]];
-    a[i] = _ref282[0];
-    a[j] = _ref282[1];
+    var _ref288 = [a[j], a[i]];
+    a[i] = _ref288[0];
+    a[j] = _ref288[1];
     onChange(a);
   };
   return React.createElement("div", {
@@ -38981,13 +39065,13 @@ function GsDragList(_ref281) {
     }, "\u25BC"));
   }));
 }
-function GsCenterSettingsModal(_ref283) {
-  var initial = _ref283.initial,
-    authToken = _ref283.authToken,
-    orders = _ref283.orders,
-    onSaved = _ref283.onSaved,
-    onInvoiceSaved = _ref283.onInvoiceSaved,
-    onClose = _ref283.onClose;
+function GsCenterSettingsModal(_ref289) {
+  var initial = _ref289.initial,
+    authToken = _ref289.authToken,
+    orders = _ref289.orders,
+    onSaved = _ref289.onSaved,
+    onInvoiceSaved = _ref289.onInvoiceSaved,
+    onClose = _ref289.onClose;
   var mode = (initial && initial.mode) === "inv" ? "inv" : "pick";
   var isPick = mode === "pick";
   var MY_LISTS = GS_ORDER_LISTS.filter(function (L) {
@@ -39125,14 +39209,14 @@ function GsCenterSettingsModal(_ref283) {
   };
   var selectedRegionCfgs = useMemo(function () {
     var out = [];
-    Object.entries(INVOICE_SETTINGS && INVOICE_SETTINGS.suppliers || {}).forEach(function (_ref284) {
-      var _ref285 = _slicedToArray(_ref284, 2),
-        sup = _ref285[0],
-        st = _ref285[1];
-      return Object.entries(st && st.regions || {}).forEach(function (_ref286) {
-        var _ref287 = _slicedToArray(_ref286, 2),
-          part = _ref287[0],
-          cfg = _ref287[1];
+    Object.entries(INVOICE_SETTINGS && INVOICE_SETTINGS.suppliers || {}).forEach(function (_ref290) {
+      var _ref291 = _slicedToArray(_ref290, 2),
+        sup = _ref291[0],
+        st = _ref291[1];
+      return Object.entries(st && st.regions || {}).forEach(function (_ref292) {
+        var _ref293 = _slicedToArray(_ref292, 2),
+          part = _ref293[0],
+          cfg = _ref293[1];
         return cfg && cfg.mode === "selected" && Array.isArray(cfg.codes) && out.push({
           sup: sup,
           part: part,
@@ -39208,8 +39292,8 @@ function GsCenterSettingsModal(_ref283) {
     setCenter(code, _defineProperty({}, offKey, true));
     setLists(function (L) {
       var n = _objectSpread({}, L);
-      MY_LISTS.forEach(function (_ref288) {
-        var k = _ref288.key;
+      MY_LISTS.forEach(function (_ref294) {
+        var k = _ref294.key;
         return n[k] = L[k].filter(function (x) {
           return x !== code;
         });
@@ -39303,10 +39387,10 @@ function GsCenterSettingsModal(_ref283) {
       return !sameList(lists[k], D[k]) && (ordersV[k] = lists[k]);
     });
     var cleanCenters = {};
-    Object.entries(centers).forEach(function (_ref289) {
-      var _ref290 = _slicedToArray(_ref289, 2),
-        k = _ref290[0],
-        o = _ref290[1];
+    Object.entries(centers).forEach(function (_ref295) {
+      var _ref296 = _slicedToArray(_ref295, 2),
+        k = _ref296[0],
+        o = _ref296[1];
       if (!o) return;
       var c = {};
       ["name", "invName", "centerName", "vvLabel", "address", "realZone"].forEach(function (f) {
@@ -39419,9 +39503,9 @@ function GsCenterSettingsModal(_ref283) {
             nextInv = JSON.parse(JSON.stringify(latest || {
               suppliers: {}
             }));
-            invPicks.forEach(function (_ref293) {
-              var sup = _ref293.sup,
-                part = _ref293.part;
+            invPicks.forEach(function (_ref299) {
+              var sup = _ref299.sup,
+                part = _ref299.part;
               var cfg = nextInv.suppliers && nextInv.suppliers[sup] && nextInv.suppliers[sup].regions && nextInv.suppliers[sup].regions[part];
               if (!cfg || cfg.mode !== "selected" || !Array.isArray(cfg.codes)) return;
               newCodes.forEach(function (code) {
@@ -40332,10 +40416,10 @@ function GsCenterSettingsModal(_ref283) {
     });
   }) : lists.pivot.map(function (c) {
     return ["", c];
-  })).map(function (_ref291) {
-    var _ref292 = _slicedToArray(_ref291, 2),
-      z = _ref292[0],
-      c = _ref292[1];
+  })).map(function (_ref297) {
+    var _ref298 = _slicedToArray(_ref297, 2),
+      z = _ref298[0],
+      c = _ref298[1];
     return React.createElement("div", {
       key: c,
       style: {
@@ -40439,16 +40523,16 @@ var TPL_PICK_CFG_OF = function TPL_PICK_CFG_OF() {
     BGFFROZEN: BGF_FROZEN_PV_CFG
   };
 };
-function TplCenterSettingsModal(_ref294) {
-  var mode = _ref294.mode,
-    brand = _ref294.brand,
-    label = _ref294.label,
-    _ref294$orders = _ref294.orders,
-    orders = _ref294$orders === void 0 ? [] : _ref294$orders,
-    _ref294$invInfo = _ref294.invInfo,
-    invInfo = _ref294$invInfo === void 0 ? null : _ref294$invInfo,
-    authToken = _ref294.authToken,
-    onClose = _ref294.onClose;
+function TplCenterSettingsModal(_ref300) {
+  var mode = _ref300.mode,
+    brand = _ref300.brand,
+    label = _ref300.label,
+    _ref300$orders = _ref300.orders,
+    orders = _ref300$orders === void 0 ? [] : _ref300$orders,
+    _ref300$invInfo = _ref300.invInfo,
+    invInfo = _ref300$invInfo === void 0 ? null : _ref300$invInfo,
+    authToken = _ref300.authToken,
+    onClose = _ref300.onClose;
   var isPick = mode !== "inv";
   var key = tplCentersKeyOf(brand);
   var pickCfg = TPL_PICK_CFG_OF()[brand];
@@ -40717,10 +40801,10 @@ function TplCenterSettingsModal(_ref294) {
               var o = _objectSpread({}, v || {});
               if (centers) {
                 var clean = {};
-                Object.entries(centers).forEach(function (_ref295) {
-                  var _ref296 = _slicedToArray(_ref295, 2),
-                    l = _ref296[0],
-                    x = _ref296[1];
+                Object.entries(centers).forEach(function (_ref301) {
+                  var _ref302 = _slicedToArray(_ref301, 2),
+                    l = _ref302[0],
+                    x = _ref302[1];
                   var c = {};
                   ["added", "removed", "removedPick", "removedInv"].forEach(function (f) {
                     return x && x[f] && (c[f] = true);
@@ -41419,15 +41503,15 @@ function TplCenterSettingsModal(_ref294) {
     }
   }))), document.body);
 }
-function PickingEditHub(_ref297) {
-  var orders = _ref297.orders,
-    productInfo = _ref297.productInfo,
-    orderCfg = _ref297.orderCfg,
-    authToken = _ref297.authToken,
-    onProductInfoSaved = _ref297.onProductInfoSaved,
-    onOpenCenters = _ref297.onOpenCenters,
-    _ref297$chOrders = _ref297.chOrders,
-    chOrders = _ref297$chOrders === void 0 ? {} : _ref297$chOrders;
+function PickingEditHub(_ref303) {
+  var orders = _ref303.orders,
+    productInfo = _ref303.productInfo,
+    orderCfg = _ref303.orderCfg,
+    authToken = _ref303.authToken,
+    onProductInfoSaved = _ref303.onProductInfoSaved,
+    onOpenCenters = _ref303.onOpenCenters,
+    _ref303$chOrders = _ref303.chOrders,
+    chOrders = _ref303$chOrders === void 0 ? {} : _ref303$chOrders;
   var _useState555 = useState("GS"),
     _useState556 = _slicedToArray(_useState555, 2),
     brand = _useState556[0],
@@ -41605,10 +41689,10 @@ function PickingEditHub(_ref297) {
     }
   }));
 }
-function PickFormSummary(_ref298) {
-  var part = _ref298.part,
-    authToken = _ref298.authToken,
-    onOpen = _ref298.onOpen;
+function PickFormSummary(_ref304) {
+  var part = _ref304.part,
+    authToken = _ref304.authToken,
+    onOpen = _ref304.onOpen;
   var cfg = part.cfg();
   var saved = useSetting(cfg.formKey, authToken);
   var map = pickFormMapOf(cfg, saved);
@@ -41631,10 +41715,10 @@ function PickFormSummary(_ref298) {
       flexDirection: "column",
       gap: 6
     }
-  }, _toConsumableArray(map).map(function (_ref299) {
-    var _ref300 = _slicedToArray(_ref299, 2),
-      k = _ref300[0],
-      v = _ref300[1];
+  }, _toConsumableArray(map).map(function (_ref305) {
+    var _ref306 = _slicedToArray(_ref305, 2),
+      k = _ref306[0],
+      v = _ref306[1];
     return React.createElement("div", {
       key: k,
       style: {
@@ -41656,11 +41740,11 @@ function PickFormSummary(_ref298) {
     })
   }, "\uBC14\uAFB8\uAE30"))));
 }
-function PickFormPreview(_ref301) {
-  var tpl = _ref301.tpl,
-    pivot = _ref301.pivot,
-    sheet = _ref301.sheet,
-    caption = _ref301.caption;
+function PickFormPreview(_ref307) {
+  var tpl = _ref307.tpl,
+    pivot = _ref307.pivot,
+    sheet = _ref307.sheet,
+    caption = _ref307.caption;
   var prod = tpl && sheet ? tpl.products.find(function (p) {
     return p.sheet === sheet;
   }) : tpl && pivot ? tpl.products.find(function (p) {
@@ -41765,12 +41849,12 @@ function PickFormPreview(_ref301) {
     }
   }, "\uC6D0\uBCF8 \uC2DC\uD2B8 \"", prod.sheet, "\" (", pivot, ")"));
 }
-function PickProductForms(_ref302) {
-  var cfg = _ref302.cfg,
-    tpl = _ref302.tpl,
-    saved = _ref302.saved,
-    names = _ref302.names,
-    authToken = _ref302.authToken;
+function PickProductForms(_ref308) {
+  var cfg = _ref308.cfg,
+    tpl = _ref308.tpl,
+    saved = _ref308.saved,
+    names = _ref308.names,
+    authToken = _ref308.authToken;
   var pmap = saved && saved.products || {};
   var _useState563 = useState(null),
     _useState564 = _slicedToArray(_useState563, 2),
@@ -41960,12 +42044,12 @@ function PickProductForms(_ref302) {
     caption: choice === null ? "바꿀 모양 (선택하면 여기 보여요)" : "바꿀 모양"
   }))));
 }
-function PickFormModal(_ref303) {
-  var part = _ref303.part,
-    chLabel = _ref303.chLabel,
-    orders = _ref303.orders,
-    authToken = _ref303.authToken,
-    onClose = _ref303.onClose;
+function PickFormModal(_ref309) {
+  var part = _ref309.part,
+    chLabel = _ref309.chLabel,
+    orders = _ref309.orders,
+    authToken = _ref309.authToken,
+    onClose = _ref309.onClose;
   var cfg = part.cfg ? part.cfg() : null;
   var saved = useSetting(cfg ? cfg.formKey : "picking_form_none", authToken);
   var _useState571 = useState(null),
@@ -42327,13 +42411,13 @@ function PickFormModal(_ref303) {
     authToken: authToken
   }))));
 }
-function PickingEditPage(_ref304) {
-  var orders = _ref304.orders,
-    productInfo = _ref304.productInfo,
-    orderCfg = _ref304.orderCfg,
-    headerAction = _ref304.headerAction,
-    authToken = _ref304.authToken,
-    onProductInfoSaved = _ref304.onProductInfoSaved;
+function PickingEditPage(_ref310) {
+  var orders = _ref310.orders,
+    productInfo = _ref310.productInfo,
+    orderCfg = _ref310.orderCfg,
+    headerAction = _ref310.headerAction,
+    authToken = _ref310.authToken,
+    onProductInfoSaved = _ref310.onProductInfoSaved;
   var _useState587 = useState(null),
     _useState588 = _slicedToArray(_useState587, 2),
     setSku = _useState588[0],
@@ -42713,10 +42797,10 @@ function PickingEditPage(_ref304) {
     }
   }));
 }
-function Allocation(_ref305) {
-  var items = _ref305.items,
-    orders = _ref305.orders,
-    onAllocate = _ref305.onAllocate;
+function Allocation(_ref311) {
+  var items = _ref311.items,
+    orders = _ref311.orders,
+    onAllocate = _ref311.onAllocate;
   var newOrders = orders.filter(function (o) {
     return o.status === "NEW";
   });
@@ -42840,9 +42924,9 @@ function Allocation(_ref305) {
     }, "\uD569\uACC4: \uC694\uCCAD ", totalReq, " \xB7 \uC694\uCCAD\uC218\uB7C9 \uC804\uCCB4\uAC00 \uADF8\uB300\uB85C \uD560\uB2F9\uB429\uB2C8\uB2E4 (\uC7AC\uACE0 \uBD80\uC871\uACFC \uBB34\uAD00)"));
   })));
 }
-function Replenishment(_ref306) {
-  var items = _ref306.items,
-    onToggle = _ref306.onToggle;
+function Replenishment(_ref312) {
+  var items = _ref312.items,
+    onToggle = _ref312.onToggle;
   var _useState599 = useState("전체"),
     _useState600 = _slicedToArray(_useState599, 2),
     zone = _useState600[0],
@@ -42929,13 +43013,13 @@ function Replenishment(_ref306) {
     }, i.replenished ? "보충취소" : "보충")));
   })))));
 }
-function PickingList(_ref307) {
-  var orders = _ref307.orders,
-    items = _ref307.items,
-    onToggle = _ref307.onToggle,
-    onConfirm = _ref307.onConfirm,
-    onCancelConfirm = _ref307.onCancelConfirm,
-    onReallocate = _ref307.onReallocate;
+function PickingList(_ref313) {
+  var orders = _ref313.orders,
+    items = _ref313.items,
+    onToggle = _ref313.onToggle,
+    onConfirm = _ref313.onConfirm,
+    onCancelConfirm = _ref313.onCancelConfirm,
+    onReallocate = _ref313.onReallocate;
   var _useState601 = useState(null),
     _useState602 = _slicedToArray(_useState601, 2),
     selectedId = _useState602[0],
@@ -43771,9 +43855,9 @@ function addStyledInspectionSheet(workbook, product, usedNames, date, skipZero, 
     top: XL_THIN
   };
   ws.pageSetup.printArea = "A2:H".concat(signRow.number);
-  checkpointQueue.forEach(function (_ref308) {
-    var rowNumber = _ref308.rowNumber,
-      fi = _ref308.flatIdx;
+  checkpointQueue.forEach(function (_ref314) {
+    var rowNumber = _ref314.rowNumber,
+      fi = _ref314.flatIdx;
     var zr = zoneRanges.find(function (z) {
       return fi >= z.startFlatIdx && fi <= z.endFlatIdx;
     });
@@ -43848,12 +43932,12 @@ function addDangchakCombinedSheet(workbook, supplierLabel, products, usedNames, 
     }
   };
   function styleRow(row) {
-    var _ref309 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {},
-      font = _ref309.font,
-      align = _ref309.align,
-      border = _ref309.border,
-      fill = _ref309.fill,
-      numFmt = _ref309.numFmt;
+    var _ref315 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {},
+      font = _ref315.font,
+      align = _ref315.align,
+      border = _ref315.border,
+      fill = _ref315.fill,
+      numFmt = _ref315.numFmt;
     ["A", "B", "C", "D", "E", "F"].forEach(function (col) {
       var c = row.getCell(col);
       if (font) c.font = typeof font === "function" ? font(col) : font;
@@ -44206,10 +44290,10 @@ var LAST_PACK_BY_NAME = {};
 function withZeroDangchakProducts(products) {
   if (!products || products.length < 2) return products;
   var names = new Set(Object.keys(DANGCHAK_PRODUCTS));
-  Object.entries(PRODUCT_INFO || {}).forEach(function (_ref310) {
-    var _ref311 = _slicedToArray(_ref310, 2),
-      n = _ref311[0],
-      ov = _ref311[1];
+  Object.entries(PRODUCT_INFO || {}).forEach(function (_ref316) {
+    var _ref317 = _slicedToArray(_ref316, 2),
+      n = _ref317[0],
+      ov = _ref317[1];
     return ov && getDangchakInfo(n) && names.add(n);
   });
   var groupOf = function groupOf(name) {
@@ -44219,7 +44303,7 @@ function withZeroDangchakProducts(products) {
   };
   var out = _toConsumableArray(products);
   names.forEach(function (name) {
-    var _ref312, _ref313, _packQtyOverrideOf;
+    var _ref318, _ref319, _packQtyOverrideOf;
     var dk = getDangchakInfo(name);
     if (!dk || isProductInactive(name)) return;
     if (out.some(function (p) {
@@ -44244,7 +44328,7 @@ function withZeroDangchakProducts(products) {
       sku: "zero-".concat(name),
       name: name,
       displayName: displayNameOf(name),
-      packQty: (_ref312 = (_ref313 = (_packQtyOverrideOf = packQtyOverrideOf(name)) !== null && _packQtyOverrideOf !== void 0 ? _packQtyOverrideOf : LAST_PACK_BY_NAME[name]) !== null && _ref313 !== void 0 ? _ref313 : INVOICE_KNOWN_PACK[name]) !== null && _ref312 !== void 0 ? _ref312 : tpl.packQty,
+      packQty: (_ref318 = (_ref319 = (_packQtyOverrideOf = packQtyOverrideOf(name)) !== null && _packQtyOverrideOf !== void 0 ? _packQtyOverrideOf : LAST_PACK_BY_NAME[name]) !== null && _ref319 !== void 0 ? _ref319 : INVOICE_KNOWN_PACK[name]) !== null && _ref318 !== void 0 ? _ref318 : tpl.packQty,
       regionRows: tpl.regionRows.map(function (r) {
         return _objectSpread(_objectSpread({}, r), {}, {
           qty: 0,
@@ -44548,8 +44632,8 @@ function _downloadStyledInspectionExcel() {
           blocks.forEach(function (blk) {
             GS_PIVOT_REFS = null;
             if (products.length > 1) {
-              var pvItems = blk.items.map(function (_ref412) {
-                var p = _ref412.p;
+              var pvItems = blk.items.map(function (_ref418) {
+                var p = _ref418.p;
                 return p;
               });
               var pvWs = addPickingPivotSheet(workbook, blk.key, pvItems, usedNames, date);
@@ -44560,8 +44644,8 @@ function _downloadStyledInspectionExcel() {
                 GS_PIVOT_REFS = pvWs.__pivotRefs || null;
               }
             }
-            blk.items.forEach(function (_ref413) {
-              var p = _ref413.p;
+            blk.items.forEach(function (_ref419) {
+              var p = _ref419.p;
               if (needsSupplierCopy(p)) {
                 addStyledInspectionSheet(workbook, customerVersionOfProduct(p), usedNames, date, false, supplierCopySheetName(p));
                 logLast("copy", {
@@ -44569,9 +44653,9 @@ function _downloadStyledInspectionExcel() {
                 });
               }
             });
-            blk.items.forEach(function (_ref414) {
-              var p = _ref414.p,
-                i = _ref414.i;
+            blk.items.forEach(function (_ref420) {
+              var p = _ref420.p,
+                i = _ref420.i;
               var style = getDangchakStyle(p.name);
               var noOrderCombined = style === "combined" && String(p.sku).startsWith("zero-");
               if (!noOrderCombined) {
@@ -44735,9 +44819,9 @@ function computePyeonsuCounts(products) {
     return !isGsPickHidden(p);
   });
   var counts = {};
-  PYEONSU_DANGCHAK_ROWS.forEach(function (_ref314) {
-    var row = _ref314.row,
-      key = _ref314.key;
+  PYEONSU_DANGCHAK_ROWS.forEach(function (_ref320) {
+    var row = _ref320.row,
+      key = _ref320.key;
     counts[row] = products.filter(function (p) {
       var dk = getDangchakInfo(p.name);
       if (!dk) return false;
@@ -44745,11 +44829,11 @@ function computePyeonsuCounts(products) {
       return pyeonsuDkHas(p, dk);
     }).length;
   });
-  PYEONSU_DC_ROWS.forEach(function (_ref315) {
-    var row = _ref315.row,
-      key = _ref315.key,
-      bySupplier = _ref315.bySupplier,
-      aliases = _ref315.aliases;
+  PYEONSU_DC_ROWS.forEach(function (_ref321) {
+    var row = _ref321.row,
+      key = _ref321.key,
+      bySupplier = _ref321.bySupplier,
+      aliases = _ref321.aliases;
     counts[row] = products.filter(function (p) {
       var dk = getDangchakInfo(p.name);
       if (dk && dk.style === "full") return false;
@@ -44866,10 +44950,10 @@ function _downloadPyeonsuList() {
           center = _objectSpread(_objectSpread({}, ws.getCell("E13").alignment || {}), {}, {
             horizontal: "center"
           });
-          Object.entries(counts).forEach(function (_ref415) {
-            var _ref416 = _slicedToArray(_ref415, 2),
-              row = _ref416[0],
-              n = _ref416[1];
+          Object.entries(counts).forEach(function (_ref421) {
+            var _ref422 = _slicedToArray(_ref421, 2),
+              row = _ref422[0],
+              n = _ref422[1];
             var c = ws.getCell("E".concat(row));
             c.value = n;
             c.alignment = center;
@@ -45075,16 +45159,16 @@ function _downloadEmartPyeonsuList() {
           _context171.next = 28;
           break;
         case 38:
-          extras = _toConsumableArray(byVendor.entries()).filter(function (_ref417) {
-            var _ref418 = _slicedToArray(_ref417, 1),
-              v = _ref418[0];
+          extras = _toConsumableArray(byVendor.entries()).filter(function (_ref423) {
+            var _ref424 = _slicedToArray(_ref423, 1),
+              v = _ref424[0];
             return !used.has(v);
           });
           if (extras.length && lastVendorRow) {
             src = ws.getRow(lastVendorRow);
-            extras.forEach(function (_ref419, i) {
-              var _ref420 = _slicedToArray(_ref419, 2),
-                x = _ref420[1];
+            extras.forEach(function (_ref425, i) {
+              var _ref426 = _slicedToArray(_ref425, 2),
+                x = _ref426[1];
               var rn = lastVendorRow + 1 + i;
               ws.insertRow(rn, [], "i");
               var row = ws.getRow(rn);
@@ -45118,9 +45202,9 @@ function _downloadEmartPyeonsuList() {
           URL.revokeObjectURL(url);
           return _context171.abrupt("return", {
             counts: counts,
-            extras: extras.map(function (_ref421) {
-              var _ref422 = _slicedToArray(_ref421, 2),
-                x = _ref422[1];
+            extras: extras.map(function (_ref427) {
+              var _ref428 = _slicedToArray(_ref427, 2),
+                x = _ref428[1];
               return x.label;
             })
           });
@@ -46646,12 +46730,12 @@ function buildTableRowsForProduct(product) {
   });
   return out;
 }
-function PickingProductSettingModal(_ref316) {
-  var product = _ref316.product,
-    productInfo = _ref316.productInfo,
-    authToken = _ref316.authToken,
-    onSaved = _ref316.onSaved,
-    onClose = _ref316.onClose;
+function PickingProductSettingModal(_ref322) {
+  var product = _ref322.product,
+    productInfo = _ref322.productInfo,
+    authToken = _ref322.authToken,
+    onSaved = _ref322.onSaved,
+    onClose = _ref322.onClose;
   var name = product.name;
   var _useState603 = useState(false),
     _useState604 = _slicedToArray(_useState603, 2),
@@ -47158,9 +47242,9 @@ function PickingProductSettingModal(_ref316) {
     }
   }, "\xB7 \uB2F9\uCC29 \uD53C\uD0B9\uC9C0\uB294 \uC5D1\uC140\uC5D0\uC11C \uD56D\uC0C1 ", React.createElement("b", null, pickingSupplierKey(product.supplier || ""), " \uC2DC\uD2B8\uB4E4 \uB9E8 \uB4A4"), "\uC5D0 \uBD99\uC5B4\uC694.", React.createElement("br", null), "\xB7 \uBC1C\uC8FC\uAC00 \uC5C6\uB294 \uB0A0\uC5D0\uB3C4 \uB2F9\uCC29 \uC9C0\uC5ED\uC740 0\uC73C\uB85C \uB0A8\uC544\uC694.", React.createElement("br", null), "\xB7 \uAC70\uB798\uBA85\uC138\uC11C\uB3C4 \uAC19\uC740 \uC124\uC815\uC744 \uB530\uB77C\uC694 (\uB2F9\uCC29 \uC9C0\uC5ED\uC740 \uB2F9\uCC29 \uBA85\uC138\uC11C\uB85C).", React.createElement("br", null), "\xB7 \uC0C1\uD488 \uC815\uBCF4 \uAD00\uB9AC\uC5D0\uC11C\uB3C4 \uAC19\uC740 \uC124\uC815\uC744 \uBCFC \uC218 \uC788\uC5B4\uC694."))))), document.body);
 }
-function InspectionTable(_ref317) {
-  var product = _ref317.product,
-    pageBreak = _ref317.pageBreak;
+function InspectionTable(_ref323) {
+  var product = _ref323.product,
+    pageBreak = _ref323.pageBreak;
   var rows = useMemo(function () {
     return buildTableRowsForProduct(product);
   }, [product]);
@@ -47353,10 +47437,10 @@ function buildFullInspectionData(product) {
     }
   };
 }
-function InspectionPrintSheet(_ref318) {
-  var product = _ref318.product,
-    pageBreak = _ref318.pageBreak,
-    date = _ref318.date;
+function InspectionPrintSheet(_ref324) {
+  var product = _ref324.product,
+    pageBreak = _ref324.pageBreak,
+    date = _ref324.date;
   var data = useMemo(function () {
     return buildFullInspectionData(product);
   }, [product]);
@@ -47371,17 +47455,17 @@ function InspectionPrintSheet(_ref318) {
     overflowWrap: "break-word"
   };
   function cellStyle(col) {
-    var _ref319 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {},
-      _ref319$align = _ref319.align,
-      align = _ref319$align === void 0 ? "center" : _ref319$align,
-      _ref319$bold = _ref319.bold,
-      bold = _ref319$bold === void 0 ? false : _ref319$bold,
-      size = _ref319.size,
-      _ref319$bottomMed = _ref319.bottomMed,
-      bottomMed = _ref319$bottomMed === void 0 ? false : _ref319$bottomMed,
-      _ref319$topMed = _ref319.topMed,
-      topMed = _ref319$topMed === void 0 ? false : _ref319$topMed,
-      bg = _ref319.bg;
+    var _ref325 = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {},
+      _ref325$align = _ref325.align,
+      align = _ref325$align === void 0 ? "center" : _ref325$align,
+      _ref325$bold = _ref325.bold,
+      bold = _ref325$bold === void 0 ? false : _ref325$bold,
+      size = _ref325.size,
+      _ref325$bottomMed = _ref325.bottomMed,
+      bottomMed = _ref325$bottomMed === void 0 ? false : _ref325$bottomMed,
+      _ref325$topMed = _ref325.topMed,
+      topMed = _ref325$topMed === void 0 ? false : _ref325$topMed,
+      bg = _ref325.bg;
     return _objectSpread(_objectSpread({}, base), {}, {
       textAlign: align,
       fontWeight: bold ? 700 : 400,
@@ -47818,14 +47902,14 @@ function buildProductsForDate(orders, activeDate) {
     return pickingSupplierPriority(pickingSupplierKey(a.supplier)) - pickingSupplierPriority(pickingSupplierKey(b.supplier)) || pickingSupplierKey(a.supplier).localeCompare(pickingSupplierKey(b.supplier), "ko") || isDangchakProduct(a.name) - isDangchakProduct(b.name) || pickingProductCompare(pickingSupplierKey(a.supplier), a.baseName, b.baseName) || a.part - b.part;
   });
 }
-function PickingOrderSettings(_ref320) {
-  var orders = _ref320.orders,
-    authToken = _ref320.authToken,
-    config = _ref320.config,
-    onSaved = _ref320.onSaved,
-    embedded = _ref320.embedded,
-    initialDate = _ref320.initialDate,
-    onDirtyChange = _ref320.onDirtyChange;
+function PickingOrderSettings(_ref326) {
+  var orders = _ref326.orders,
+    authToken = _ref326.authToken,
+    config = _ref326.config,
+    onSaved = _ref326.onSaved,
+    embedded = _ref326.embedded,
+    initialDate = _ref326.initialDate,
+    onDirtyChange = _ref326.onDirtyChange;
   var _useState609 = useState(function () {
       return {
         suppliers: config.suppliers,
@@ -47929,10 +48013,10 @@ function PickingOrderSettings(_ref320) {
             h = brandHiddenOf(r0.value);
             n = {
               suppliers: _toConsumableArray(h.suppliers),
-              products: Object.fromEntries(Object.entries(h.products).map(function (_ref321) {
-                var _ref322 = _slicedToArray(_ref321, 2),
-                  k = _ref322[0],
-                  a = _ref322[1];
+              products: Object.fromEntries(Object.entries(h.products).map(function (_ref327) {
+                var _ref328 = _slicedToArray(_ref327, 2),
+                  k = _ref328[0],
+                  a = _ref328[1];
                 return [k, _toConsumableArray(a || [])];
               })),
               at: _objectSpread({}, h.at)
@@ -48428,9 +48512,9 @@ function PickingOrderSettings(_ref320) {
     }
   })));
 }
-function PickingOrderSettingsModal(_ref323) {
-  var onClose = _ref323.onClose,
-    rest = _objectWithoutProperties(_ref323, _excluded3);
+function PickingOrderSettingsModal(_ref329) {
+  var onClose = _ref329.onClose,
+    rest = _objectWithoutProperties(_ref329, _excluded3);
   var dirtyRef = useRef(false);
   function tryClose() {
     if (dirtyRef.current && !window.confirm("저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?")) return;
@@ -48516,13 +48600,13 @@ function PickingOrderSettingsModal(_ref323) {
     }
   }))))), document.body);
 }
-function PickingInspection(_ref324) {
-  var orders = _ref324.orders,
-    orderCfg = _ref324.orderCfg,
-    productInfo = _ref324.productInfo,
-    authToken = _ref324.authToken,
-    onOrderCfgSaved = _ref324.onOrderCfgSaved,
-    onProductInfoSaved = _ref324.onProductInfoSaved;
+function PickingInspection(_ref330) {
+  var orders = _ref330.orders,
+    orderCfg = _ref330.orderCfg,
+    productInfo = _ref330.productInfo,
+    authToken = _ref330.authToken,
+    onOrderCfgSaved = _ref330.onOrderCfgSaved,
+    onProductInfoSaved = _ref330.onProductInfoSaved;
   var _useState621 = useState(null),
     _useState622 = _slicedToArray(_useState621, 2),
     selectedSku = _useState622[0],
@@ -48632,7 +48716,7 @@ function PickingInspection(_ref324) {
   }) || filteredProducts[0] || products[0] || null;
   var runVerify = function runVerify(fullExport) {
     return function () {
-      var _ref325 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee101(buffer, sheetLog, prods, filename) {
+      var _ref331 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee101(buffer, sheetLog, prods, filename) {
         var result, held;
         return _regeneratorRuntime().wrap(function _callee101$(_context103) {
           while (1) switch (_context103.prev = _context103.next) {
@@ -48673,7 +48757,7 @@ function PickingInspection(_ref324) {
         }, _callee101);
       }));
       return function (_x214, _x215, _x216, _x217) {
-        return _ref325.apply(this, arguments);
+        return _ref331.apply(this, arguments);
       };
     }();
   };
@@ -49159,12 +49243,12 @@ function invoiceSettingsParts(sel, products) {
   if (hasDk) parts.push("당착");
   return parts;
 }
-function InvoiceSettingsModal(_ref326) {
-  var orders = _ref326.orders,
-    authToken = _ref326.authToken,
-    invoiceSettings = _ref326.invoiceSettings,
-    onSaved = _ref326.onSaved,
-    onClose = _ref326.onClose;
+function InvoiceSettingsModal(_ref332) {
+  var orders = _ref332.orders,
+    authToken = _ref332.authToken,
+    invoiceSettings = _ref332.invoiceSettings,
+    onSaved = _ref332.onSaved,
+    onClose = _ref332.onClose;
   var suppliers = useMemo(function () {
     return invoiceSettingsSupplierList();
   }, []);
@@ -49254,10 +49338,10 @@ function InvoiceSettingsModal(_ref326) {
             h = brandHiddenOf(latest);
             n = {
               suppliers: _toConsumableArray(h.suppliers),
-              products: Object.fromEntries(Object.entries(h.products).map(function (_ref330) {
-                var _ref331 = _slicedToArray(_ref330, 2),
-                  k = _ref331[0],
-                  a = _ref331[1];
+              products: Object.fromEntries(Object.entries(h.products).map(function (_ref336) {
+                var _ref337 = _slicedToArray(_ref336, 2),
+                  k = _ref337[0],
+                  a = _ref337[1];
                 return [k, _toConsumableArray(a || [])];
               })),
               at: _objectSpread({}, h.at)
@@ -49327,11 +49411,11 @@ function InvoiceSettingsModal(_ref326) {
       };
     });
     var prod = {};
-    Object.entries(cur.products || {}).forEach(function (_ref327) {
+    Object.entries(cur.products || {}).forEach(function (_ref333) {
       var _v$displayName2, _v$packQty3, _v$expiryDays3;
-      var _ref328 = _slicedToArray(_ref327, 2),
-        n = _ref328[0],
-        v = _ref328[1];
+      var _ref334 = _slicedToArray(_ref333, 2),
+        n = _ref334[0],
+        v = _ref334[1];
       return prod[n] = {
         displayName: (_v$displayName2 = v.displayName) !== null && _v$displayName2 !== void 0 ? _v$displayName2 : "",
         packQty: (_v$packQty3 = v.packQty) !== null && _v$packQty3 !== void 0 ? _v$packQty3 : "",
@@ -49375,8 +49459,8 @@ function InvoiceSettingsModal(_ref326) {
     setDirty(true);
   };
   var prodVal = function prodVal(name, field) {
-    var _ref329;
-    return (_ref329 = form && form.products[name] ? form.products[name][field] : "") !== null && _ref329 !== void 0 ? _ref329 : "";
+    var _ref335;
+    return (_ref335 = form && form.products[name] ? form.products[name][field] : "") !== null && _ref335 !== void 0 ? _ref335 : "";
   };
   var setProd = function setProd(name, field, v) {
     return upd(function (f) {
@@ -50251,14 +50335,14 @@ function InvoiceSettingsModal(_ref326) {
     size: 14
   }), " ", busy ? "저장 중..." : dirty ? "저장" : "저장할 변경 없음"))))))), document.body);
 }
-function InvoiceView(_ref332) {
+function InvoiceView(_ref338) {
   var _dcVendorOptions$, _dkVendorOptions$;
-  var orders = _ref332.orders,
-    productInfo = _ref332.productInfo,
-    invoiceSettings = _ref332.invoiceSettings,
-    authToken = _ref332.authToken,
-    onInvoiceSettingsSaved = _ref332.onInvoiceSettingsSaved,
-    onOpenCenters = _ref332.onOpenCenters;
+  var orders = _ref338.orders,
+    productInfo = _ref338.productInfo,
+    invoiceSettings = _ref338.invoiceSettings,
+    authToken = _ref338.authToken,
+    onInvoiceSettingsSaved = _ref338.onInvoiceSettingsSaved,
+    onOpenCenters = _ref338.onOpenCenters;
   var _useState655 = useState(false),
     _useState656 = _slicedToArray(_useState655, 2),
     showInvSettings = _useState656[0],
@@ -50998,12 +51082,12 @@ function InvoiceView(_ref332) {
     }
   }, "* \uD604\uC7AC\uB294 \uC218\uB7C9 \uAE30\uC900 \uBA85\uC138\uC11C\uC785\uB2C8\uB2E4. \uB2E8\uAC00\xB7\uAE08\uC561 \uC790\uB3D9 \uBC18\uC601\uC740 \uCD94\uD6C4 \uD654\uC8FC\uC0AC \uB2E8\uAC00 \uC815\uBCF4 \uC5F0\uB3D9 \uD6C4 \uC9C0\uC6D0\uB429\uB2C8\uB2E4.")))));
 }
-function Shipping(_ref333) {
-  var orders = _ref333.orders,
-    stores = _ref333.stores,
-    onShip = _ref333.onShip,
-    onCancelShip = _ref333.onCancelShip,
-    onConfirmPms = _ref333.onConfirmPms;
+function Shipping(_ref339) {
+  var orders = _ref339.orders,
+    stores = _ref339.stores,
+    onShip = _ref339.onShip,
+    onCancelShip = _ref339.onCancelShip,
+    onConfirmPms = _ref339.onConfirmPms;
   var _useState685 = useState("전체"),
     _useState686 = _slicedToArray(_useState685, 2),
     storeFilter = _useState686[0],
@@ -51152,12 +51236,12 @@ function Shipping(_ref333) {
     })))));
   })))));
 }
-function MasterDataCheck(_ref334) {
-  var items = _ref334.items,
-    stores = _ref334.stores,
-    vehicles = _ref334.vehicles,
-    courses = _ref334.courses,
-    cells = _ref334.cells;
+function MasterDataCheck(_ref340) {
+  var items = _ref340.items,
+    stores = _ref340.stores,
+    vehicles = _ref340.vehicles,
+    courses = _ref340.courses,
+    cells = _ref340.cells;
   var unmappedStores = stores.filter(function (s) {
     return !s.vehicleId;
   });
@@ -51176,11 +51260,11 @@ function MasterDataCheck(_ref334) {
   var locationIssues = items.filter(function (i) {
     return !locRegex.test(i.location || "");
   });
-  var Section = function Section(_ref335) {
-    var title = _ref335.title,
-      rows = _ref335.rows,
-      renderRow = _ref335.renderRow,
-      empty = _ref335.empty;
+  var Section = function Section(_ref341) {
+    var title = _ref341.title,
+      rows = _ref341.rows,
+      renderRow = _ref341.renderRow,
+      empty = _ref341.empty;
     return React.createElement("div", {
       style: _objectSpread(_objectSpread({}, cardStyle), {}, {
         marginBottom: 14
@@ -51287,11 +51371,11 @@ function MasterDataCheck(_ref334) {
     }
   }));
 }
-function VehicleStoreMap(_ref336) {
-  var stores = _ref336.stores,
-    vehicles = _ref336.vehicles,
-    onAddVehicle = _ref336.onAddVehicle,
-    onMap = _ref336.onMap;
+function VehicleStoreMap(_ref342) {
+  var stores = _ref342.stores,
+    vehicles = _ref342.vehicles,
+    onAddVehicle = _ref342.onAddVehicle,
+    onMap = _ref342.onMap;
   var _useState691 = useState(""),
     _useState692 = _slicedToArray(_useState691, 2),
     newVehicle = _useState692[0],
@@ -51439,10 +51523,10 @@ var PI_CAT_COLOR = {
 };
 function buildProductInfoRows(orders) {
   var map = new Map();
-  Object.entries(SUPPLIER_INVOICE_CATALOG).forEach(function (_ref337) {
-    var _ref338 = _slicedToArray(_ref337, 2),
-      sup = _ref338[0],
-      parts = _ref338[1];
+  Object.entries(SUPPLIER_INVOICE_CATALOG).forEach(function (_ref343) {
+    var _ref344 = _slicedToArray(_ref343, 2),
+      sup = _ref344[0],
+      parts = _ref344[1];
     Object.values(parts || {}).forEach(function (names) {
       return (names || []).forEach(function (name) {
         if (!map.has(name)) map.set(name, {
@@ -51490,9 +51574,9 @@ function piCategoryOf(dc, dk) {
     detail: ""
   };
 }
-function PiCatBadge(_ref339) {
-  var cat = _ref339.cat,
-    detail = _ref339.detail;
+function PiCatBadge(_ref345) {
+  var cat = _ref345.cat,
+    detail = _ref345.detail;
   var c = PI_CAT_COLOR[cat];
   return React.createElement("span", {
     style: {
@@ -51507,12 +51591,12 @@ function PiCatBadge(_ref339) {
     }
   }, cat, detail ? " \xB7 ".concat(detail) : "");
 }
-function ProductBrandModal(_ref340) {
-  var orders = _ref340.orders,
-    authToken = _ref340.authToken,
-    productInfo = _ref340.productInfo,
-    onSaved = _ref340.onSaved,
-    onClose = _ref340.onClose;
+function ProductBrandModal(_ref346) {
+  var orders = _ref346.orders,
+    authToken = _ref346.authToken,
+    productInfo = _ref346.productInfo,
+    onSaved = _ref346.onSaved,
+    onClose = _ref346.onClose;
   var baseRows = useMemo(function () {
     var list = buildProductInfoRows(orders);
     var have = new Set(list.map(function (r) {
@@ -51823,11 +51907,11 @@ function ProductBrandModal(_ref340) {
     text: "\uC870\uAC74\uC5D0 \uB9DE\uB294 \uC0C1\uD488\uC774 \uC5C6\uC5B4\uC694."
   })));
 }
-function ProductInfoPage(_ref341) {
-  var orders = _ref341.orders,
-    authToken = _ref341.authToken,
-    productInfo = _ref341.productInfo,
-    onSaved = _ref341.onSaved;
+function ProductInfoPage(_ref347) {
+  var orders = _ref347.orders,
+    authToken = _ref347.authToken,
+    productInfo = _ref347.productInfo,
+    onSaved = _ref347.onSaved;
   var _useState709 = useState(false),
     _useState710 = _slicedToArray(_useState709, 2),
     showBrand = _useState710[0],
@@ -52347,13 +52431,13 @@ function ProductInfoPage(_ref341) {
     }
   }));
 }
-function ProductInfoModal(_ref342) {
+function ProductInfoModal(_ref348) {
   var _PRODUCT_EXPIRY_DELTA2;
-  var row = _ref342.row,
-    authToken = _ref342.authToken,
-    productInfo = _ref342.productInfo,
-    onSaved = _ref342.onSaved,
-    onClose = _ref342.onClose;
+  var row = _ref348.row,
+    authToken = _ref348.authToken,
+    productInfo = _ref348.productInfo,
+    onSaved = _ref348.onSaved,
+    onClose = _ref348.onClose;
   var key = row.name;
   var cur = (productInfo || {})[key] || {};
   var baseDc = dcGroupOfBase(key);
@@ -52412,10 +52496,10 @@ function ProductInfoModal(_ref342) {
         while (1) switch (_context112.prev = _context112.next) {
           case 0:
             keep = {};
-            Object.entries(cur).forEach(function (_ref343) {
-              var _ref344 = _slicedToArray(_ref343, 2),
-                k = _ref344[0],
-                v = _ref344[1];
+            Object.entries(cur).forEach(function (_ref349) {
+              var _ref350 = _slicedToArray(_ref349, 2),
+                k = _ref350[0],
+                v = _ref350[1];
               if (!["packQty", "expiryDays", "displayName", "dc", "dangchak", "invDangchak", "pickDangchak"].includes(k)) keep[k] = v;
             });
             if (cur.pickDangchak !== undefined) keep.pickDangchak = cur.pickDangchak;else if (cur.dangchak !== undefined) keep.pickDangchak = cur.dangchak;
@@ -52944,17 +53028,17 @@ function ProductInfoModal(_ref342) {
   }), " ", busy ? "저장 중..." : "저장")))), document.body);
 }
 var ITEM_TOUCH_MS = 24 * 60 * 60 * 1000;
-function ProductMaster(_ref345) {
+function ProductMaster(_ref351) {
   var _items$4, _form$newSku2;
-  var itemsIn = _ref345.items,
-    onSave = _ref345.onSave,
-    onCreate = _ref345.onCreate,
-    onDelete = _ref345.onDelete,
-    onSetBrands = _ref345.onSetBrands,
-    authToken = _ref345.authToken,
-    _ref345$allOrders = _ref345.allOrders,
-    allOrders = _ref345$allOrders === void 0 ? [] : _ref345$allOrders,
-    onZeroLines = _ref345.onZeroLines;
+  var itemsIn = _ref351.items,
+    onSave = _ref351.onSave,
+    onCreate = _ref351.onCreate,
+    onDelete = _ref351.onDelete,
+    onSetBrands = _ref351.onSetBrands,
+    authToken = _ref351.authToken,
+    _ref351$allOrders = _ref351.allOrders,
+    allOrders = _ref351$allOrders === void 0 ? [] : _ref351$allOrders,
+    onZeroLines = _ref351.onZeroLines;
   var excludedCfg = useSetting(EXCLUDED_ITEMS_KEY, authToken);
   var exMap = excludedMapOf(excludedCfg);
   var _useState731 = useState(null),
@@ -52984,10 +53068,10 @@ function ProductMaster(_ref345) {
     updateSetting("wms_item_touched", authToken, function (v) {
       var now = Date.now();
       var out = {};
-      Object.entries(v || {}).forEach(function (_ref346) {
-        var _ref347 = _slicedToArray(_ref346, 2),
-          k = _ref347[0],
-          t = _ref347[1];
+      Object.entries(v || {}).forEach(function (_ref352) {
+        var _ref353 = _slicedToArray(_ref352, 2),
+          k = _ref353[0],
+          t = _ref353[1];
         return now - Number(t) < ITEM_TOUCH_MS && k !== oldSku && (out[k] = t);
       });
       out[sku] = now;
@@ -53173,10 +53257,10 @@ function ProductMaster(_ref345) {
     PI_BRANDS.forEach(function (b, k) {
       var names = new Set();
       var skus = new Set();
-      Object.entries(piInfos[k] || {}).forEach(function (_ref348) {
-        var _ref349 = _slicedToArray(_ref348, 2),
-          n = _ref349[0],
-          e = _ref349[1];
+      Object.entries(piInfos[k] || {}).forEach(function (_ref354) {
+        var _ref355 = _slicedToArray(_ref354, 2),
+          n = _ref355[0],
+          e = _ref355[1];
         if (!e || !e.discontinued) return;
         names.add(n);
         if (e.sku) skus.add(String(e.sku));
@@ -53435,9 +53519,9 @@ function ProductMaster(_ref345) {
     return x.i;
   });
   var shownItems = filtered.slice(0, 500);
-  var BrandChecks = function BrandChecks(_ref350) {
-    var value = _ref350.value,
-      onChange = _ref350.onChange;
+  var BrandChecks = function BrandChecks(_ref356) {
+    var value = _ref356.value,
+      onChange = _ref356.onChange;
     var cur = String(value || "GS").split(",").filter(Boolean);
     return React.createElement("div", {
       style: {
@@ -54135,10 +54219,10 @@ function ProductMaster(_ref345) {
     size: 14
   }), " \uC800\uC7A5"))))));
 }
-function WarehouseCell(_ref351) {
-  var cells = _ref351.cells,
-    onAdd = _ref351.onAdd,
-    onDelete = _ref351.onDelete;
+function WarehouseCell(_ref357) {
+  var cells = _ref357.cells,
+    onAdd = _ref357.onAdd,
+    onDelete = _ref357.onDelete;
   var _useState755 = useState(""),
     _useState756 = _slicedToArray(_useState755, 2),
     area = _useState756[0],
@@ -54304,12 +54388,12 @@ function WarehouseCell(_ref351) {
     }))));
   })))));
 }
-function DeliveryCourse(_ref352) {
+function DeliveryCourse(_ref358) {
   var _vehicles$;
-  var courses = _ref352.courses,
-    vehicles = _ref352.vehicles,
-    onAdd = _ref352.onAdd,
-    onDelete = _ref352.onDelete;
+  var courses = _ref358.courses,
+    vehicles = _ref358.vehicles,
+    onAdd = _ref358.onAdd,
+    onDelete = _ref358.onDelete;
   var _useState767 = useState(COURSE_NAMES[0]),
     _useState768 = _slicedToArray(_useState767, 2),
     name = _useState768[0],
@@ -54432,10 +54516,10 @@ function DeliveryCourse(_ref352) {
     }))));
   })))));
 }
-function Inbound(_ref353) {
+function Inbound(_ref359) {
   var _items$5;
-  var items = _ref353.items,
-    onSubmit = _ref353.onSubmit;
+  var items = _ref359.items,
+    onSubmit = _ref359.onSubmit;
   var _useState773 = useState("existing"),
     _useState774 = _slicedToArray(_useState773, 2),
     mode = _useState774[0],
@@ -54717,10 +54801,10 @@ function Inbound(_ref353) {
     color: T.teal
   })));
 }
-function Outbound(_ref354) {
+function Outbound(_ref360) {
   var _items$6;
-  var items = _ref354.items,
-    onSubmit = _ref354.onSubmit;
+  var items = _ref360.items,
+    onSubmit = _ref360.onSubmit;
   var _useState791 = useState(((_items$6 = items[0]) === null || _items$6 === void 0 ? void 0 : _items$6.sku) || ""),
     _useState792 = _slicedToArray(_useState791, 2),
     sku = _useState792[0],
@@ -54879,9 +54963,9 @@ function Outbound(_ref354) {
     color: T.clay
   })));
 }
-function Toast(_ref355) {
-  var text = _ref355.text,
-    color = _ref355.color;
+function Toast(_ref361) {
+  var text = _ref361.text,
+    color = _ref361.color;
   return React.createElement("div", {
     style: {
       display: "flex",
@@ -54899,12 +54983,12 @@ function Toast(_ref355) {
     size: 15
   }), " ", text);
 }
-function ModeToggle(_ref356) {
-  var mode = _ref356.mode,
-    setMode = _ref356.setMode,
-    labels = _ref356.labels,
-    display = _ref356.display,
-    accent = _ref356.accent;
+function ModeToggle(_ref362) {
+  var mode = _ref362.mode,
+    setMode = _ref362.setMode,
+    labels = _ref362.labels,
+    display = _ref362.display,
+    accent = _ref362.accent;
   return React.createElement("div", {
     style: {
       display: "inline-flex",
@@ -54934,8 +55018,8 @@ function ModeToggle(_ref356) {
     }, display[idx]);
   }));
 }
-function HistoryView(_ref357) {
-  var tx = _ref357.tx;
+function HistoryView(_ref363) {
+  var tx = _ref363.tx;
   var _useState803 = useState("전체"),
     _useState804 = _slicedToArray(_useState803, 2),
     type = _useState804[0],
