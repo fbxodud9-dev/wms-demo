@@ -23376,6 +23376,16 @@ function invPartLabel(part) {
 //  - 조인앤조인처럼 style "full"인 당착 상품: 모든 지역이 당착 → 당착 명세서에만 나가고 DC에서는 빠진다.
 //  - 참맛나라·맛요일·H2글로벌(청주), 데어리젠(신제주)처럼 style "combined"인 상품: 그 당착 지역 한 곳만 당착 명세서에 나가고
 //    (0고정과 무관하게 원래 발주 수량), 나머지 지역은 평소처럼 DC 명세서로 나간다. 당착 지역 몫은 DC에 절대 안 나간다.
+// 직원이 상품 정보 관리에서 "DC + 전 지역 당착"으로 고른 상품 (2026-11-21): 당착 명세서는 그대로, DC 명세서에도 전 지역 수량이 실림.
+// 코드 기본값으로 전 지역 당착인 DC 상품(조인앤조인 등)은 예전처럼 당착에만 나감 (DC 발행 지역을 골라둔 경우만 DC)
+function isDcAlsoFullDk(name) {
+  const dk = getInvDangchakInfo(name);
+  if (!dk || dk.style !== "full" || !dcGroupOf(name)) return false;
+  const ov = productInfoOf(name);
+  if (ov && typeof ov.dc === "string" && ov.dc !== "") return true;
+  const baseDk = getDangchakInfoBase(name);
+  return !(baseDk && baseDk.style === "full");
+}
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
   if (isInvHidden(supplierKey)) return { items: [], regions: [], qtyOf: () => 0 }; // 발행 안 함으로 뺀 공급사
   const supplierProducts = products.filter((p) => supplierGroupKey(p.supplier) === supplierKey);
@@ -23393,7 +23403,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
         if (part === "당착") return !!dk && dangchakVendorKey(x.p) === supplierKey;
         if (!x.r || x.r.group.key !== supplierKey) return false;
         if (!dk || dk.style === "combined") return true; // DC: 일반 DC 상품 + 지역 한 곳만 당착인 상품의 나머지 지역
-        return dk.style === "full" && dcPickedRegions; // 전 지역 당착 상품은 DC 발행 지역을 골라둔 경우에만
+        return dk.style === "full" && (dcPickedRegions || isDcAlsoFullDk(x.p.name)); // 전 지역 당착 상품은 DC 발행 지역을 골라둔 경우, 또는 직원이 DC+전 지역 당착으로 고른 상품
       })
       .sort((a, b) => (a.r ? a.r.idx : 9999) - (b.r ? b.r.idx : 9999) || a.i - b.i)
       .map((x) => x.p);
@@ -23442,6 +23452,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       if (!dangchakHasRegion(dk, code)) return 0; // 당착으로 지정된 지역만
       return rr.rawQty ?? rr.qty; // 당착 시트처럼 0고정 무시하고 원래 발주 수량
     }
+    if (dk && dk.style === "full" && part === "DC" && !dcPickedRegions && isDcAlsoFullDk(it.name)) return rr.invQty ?? rr.qty; // DC+전 지역 당착: DC 명세서에 전 지역 수량
     if (dk && dk.style === "full") return part === "DC" && dcPickedRegions ? rr.rawQty ?? rr.qty : 0; // 전 지역 당착 상품: 당착 명세서, 또는 DC 발행 지역을 골라둔 DC 명세서
     if (dk && dk.style === "combined" && dangchakHasRegion(dk, code)) return 0; // 당착 지역 몫은 1편·2편·DC에서 제외
     return rr.invQty ?? rr.qty; // 피킹지 당착으로 0이 된 지역도 거래명세서는 거래명세서 당착 기준으로
@@ -26774,7 +26785,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
       const g = DC_VENDOR_GROUPS.find((x) => x.key === f.dcKey);
       const where =
         f.dkScope === "full"
-          ? "전 지역 당착이라 수량은 당착 거래명세서로 나가요. (DC 거래명세서는 거래명세서 설정에서 DC 발행 지역을 골라둔 경우에만 그 지역이 나가요)"
+          ? "당착 거래명세서는 지금처럼 당착 발행 지역으로 나가고, DC 거래명세서에도 전 지역 수량이 그대로 실려요."
           : `당착으로 고른 지역(${regionNamesOf(f.dkRegions)}) 수량은 당착 거래명세서로, 나머지 지역 수량은 DC 거래명세서로 나눠서 나가요. (같은 수량이 두 번 나가지 않아요)`;
       if (!window.confirm(`"${String(f.displayName).trim() || key}" 상품을\nDC 거래명세서(${g ? g.label : f.dcKey})와 당착 거래명세서에 동시에 발행하는 게 맞나요?\n\n${where}`)) return;
     }
@@ -26820,7 +26831,7 @@ function ProductInfoModal({ row, authToken, productInfo, onSaved, onClose }) {
     일반: `평소 피킹지시서와 ${row.part}편 거래명세서로 나가요.`,
     DC: "DC 거래명세서 카드에서 선택한 DC 공급사로 나가요.",
     당착: f.dkScope === "full" ? "모든 지역이 당착 거래명세서로 나가요." : "고른 지역 몫만 당착 거래명세서로 빠지고, 나머지 지역은 평소 명세서로 나가요.",
-    "DC+당착": f.dkScope === "full" ? "당착 거래명세서로 나가고, DC 거래명세서에도 같이 실려요." : "고른 지역 몫은 당착 거래명세서로, 나머지 지역은 DC 거래명세서로 나가요 (두 명세서에 동시 발행).",
+    "DC+당착": f.dkScope === "full" ? "당착 거래명세서(당착 발행 지역)로 나가고, DC 거래명세서에도 전 지역 수량이 같이 실려요." : "고른 지역 몫은 당착 거래명세서로, 나머지 지역은 DC 거래명세서로 나가요 (두 명세서에 동시 발행).",
   }[f.cat];
 
   return createPortal(

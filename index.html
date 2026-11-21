@@ -45965,6 +45965,14 @@ function dangchakVendorOptions(products) {
 function invPartLabel(part) {
   return part === "DC" || part === "당착" ? part : "".concat(part, "\uD3B8");
 }
+function isDcAlsoFullDk(name) {
+  var dk = getInvDangchakInfo(name);
+  if (!dk || dk.style !== "full" || !dcGroupOf(name)) return false;
+  var ov = productInfoOf(name);
+  if (ov && typeof ov.dc === "string" && ov.dc !== "") return true;
+  var baseDk = getDangchakInfoBase(name);
+  return !(baseDk && baseDk.style === "full");
+}
 function buildInvoiceDataForSupplier(products, supplierKey, part) {
   if (isInvHidden(supplierKey)) return {
     items: [],
@@ -45991,7 +45999,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       if (part === "당착") return !!dk && dangchakVendorKey(x.p) === supplierKey;
       if (!x.r || x.r.group.key !== supplierKey) return false;
       if (!dk || dk.style === "combined") return true;
-      return dk.style === "full" && dcPickedRegions;
+      return dk.style === "full" && (dcPickedRegions || isDcAlsoFullDk(x.p.name));
     }).sort(function (a, b) {
       return (a.r ? a.r.idx : 9999) - (b.r ? b.r.idx : 9999) || a.i - b.i;
     }).map(function (x) {
@@ -46033,7 +46041,7 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
     };
   });
   var qtyOf = function qtyOf(it, code) {
-    var _rr$rawQty2, _rr$invQty;
+    var _rr$invQty, _rr$rawQty2, _rr$invQty2;
     var rr = it.product ? it.product.regionRows.find(function (r) {
       return r.key === code;
     }) : null;
@@ -46045,9 +46053,10 @@ function buildInvoiceDataForSupplier(products, supplierKey, part) {
       if (!dangchakHasRegion(dk, code)) return 0;
       return (_rr$rawQty = rr.rawQty) !== null && _rr$rawQty !== void 0 ? _rr$rawQty : rr.qty;
     }
+    if (dk && dk.style === "full" && part === "DC" && !dcPickedRegions && isDcAlsoFullDk(it.name)) return (_rr$invQty = rr.invQty) !== null && _rr$invQty !== void 0 ? _rr$invQty : rr.qty;
     if (dk && dk.style === "full") return part === "DC" && dcPickedRegions ? (_rr$rawQty2 = rr.rawQty) !== null && _rr$rawQty2 !== void 0 ? _rr$rawQty2 : rr.qty : 0;
     if (dk && dk.style === "combined" && dangchakHasRegion(dk, code)) return 0;
-    return (_rr$invQty = rr.invQty) !== null && _rr$invQty !== void 0 ? _rr$invQty : rr.qty;
+    return (_rr$invQty2 = rr.invQty) !== null && _rr$invQty2 !== void 0 ? _rr$invQty2 : rr.qty;
   };
   var regions = [];
   var sheetOrder = part === 1 ? INVOICE_SHEET_ORDER_1 : INVOICE_SHEET_ORDER_2;
@@ -52596,7 +52605,7 @@ function ProductInfoModal(_ref348) {
       var g = DC_VENDOR_GROUPS.find(function (x) {
         return x.key === f.dcKey;
       });
-      var where = f.dkScope === "full" ? "전 지역 당착이라 수량은 당착 거래명세서로 나가요. (DC 거래명세서는 거래명세서 설정에서 DC 발행 지역을 골라둔 경우에만 그 지역이 나가요)" : "\uB2F9\uCC29\uC73C\uB85C \uACE0\uB978 \uC9C0\uC5ED(".concat(regionNamesOf(f.dkRegions), ") \uC218\uB7C9\uC740 \uB2F9\uCC29 \uAC70\uB798\uBA85\uC138\uC11C\uB85C, \uB098\uBA38\uC9C0 \uC9C0\uC5ED \uC218\uB7C9\uC740 DC \uAC70\uB798\uBA85\uC138\uC11C\uB85C \uB098\uB220\uC11C \uB098\uAC00\uC694. (\uAC19\uC740 \uC218\uB7C9\uC774 \uB450 \uBC88 \uB098\uAC00\uC9C0 \uC54A\uC544\uC694)");
+      var where = f.dkScope === "full" ? "당착 거래명세서는 지금처럼 당착 발행 지역으로 나가고, DC 거래명세서에도 전 지역 수량이 그대로 실려요." : "\uB2F9\uCC29\uC73C\uB85C \uACE0\uB978 \uC9C0\uC5ED(".concat(regionNamesOf(f.dkRegions), ") \uC218\uB7C9\uC740 \uB2F9\uCC29 \uAC70\uB798\uBA85\uC138\uC11C\uB85C, \uB098\uBA38\uC9C0 \uC9C0\uC5ED \uC218\uB7C9\uC740 DC \uAC70\uB798\uBA85\uC138\uC11C\uB85C \uB098\uB220\uC11C \uB098\uAC00\uC694. (\uAC19\uC740 \uC218\uB7C9\uC774 \uB450 \uBC88 \uB098\uAC00\uC9C0 \uC54A\uC544\uC694)");
       if (!window.confirm("\"".concat(String(f.displayName).trim() || key, "\" \uC0C1\uD488\uC744\nDC \uAC70\uB798\uBA85\uC138\uC11C(").concat(g ? g.label : f.dcKey, ")\uC640 \uB2F9\uCC29 \uAC70\uB798\uBA85\uC138\uC11C\uC5D0 \uB3D9\uC2DC\uC5D0 \uBC1C\uD589\uD558\uB294 \uAC8C \uB9DE\uB098\uC694?\n\n").concat(where))) return;
     }
     persist(entry);
@@ -52665,7 +52674,7 @@ function ProductInfoModal(_ref348) {
     일반: "\uD3C9\uC18C \uD53C\uD0B9\uC9C0\uC2DC\uC11C\uC640 ".concat(row.part, "\uD3B8 \uAC70\uB798\uBA85\uC138\uC11C\uB85C \uB098\uAC00\uC694."),
     DC: "DC 거래명세서 카드에서 선택한 DC 공급사로 나가요.",
     당착: f.dkScope === "full" ? "모든 지역이 당착 거래명세서로 나가요." : "고른 지역 몫만 당착 거래명세서로 빠지고, 나머지 지역은 평소 명세서로 나가요.",
-    "DC+당착": f.dkScope === "full" ? "당착 거래명세서로 나가고, DC 거래명세서에도 같이 실려요." : "고른 지역 몫은 당착 거래명세서로, 나머지 지역은 DC 거래명세서로 나가요 (두 명세서에 동시 발행)."
+    "DC+당착": f.dkScope === "full" ? "당착 거래명세서(당착 발행 지역)로 나가고, DC 거래명세서에도 전 지역 수량이 같이 실려요." : "고른 지역 몫은 당착 거래명세서로, 나머지 지역은 DC 거래명세서로 나가요 (두 명세서에 동시 발행)."
   }[f.cat];
   return createPortal(React.createElement("div", {
     onClick: onClose,
