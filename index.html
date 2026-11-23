@@ -22520,11 +22520,12 @@ function GsFrozenPickingView(_ref163) {
               ord = _toConsumableArray(bo.regionOrder);
               addNow.forEach(function (ad) {
                 if (ord.includes(ad.label)) return;
-                var i = ad.afterLabel ? ord.indexOf(ad.afterLabel) : -1;
-                if (i < 0 && ad.afterLabel) i = ord.findIndex(function (l) {
-                  return cfg.codeOf(l) === cfg.codeOf(ad.afterLabel);
+                var ref = ad.afterLabel || ad.beforeLabel;
+                var i = ref ? ord.indexOf(ref) : -1;
+                if (i < 0 && ref) i = ord.findIndex(function (l) {
+                  return cfg.codeOf(l) === cfg.codeOf(ref);
                 });
-                ord.splice(i >= 0 ? i + 1 : ord.length, 0, ad.label);
+                ord.splice(i >= 0 ? ad.afterLabel ? i + 1 : i : ord.length, 0, ad.label);
               });
               bo.regionOrder = ord;
             }
@@ -22589,9 +22590,9 @@ function GsFrozenPickingView(_ref163) {
             }).join(", ")) : "") + (report.missingRegions.length ? " \u26A0 \uC2DC\uD2B8\uC5D0 \uC5C6\uB294 \uC13C\uD130 \uBC1C\uC8FC: ".concat(report.missingRegions.map(function (x) {
               return "".concat(x.name, " ").concat(cfg.codeOf(x.region), " ").concat(x.qty, "\uAC1C");
             }).join(", ")) : "") + (addNow.some(function (a) {
-              return !a.afterLabel;
+              return !a.afterLabel && !a.beforeLabel;
             }) ? " \u26A0 \uC704\uCE58\uB97C \uC548 \uC815\uD55C \uCD94\uAC00 \uC13C\uD130: ".concat(addNow.filter(function (a) {
-              return !a.afterLabel;
+              return !a.afterLabel && !a.beforeLabel;
             }).map(function (a) {
               return a.key;
             }).join(", "), " \u2014 [\uD53C\uD0B9\uC9C0 \uC218\uC815] \u2192 [\uC13C\uD130 \uC124\uC815]\uC5D0\uC11C \"\uC5B4\uB290 \uC13C\uD130 \uB2E4\uC74C\"\uC778\uC9C0 \uC815\uD574\uC57C \uC2DC\uD2B8\uC5D0 \uC904\uC774 \uC0DD\uACA8\uC694.") : ""));
@@ -24411,6 +24412,9 @@ function emInvInsertRows(tpl, ws, at, n, cloneRow) {
   });
   readSheetCells(ws, tpl.sst);
 }
+function tplAutoShort(label) {
+  return String(label || "").replace(/^VV\d+[\s\u00a0]*/, "").replace(/^(\(주\)|㈜|주식회사)?\s*(지에스리테일|GS리테일)\s*/, "").replace(/\((.*)\)$/, "$1").replace(/(저온물류|일배센터|저온센터|물류센터|저온|일배|센터|물류)$/, "").trim();
+}
 function tplAddedCentersOf(cc, rows, codeOf) {
   var C = cc && cc.centers || {};
   var cOf = codeOf || function (l) {
@@ -24450,6 +24454,7 @@ function tplAddedCentersOf(cc, rows, codeOf) {
       "short": _short4,
       code: code,
       afterLabel: C[l].after || null,
+      beforeLabel: !C[l].after && C[l].before || null,
       anchorCodes: []
     };
   });
@@ -24468,15 +24473,16 @@ function tplInfoWithAdded(info, adds, codeOf) {
         if (rr.some(function (r) {
           return !r.subtotal && (r.label === ad.label || ad.code && cOf(r.label) === ad.code);
         })) return;
-        if (!ad.afterLabel) return;
+        var ref = ad.afterLabel || ad.beforeLabel;
+        if (!ref) return;
         var i = rr.findIndex(function (r) {
-          return !r.subtotal && r.label === ad.afterLabel;
+          return !r.subtotal && r.label === ref;
         });
         if (i < 0) i = rr.findIndex(function (r) {
-          return !r.subtotal && cOf(r.label) === cOf(ad.afterLabel);
+          return !r.subtotal && cOf(r.label) === cOf(ref);
         });
         if (i < 0) return;
-        rr.splice(i + 1, 0, {
+        rr.splice(ad.afterLabel ? i + 1 : i, 0, {
           label: ad.label,
           "short": ad["short"],
           added: true
@@ -24531,16 +24537,17 @@ function tplInsertAddedCenters(tpl, adds, regionRe, codeOf) {
       if (rows.some(function (x) {
         return x.label === ad.label || ad.code && x.code === ad.code;
       })) return;
-      if (!ad.afterLabel) return;
-      var afterCode = cOf(ad.afterLabel);
+      var ref0 = ad.afterLabel || ad.beforeLabel;
+      if (!ref0) return;
       var anchor = rows.find(function (x) {
-        return x.label === ad.afterLabel;
+        return x.label === ref0;
       }) || rows.find(function (x) {
-        return x.code === afterCode;
+        return x.code === cOf(ref0);
       }) || null;
       if (!anchor) return;
+      var isBefore = !ad.afterLabel;
       var r0 = anchor.r,
-        at = r0 + 1;
+        at = isBefore ? r0 : r0 + 1;
       emInvUnshare(ws, tpl.sst);
       var src = [];
       ws.cells.forEach(function (c, ref) {
@@ -24552,10 +24559,13 @@ function tplInsertAddedCenters(tpl, adds, regionRe, codeOf) {
           s: c.el.getAttribute("s")
         });
       });
-      emInvInsertRows(tpl, ws, at, 1, r0);
+      emInvInsertRows(tpl, ws, at, 1, isBefore ? r0 + 1 : r0);
+      var rngRe = /('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?[A-Z]{1,3}\$?)(\d+):(\$?[A-Z]{1,3}\$?)(\d+)/g;
       var ext = function ext(f) {
-        return f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?[A-Z]{1,3}\$?)(\d+):(\$?[A-Z]{1,3}\$?)(\d+)/g, function (all, sheet, c1, r1, c2, r2) {
-          return sheet || Number(r2) !== r0 || Number(r1) > r0 ? all : "".concat(c1).concat(r1, ":").concat(c2).concat(at);
+        return f.replace(rngRe, function (all, sheet, c1, r1, c2, r2) {
+          if (sheet) return all;
+          if (!isBefore) return Number(r2) !== r0 || Number(r1) > r0 ? all : "".concat(c1).concat(r1, ":").concat(c2).concat(at);
+          return Number(r1) === at + 1 && Number(r2) > at + 1 ? "".concat(c1).concat(at, ":").concat(c2).concat(r2) : all;
         });
       };
       Array.from(ws.doc.getElementsByTagName("f")).forEach(function (f) {
@@ -24563,7 +24573,7 @@ function tplInsertAddedCenters(tpl, adds, regionRe, codeOf) {
       });
       Array.from(ws.doc.getElementsByTagName("conditionalFormatting")).forEach(function (cf) {
         return cf.setAttribute("sqref", String(cf.getAttribute("sqref")).replace(/([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)/g, function (a, c1, r1, c2, r2) {
-          return Number(r2) === r0 && Number(r1) <= r0 ? "".concat(c1).concat(r1, ":").concat(c2).concat(at) : a;
+          return !isBefore ? Number(r2) === r0 && Number(r1) <= r0 ? "".concat(c1).concat(r1, ":").concat(c2).concat(at) : a : Number(r1) === at + 1 && Number(r2) > at + 1 ? "".concat(c1).concat(at, ":").concat(c2).concat(r2) : a;
         }));
       });
       readSheetCells(ws, tpl.sst);
@@ -40913,6 +40923,11 @@ function TplCenterSettingsModal(_ref300) {
       } else cur.labels.push(r.label);
     });
     if (cur.labels.length) blocks.push(cur);
+    blocks.shortOf = new Map(best.rows.filter(function (r) {
+      return !r.subtotal;
+    }).map(function (r) {
+      return [r.label, r["short"] || ""];
+    }));
     return blocks;
   }, [tplInfo, isPick]);
   var baseList = useMemo(function () {
@@ -41179,7 +41194,7 @@ function TplCenterSettingsModal(_ref300) {
                   ["added", "removed", "removedPick", "removedInv"].forEach(function (f) {
                     return x && x[f] && (c[f] = true);
                   });
-                  ["centerName", "address", "after"].forEach(function (f) {
+                  ["centerName", "address", "after", "before"].forEach(function (f) {
                     return x && String(x[f] || "").trim() && (c[f] = String(x[f]).trim());
                   });
                   if (Object.keys(c).length) clean[l] = c;
@@ -41331,6 +41346,11 @@ function TplCenterSettingsModal(_ref300) {
         })));
         var out = [];
         items.forEach(function (l) {
+          L.filter(function (x) {
+            return isAddedL(x) && !(C[x] || {}).after && (C[x] || {}).before === l;
+          }).forEach(function (x) {
+            return out.push(x);
+          });
           out.push(l);
           L.filter(function (x) {
             return isAddedL(x) && (C[x] || {}).after === l;
@@ -41378,7 +41398,7 @@ function TplCenterSettingsModal(_ref300) {
             textAlign: "center",
             fontWeight: 700
           })
-        }, shortOf(l)), React.createElement("td", {
+        }, isAddedL(l) ? "".concat((C[l] || {}).centerName || tplAutoShort(l), " (\uC0C8)") : pickBase.shortOf && pickBase.shortOf.get(l) || shortOf(l)), React.createElement("td", {
           style: _objectSpread(_objectSpread({}, cell), {}, {
             textAlign: "center"
           })
@@ -41783,10 +41803,11 @@ function TplCenterSettingsModal(_ref300) {
       style: _objectSpread(_objectSpread({}, inputStyle), {}, {
         width: 320
       }),
-      value: (C[l] || {}).after || "",
+      value: (C[l] || {}).after || ((C[l] || {}).before ? "" : ""),
       onChange: function onChange(e) {
         return setC(l, {
-          after: e.target.value
+          after: e.target.value,
+          before: ""
         });
       }
     }, React.createElement("option", {
@@ -41934,73 +41955,183 @@ function TplCenterSettingsModal(_ref300) {
       color: T.inkSoft,
       marginBottom: 8
     }
-  }, "\uC6D0\uBCF8 \uD53C\uD0B9\uC9C0(\uBCF4\uC774\uB294 \uC0C1\uD488 \uC2DC\uD2B8) \uD2C0 \uADF8\uB300\uB85C\uC608\uC694. \uC13C\uD130\uB294 ", React.createElement("b", null, "\uAC19\uC740 \uAD8C\uC5ED \uC548\uC5D0\uC11C\uB9CC"), " \uC62E\uAE38 \uC218 \uC788\uC5B4\uC694. \uCD94\uAC00\uD55C \uC13C\uD130\uB294 \u2460 \uC13C\uD130 \uBAA9\uB85D\uC5D0\uC11C \uC815\uD55C \uC704\uCE58\uC5D0 \uB4E4\uC5B4\uAC00\uC694."), pickBase.map(function (bk, bi) {
-    var bset = new Set(bk.labels);
-    var items = [].concat(_toConsumableArray(L.filter(function (x) {
-      return bset.has(x);
-    })), _toConsumableArray(bk.labels.filter(function (x) {
-      return !L.includes(x) && !isOff(x);
-    })));
-    var addedHere = function addedHere(l) {
-      return L.filter(function (x) {
-        return isAddedL(x) && (C[x] || {}).after === l;
+  }, "\uC6D0\uBCF8 \uD53C\uD0B9\uC9C0(\uBCF4\uC774\uB294 \uC0C1\uD488 \uC2DC\uD2B8) \uD2C0 \uADF8\uB300\uB85C\uC608\uC694. \uD68C\uC0C9 \uC904\uC740 \uAD8C\uC5ED \uD569\uACC4(\uACE0\uC815)\uC608\uC694. \uC6D0\uB798 \uC13C\uD130\uB294 ", React.createElement("b", null, "\uAC19\uC740 \uAD8C\uC5ED \uC548\uC5D0\uC11C\uB9CC"), ", ", React.createElement("b", {
+    style: {
+      color: T.teal
+    }
+  }, "\uC0C8 \uC13C\uD130"), "\uB294 \uC5B4\uB514\uB85C\uB4E0 \uAFB9 \uB20C\uB7EC \uB04C\uC5B4\uC11C \uC62E\uAE38 \uC218 \uC788\uC5B4\uC694. \uC5EC\uAE30 \uBCF4\uC774\uB294 \uC790\uB9AC \uADF8\uB300\uB85C \uD53C\uD0B9\uC9C0\uC5D0 \uB4E4\uC5B4\uAC00\uC694."), function () {
+    var SUB = "§합계칸:";
+    var orig = function orig(bk) {
+      return [].concat(_toConsumableArray(L.filter(function (x) {
+        return bk.labels.includes(x);
+      })), _toConsumableArray(bk.labels.filter(function (x) {
+        return !L.includes(x) && !isOff(x);
+      })));
+    };
+    var addedL = L.filter(isAddedL);
+    var posOf = function posOf(x) {
+      return (C[x] || {}).after || (C[x] || {}).before || "";
+    };
+    var items = [];
+    pickBase.forEach(function (bk, bi) {
+      orig(bk).forEach(function (l, j, arr) {
+        addedL.filter(function (x) {
+          return !(C[x] || {}).after && (C[x] || {}).before === l;
+        }).forEach(function (x) {
+          return items.push(x);
+        });
+        items.push(l);
+        addedL.filter(function (x) {
+          return (C[x] || {}).after === l;
+        }).forEach(function (x) {
+          return items.push(x);
+        });
+      });
+      items.push(SUB + bi);
+    });
+    var allOrig = new Set(pickBase.flatMap(function (bk) {
+      return bk.labels;
+    }));
+    var noPos = addedL.filter(function (x) {
+      return !items.includes(x);
+    });
+    noPos.forEach(function (x) {
+      return items.push(x);
+    });
+    var blockOf = function blockOf(arr, x) {
+      return arr.slice(0, arr.indexOf(x)).filter(function (y) {
+        return String(y).startsWith(SUB);
+      }).length;
+    };
+    var onChange = function onChange(a) {
+      var subsOld = items.filter(function (y) {
+        return String(y).startsWith(SUB);
+      });
+      var subsNew = a.filter(function (y) {
+        return String(y).startsWith(SUB);
+      });
+      if (subsOld.join() !== subsNew.join() || _toConsumableArray(allOrig).some(function (x) {
+        return items.includes(x) && blockOf(a, x) !== blockOf(items, x);
+      })) {
+        setMsg("원래 센터와 합계 줄은 권역을 넘어 옮길 수 없어요 (원본 피킹지 틀 유지). 새 센터만 어디로든 옮길 수 있어요.");
+        return;
+      }
+      setMsg("");
+      var changed = false;
+      var base = [].concat(_toConsumableArray(L), _toConsumableArray(pickBase.flatMap(function (bk) {
+        return bk.labels;
+      }).filter(function (x) {
+        return !L.includes(x) && !isOff(x);
+      })));
+      var next = base;
+      pickBase.forEach(function (bk) {
+        var bset = new Set(bk.labels);
+        var want = a.filter(function (x) {
+          return bset.has(x);
+        });
+        var cur = next.filter(function (x) {
+          return bset.has(x);
+        });
+        if (want.join() !== cur.join()) changed = true;
+        var k = 0;
+        next = next.map(function (x) {
+          return bset.has(x) ? want[k++] : x;
+        });
+      });
+      if (changed) {
+        setList(next);
+        setOrderTouched(true);
+      }
+      addedL.forEach(function (x) {
+        var i = a.indexOf(x);
+        var after = "",
+          before = "";
+        for (var j = i - 1; j >= 0; j--) {
+          var y = a[j];
+          if (String(y).startsWith(SUB)) break;
+          if (allOrig.has(y)) {
+            after = y;
+            break;
+          }
+        }
+        if (!after) for (var _j2 = i + 1; _j2 < a.length; _j2++) {
+          var _y = a[_j2];
+          if (String(_y).startsWith(SUB)) break;
+          if (allOrig.has(_y)) {
+            before = _y;
+            break;
+          }
+        }
+        if ((C[x] || {}).after !== after || ((C[x] || {}).before || "") !== before) setC(x, {
+          after: after,
+          before: before
+        });
       });
     };
-    return React.createElement("div", {
-      key: bi,
-      style: {
-        marginBottom: 10
-      }
-    }, React.createElement(GsDragList, {
+    return React.createElement(GsDragList, {
       items: items,
-      onChange: function onChange(a) {
-        var k = 0;
-        var base = [].concat(_toConsumableArray(L), _toConsumableArray(bk.labels.filter(function (x) {
-          return !L.includes(x) && !isOff(x);
-        })));
-        setList(base.map(function (x) {
-          return bset.has(x) ? a[k++] : x;
-        }));
-        setOrderTouched(true);
-      },
+      highlight: addedL,
+      onChange: onChange,
       renderItem: function renderItem(l) {
-        return React.createElement("span", {
+        if (String(l).startsWith(SUB)) {
+          var bk = pickBase[Number(String(l).slice(SUB.length))];
+          return React.createElement("span", {
+            style: {
+              display: "block",
+              fontWeight: 800,
+              background: "#D9D9D9",
+              margin: "-4px -8px",
+              padding: "6px 10px",
+              borderRadius: 6
+            }
+          }, bk.sub || "총합계", " (\uACE0\uC815)");
+        }
+        if (isAddedL(l)) return React.createElement("span", {
           style: {
             display: "flex",
             gap: 8,
             alignItems: "center",
             flexWrap: "wrap"
           }
+        }, React.createElement("b", {
+          style: {
+            color: T.tealDeep
+          }
+        }, (C[l] || {}).centerName || tplAutoShort(l) || shortOf(l)), React.createElement("span", {
+          style: {
+            color: T.inkSoft,
+            fontSize: 12
+          }
+        }, l), React.createElement("span", {
+          style: {
+            fontSize: 11,
+            fontWeight: 800,
+            color: "#fff",
+            background: T.teal,
+            borderRadius: 6,
+            padding: "1px 7px"
+          }
+        }, "\uC0C8 \uC13C\uD130"), !posOf(l) && React.createElement("span", {
+          style: {
+            fontSize: 11.5,
+            fontWeight: 700,
+            color: T.danger
+          }
+        }, "\u2190 \uC6D0\uD558\uB294 \uC790\uB9AC\uB85C \uB04C\uC5B4\uB2E4 \uB193\uC73C\uC138\uC694"));
+        return React.createElement("span", {
+          style: {
+            display: "flex",
+            gap: 8
+          }
         }, React.createElement("b", null, shortOf(l)), React.createElement("span", {
           style: {
             color: T.inkSoft,
             fontSize: 12
           }
-        }, l), addedHere(l).map(function (x) {
-          return React.createElement("span", {
-            key: x,
-            style: {
-              fontSize: 11.5,
-              fontWeight: 700,
-              color: T.teal,
-              background: "#E4F2EE",
-              borderRadius: 6,
-              padding: "1px 7px"
-            }
-          }, "\u21B3 \uC774 \uC544\uB798 \uC0C8 \uC13C\uD130: ", shortOf(x));
-        }));
+        }, l));
       }
-    }), bk.sub && React.createElement("div", {
-      style: {
-        marginTop: 4,
-        padding: "6px 10px",
-        background: "#D9D9D9",
-        borderRadius: 6,
-        fontWeight: 800,
-        fontSize: 13
-      }
-    }, bk.sub, " (\uACE0\uC815)"));
-  })) : React.createElement(GsDragList, {
+    });
+  }()) : React.createElement(GsDragList, {
     items: L,
     highlight: L.filter(isAddedL),
     onChange: function onChange(a) {

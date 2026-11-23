@@ -11870,9 +11870,10 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
         const ord = [...bo.regionOrder];
         addNow.forEach((ad) => {
           if (ord.includes(ad.label)) return;
-          let i = ad.afterLabel ? ord.indexOf(ad.afterLabel) : -1;
-          if (i < 0 && ad.afterLabel) i = ord.findIndex((l) => cfg.codeOf(l) === cfg.codeOf(ad.afterLabel));
-          ord.splice(i >= 0 ? i + 1 : ord.length, 0, ad.label);
+          const ref = ad.afterLabel || ad.beforeLabel;
+          let i = ref ? ord.indexOf(ref) : -1;
+          if (i < 0 && ref) i = ord.findIndex((l) => cfg.codeOf(l) === cfg.codeOf(ref));
+          ord.splice(i >= 0 ? (ad.afterLabel ? i + 1 : i) : ord.length, 0, ad.label);
         });
         bo.regionOrder = ord;
       }
@@ -11907,7 +11908,7 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
           (report.added.length ? ` 템플릿에 없던 상품 ${report.added.length}개는 같은 공급사 시트를 복사해서 추가했어요: ${report.added.map((x) => x.name).join(", ")}.` : "") +
           (report.unknown.length ? ` ⚠ 공급사를 몰라서 시트를 못 만든 상품: ${report.unknown.map((x) => x.name).join(", ")}` : "") +
           (report.missingRegions.length ? ` ⚠ 시트에 없는 센터 발주: ${report.missingRegions.map((x) => `${x.name} ${cfg.codeOf(x.region)} ${x.qty}개`).join(", ")}` : "") +
-          (addNow.some((a) => !a.afterLabel) ? ` ⚠ 위치를 안 정한 추가 센터: ${addNow.filter((a) => !a.afterLabel).map((a) => a.key).join(", ")} — [피킹지 수정] → [센터 설정]에서 "어느 센터 다음"인지 정해야 시트에 줄이 생겨요.` : "")
+          (addNow.some((a) => !a.afterLabel && !a.beforeLabel) ? ` ⚠ 위치를 안 정한 추가 센터: ${addNow.filter((a) => !a.afterLabel && !a.beforeLabel).map((a) => a.key).join(", ")} — [피킹지 수정] → [센터 설정]에서 "어느 센터 다음"인지 정해야 시트에 줄이 생겨요.` : "")
       );
     } catch (e) {
       setErr(e.message);
@@ -12756,6 +12757,15 @@ function emInvInsertRows(tpl, ws, at, n, cloneRow) {
 // adds: [{ label, short, code, afterLabel, anchorCodes }] — 상품 시트마다 앵커 센터(직접 정한 위치 → GS 피킹지 순서상 바로 앞 센터) 바로 아래에
 // 한 줄 끼워 넣음 (엑셀 "행 삽입"처럼 아래 줄·수식·병합·인쇄영역 밀기). 앵커 줄 서식·수식(수량 VLOOKUP 등)을 그대로 복사하고 A열 센터·E열 센터명만 바꿈.
 // 권역 합계/총합계처럼 앵커 줄에서 끝나던 범위(C4:C17)는 새 줄까지(C4:C18) 늘려서 합계에 들어가게 함
+// "VV29 지에스리테일신평택저온물류" → "신평택" (피킹지 E열 센터명 자동)
+function tplAutoShort(label) {
+  return String(label || "")
+    .replace(/^VV\d+[\s\u00a0]*/, "")
+    .replace(/^(\(주\)|㈜|주식회사)?\s*(지에스리테일|GS리테일)\s*/, "")
+    .replace(/\((.*)\)$/, "$1")
+    .replace(/(저온물류|일배센터|저온센터|물류센터|저온|일배|센터|물류)$/, "")
+    .trim();
+}
 // 센터 설정(added)에서 피킹지에 넣을 센터 목록: 발주 줄의 실제 센터 이름(A열과 VLOOKUP이 맞도록), 센터명(GS 피킹지 이름), 위치(앵커)
 function tplAddedCentersOf(cc, rows, codeOf) {
   const C = (cc && cc.centers) || {};
@@ -12781,7 +12791,7 @@ function tplAddedCentersOf(cc, rows, codeOf) {
         .replace(/(저온물류|일배센터|저온센터|물류센터|저온|일배|센터|물류)$/, "")
         .trim();
       const short = (C[l].centerName && String(C[l].centerName).trim()) || auto || (gsRow && gsRow.name) || l;
-      return { key: l, label: hit ? hit.center : l, short, code, afterLabel: C[l].after || null, anchorCodes: [] };
+      return { key: l, label: hit ? hit.center : l, short, code, afterLabel: C[l].after || null, beforeLabel: (!C[l].after && C[l].before) || null, anchorCodes: [] };
     });
 }
 // 화면 미리보기용: 원본 정보(tplInfo)의 상품 시트마다 추가 센터 줄을 엑셀과 같은 자리에 넣음
@@ -12796,11 +12806,12 @@ function tplInfoWithAdded(info, adds, codeOf) {
       const regions = (p.regions || []).slice();
       adds.forEach((ad) => {
         if (rr.some((r) => !r.subtotal && (r.label === ad.label || (ad.code && cOf(r.label) === ad.code)))) return;
-        if (!ad.afterLabel) return;
-        let i = rr.findIndex((r) => !r.subtotal && r.label === ad.afterLabel);
-        if (i < 0) i = rr.findIndex((r) => !r.subtotal && cOf(r.label) === cOf(ad.afterLabel));
+        const ref = ad.afterLabel || ad.beforeLabel;
+        if (!ref) return;
+        let i = rr.findIndex((r) => !r.subtotal && r.label === ref);
+        if (i < 0) i = rr.findIndex((r) => !r.subtotal && cOf(r.label) === cOf(ref));
         if (i < 0) return;
-        rr.splice(i + 1, 0, { label: ad.label, short: ad.short, added: true });
+        rr.splice(ad.afterLabel ? i + 1 : i, 0, { label: ad.label, short: ad.short, added: true });
         regions.push(ad.label);
       });
       return { ...p, regionRows: rr, regions };
@@ -12833,23 +12844,36 @@ function tplInsertAddedCenters(tpl, adds, regionRe, codeOf) {
     adds.forEach((ad) => {
       if (rows.some((x) => x.label === ad.label || (ad.code && x.code === ad.code))) return; // 이미 있음
       // 위치: [센터 설정]에서 정한 "○○ 다음" 센터. 그 센터가 없는 시트(제주권 공유 등)에는 넣지 않음
-      if (!ad.afterLabel) return;
-      const afterCode = cOf(ad.afterLabel);
-      const anchor = rows.find((x) => x.label === ad.afterLabel) || rows.find((x) => x.code === afterCode) || null;
+      const ref0 = ad.afterLabel || ad.beforeLabel;
+      if (!ref0) return;
+      const anchor = rows.find((x) => x.label === ref0) || rows.find((x) => x.code === cOf(ref0)) || null;
       if (!anchor) return;
-      const r0 = anchor.r, at = r0 + 1;
+      const isBefore = !ad.afterLabel; // "○○ 앞" (권역 맨 위에 넣을 때)
+      const r0 = anchor.r, at = isBefore ? r0 : r0 + 1;
       emInvUnshare(ws, tpl.sst);
       const src = [];
       ws.cells.forEach((c, ref) => {
         const p = splitRef(ref);
         if (p.r === r0) src.push({ col: p.c, f: c.f || null, v: c.v, s: c.el.getAttribute("s") });
       });
-      emInvInsertRows(tpl, ws, at, 1, r0);
-      // 앵커 줄에서 끝나던 범위를 새 줄까지 늘림 (권역 합계·총합계·총 박스)
+      emInvInsertRows(tpl, ws, at, 1, isBefore ? r0 + 1 : r0);
+      const rngRe = /('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?[A-Z]{1,3}\$?)(\d+):(\$?[A-Z]{1,3}\$?)(\d+)/g;
+      // 앵커 줄에서 끝나던(뒤에 넣을 때) / 시작하던(앞에 넣을 때) 범위를 새 줄까지 늘림 (권역 합계·총합계·총 박스)
       const ext = (f) =>
-        f.replace(/('(?:[^']|'')*'!|[A-Za-z0-9_가-힣★().,]+!)?(\$?[A-Z]{1,3}\$?)(\d+):(\$?[A-Z]{1,3}\$?)(\d+)/g, (all, sheet, c1, r1, c2, r2) => (sheet || Number(r2) !== r0 || Number(r1) > r0 ? all : `${c1}${r1}:${c2}${at}`));
+        f.replace(rngRe, (all, sheet, c1, r1, c2, r2) => {
+          if (sheet) return all;
+          if (!isBefore) return Number(r2) !== r0 || Number(r1) > r0 ? all : `${c1}${r1}:${c2}${at}`;
+          return Number(r1) === at + 1 && Number(r2) > at + 1 ? `${c1}${at}:${c2}${r2}` : all;
+        });
       Array.from(ws.doc.getElementsByTagName("f")).forEach((f) => f.textContent && (f.textContent = ext(f.textContent)));
-      Array.from(ws.doc.getElementsByTagName("conditionalFormatting")).forEach((cf) => cf.setAttribute("sqref", String(cf.getAttribute("sqref")).replace(/([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)/g, (a, c1, r1, c2, r2) => (Number(r2) === r0 && Number(r1) <= r0 ? `${c1}${r1}:${c2}${at}` : a))));
+      Array.from(ws.doc.getElementsByTagName("conditionalFormatting")).forEach((cf) =>
+        cf.setAttribute(
+          "sqref",
+          String(cf.getAttribute("sqref")).replace(/([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)/g, (a, c1, r1, c2, r2) =>
+            !isBefore ? (Number(r2) === r0 && Number(r1) <= r0 ? `${c1}${r1}:${c2}${at}` : a) : Number(r1) === at + 1 && Number(r2) > at + 1 ? `${c1}${at}:${c2}${r2}` : a
+          )
+        )
+      );
       readSheetCells(ws, tpl.sst);
       src.forEach((x) => {
         const ref = numToCol(x.col) + at;
@@ -20824,6 +20848,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
       } else cur.labels.push(r.label);
     });
     if (cur.labels.length) blocks.push(cur);
+    blocks.shortOf = new Map(best.rows.filter((r) => !r.subtotal).map((r) => [r.label, r.short || ""]));
     return blocks;
   }, [tplInfo, isPick]); // eslint-disable-line
   // 기본 센터 순서: 피킹지(센터 줄 가장 많은 상품 시트) / 거래명세서(원본 시트 순서)
@@ -20964,7 +20989,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
             Object.entries(centers).forEach(([l, x]) => {
               const c = {};
               ["added", "removed", "removedPick", "removedInv"].forEach((f) => x && x[f] && (c[f] = true));
-              ["centerName", "address", "after"].forEach((f) => x && String(x[f] || "").trim() && (c[f] = String(x[f]).trim()));
+              ["centerName", "address", "after", "before"].forEach((f) => x && String(x[f] || "").trim() && (c[f] = String(x[f]).trim()));
               if (Object.keys(c).length) clean[l] = c;
             });
             o.centers = clean;
@@ -21029,6 +21054,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                     const items = [...L.filter((x) => bset.has(x)), ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
                     const out = [];
                     items.forEach((l) => {
+                      L.filter((x) => isAddedL(x) && !(C[x] || {}).after && (C[x] || {}).before === l).forEach((x) => out.push(x));
                       out.push(l);
                       L.filter((x) => isAddedL(x) && (C[x] || {}).after === l).forEach((x) => out.push(x));
                     });
@@ -21047,7 +21073,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                   <td style={{ ...cell, textAlign: "center" }}>12</td>
                   <td style={{ ...cell, textAlign: "right" }}>{orderQty[l] ? "●" : "-"}</td>
                   <td style={{ ...cell, textAlign: "center" }}>-</td>
-                  <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{shortOf(l)}</td>
+                  <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{isAddedL(l) ? `${(C[l] || {}).centerName || tplAutoShort(l)} (새)` : (pickBase.shortOf && pickBase.shortOf.get(l)) || shortOf(l)}</td>
                   <td style={{ ...cell, textAlign: "center" }}>-</td>
                 </tr>
                 )
@@ -21168,7 +21194,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                         <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
                           {fieldRow("센터명 (피킹지 E열)", (C[l] || {}).centerName ?? "", (v) => setC(l, { centerName: v }), "예: 신평택", "비워두면 센터 이름에서 자동으로 (예: 지에스리테일신평택저온물류 → 신평택)")}
                           <div style={lab}>위치 — 상품 시트마다 이 센터 바로 아래에 줄이 생겨요 (같은 권역 합계에 들어가요)</div>
-                          <select style={{ ...inputStyle, width: 320 }} value={(C[l] || {}).after || ""} onChange={(e) => setC(l, { after: e.target.value })}>
+                          <select style={{ ...inputStyle, width: 320 }} value={(C[l] || {}).after || ((C[l] || {}).before ? "" : "")} onChange={(e) => setC(l, { after: e.target.value, before: "" })}>
                             <option value="">(아직 안 정함 — 피킹지에 줄이 안 생겨요)</option>
                             {L.filter((x) => x !== l && !isAddedL(x)).map((x) => (
                               <option key={x} value={x}>{x} 다음</option>
@@ -21230,35 +21256,97 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                         예전에 섞여서 저장된 센터 순서가 남아 있어요. 이제 이 순서는 쓰지 않고 원본 피킹지 순서로 나가요. 깨끗하게 지우려면 위 [원본 순서로 되돌리기]를 눌러주세요.
                       </div>
                     )}
-                    <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>원본 피킹지(보이는 상품 시트) 틀 그대로예요. 센터는 <b>같은 권역 안에서만</b> 옮길 수 있어요. 추가한 센터는 ① 센터 목록에서 정한 위치에 들어가요.</div>
-                    {pickBase.map((bk, bi) => {
-                      const bset = new Set(bk.labels);
-                      const items = [...L.filter((x) => bset.has(x)), ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
-                      const addedHere = (l) => L.filter((x) => isAddedL(x) && (C[x] || {}).after === l);
+                    <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>원본 피킹지(보이는 상품 시트) 틀 그대로예요. 회색 줄은 권역 합계(고정)예요. 원래 센터는 <b>같은 권역 안에서만</b>, <b style={{ color: T.teal }}>새 센터</b>는 어디로든 꾹 눌러 끌어서 옮길 수 있어요. 여기 보이는 자리 그대로 피킹지에 들어가요.</div>
+                    {(() => {
+                      // 한 목록: 원래 센터 + 권역 합계 줄(고정 칸막이) + 새 센터(실제 들어갈 자리에 한 줄로). 꾹 눌러 끌어서 옮김
+                      const SUB = "§합계칸:";
+                      const orig = (bk) => [...L.filter((x) => bk.labels.includes(x)), ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
+                      const addedL = L.filter(isAddedL);
+                      const posOf = (x) => (C[x] || {}).after || (C[x] || {}).before || "";
+                      const items = [];
+                      pickBase.forEach((bk, bi) => {
+                        orig(bk).forEach((l, j, arr) => {
+                          addedL.filter((x) => !(C[x] || {}).after && (C[x] || {}).before === l).forEach((x) => items.push(x));
+                          items.push(l);
+                          addedL.filter((x) => (C[x] || {}).after === l).forEach((x) => items.push(x));
+                        });
+                        items.push(SUB + bi);
+                      });
+                      const allOrig = new Set(pickBase.flatMap((bk) => bk.labels));
+                      const noPos = addedL.filter((x) => !items.includes(x));
+                      noPos.forEach((x) => items.push(x));
+                      const blockOf = (arr, x) => arr.slice(0, arr.indexOf(x)).filter((y) => String(y).startsWith(SUB)).length;
+                      const onChange = (a) => {
+                        const subsOld = items.filter((y) => String(y).startsWith(SUB));
+                        const subsNew = a.filter((y) => String(y).startsWith(SUB));
+                        if (subsOld.join() !== subsNew.join() || [...allOrig].some((x) => items.includes(x) && blockOf(a, x) !== blockOf(items, x))) {
+                          setMsg("원래 센터와 합계 줄은 권역을 넘어 옮길 수 없어요 (원본 피킹지 틀 유지). 새 센터만 어디로든 옮길 수 있어요.");
+                          return;
+                        }
+                        setMsg("");
+                        // 원래 센터: 권역 안 순서
+                        let changed = false;
+                        const base = [...L, ...pickBase.flatMap((bk) => bk.labels).filter((x) => !L.includes(x) && !isOff(x))];
+                        let next = base;
+                        pickBase.forEach((bk) => {
+                          const bset = new Set(bk.labels);
+                          const want = a.filter((x) => bset.has(x));
+                          const cur = next.filter((x) => bset.has(x));
+                          if (want.join() !== cur.join()) changed = true;
+                          let k = 0;
+                          next = next.map((x) => (bset.has(x) ? want[k++] : x));
+                        });
+                        if (changed) {
+                          setList(next);
+                          setOrderTouched(true);
+                        }
+                        // 새 센터: 바로 위 원래 센터 "다음" (권역 맨 위면 바로 아래 원래 센터 "앞")
+                        addedL.forEach((x) => {
+                          const i = a.indexOf(x);
+                          let after = "", before = "";
+                          for (let j = i - 1; j >= 0; j--) {
+                            const y = a[j];
+                            if (String(y).startsWith(SUB)) break;
+                            if (allOrig.has(y)) { after = y; break; }
+                          }
+                          if (!after)
+                            for (let j = i + 1; j < a.length; j++) {
+                              const y = a[j];
+                              if (String(y).startsWith(SUB)) break;
+                              if (allOrig.has(y)) { before = y; break; }
+                            }
+                          if ((C[x] || {}).after !== after || ((C[x] || {}).before || "") !== before) setC(x, { after, before });
+                        });
+                      };
                       return (
-                        <div key={bi} style={{ marginBottom: 10 }}>
-                          <GsDragList
-                            items={items}
-                            onChange={(a) => {
-                              let k = 0;
-                              const base = [...L, ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
-                              setList(base.map((x) => (bset.has(x) ? a[k++] : x)));
-                              setOrderTouched(true);
-                            }}
-                            renderItem={(l) => (
-                              <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <GsDragList
+                          items={items}
+                          highlight={addedL}
+                          onChange={onChange}
+                          renderItem={(l) => {
+                            if (String(l).startsWith(SUB)) {
+                              const bk = pickBase[Number(String(l).slice(SUB.length))];
+                              return <span style={{ display: "block", fontWeight: 800, background: "#D9D9D9", margin: "-4px -8px", padding: "6px 10px", borderRadius: 6 }}>{bk.sub || "총합계"} (고정)</span>;
+                            }
+                            if (isAddedL(l))
+                              return (
+                                <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                  <b style={{ color: T.tealDeep }}>{(C[l] || {}).centerName || tplAutoShort(l) || shortOf(l)}</b>
+                                  <span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: T.teal, borderRadius: 6, padding: "1px 7px" }}>새 센터</span>
+                                  {!posOf(l) && <span style={{ fontSize: 11.5, fontWeight: 700, color: T.danger }}>← 원하는 자리로 끌어다 놓으세요</span>}
+                                </span>
+                              );
+                            return (
+                              <span style={{ display: "flex", gap: 8 }}>
                                 <b>{shortOf(l)}</b>
                                 <span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span>
-                                {addedHere(l).map((x) => (
-                                  <span key={x} style={{ fontSize: 11.5, fontWeight: 700, color: T.teal, background: "#E4F2EE", borderRadius: 6, padding: "1px 7px" }}>↳ 이 아래 새 센터: {shortOf(x)}</span>
-                                ))}
                               </span>
-                            )}
-                          />
-                          {bk.sub && <div style={{ marginTop: 4, padding: "6px 10px", background: "#D9D9D9", borderRadius: 6, fontWeight: 800, fontSize: 13 }}>{bk.sub} (고정)</div>}
-                        </div>
+                            );
+                          }}
+                        />
                       );
-                    })}
+                    })()}
                   </>
                 ) : (
                   <GsDragList items={L} highlight={L.filter(isAddedL)} onChange={(a) => { setList(a); setOrderTouched(true); }} renderItem={(l) => <span style={{ display: "flex", gap: 8 }}><b>{shortOf(l)}</b><span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span></span>} />
