@@ -12770,7 +12770,14 @@ function tplAddedCentersOf(cc, rows, codeOf) {
       }
       // 위치는 그 채널 [센터 설정]에서 정한 "○○ 다음"만 따름 (GS 일반 피킹지 순서는 틀이 달라서 안 씀 — 2026-11-23)
       const gsRow = code ? REGION_ORDER_TABLE.find((x) => x.code === code) : null;
-      const short = String(l).replace(/^VV\d+[\s\u00a0]*/, "").replace(/\(.*$/, "").trim() || (gsRow && gsRow.name) || l;
+      // E열 센터명: [센터 설정]에서 적은 이름 → 없으면 "VV29 지에스리테일신평택저온물류" → "신평택" 처럼 짧게
+      const auto = String(hit ? hit.center : l)
+        .replace(/^VV\d+[\s\u00a0]*/, "")
+        .replace(/^(\(주\)|㈜|주식회사)?\s*(지에스리테일|GS리테일)\s*/, "")
+        .replace(/\((.*)\)$/, "$1")
+        .replace(/(저온물류|일배센터|저온센터|물류센터|저온|일배|센터|물류)$/, "")
+        .trim();
+      const short = (C[l].centerName && String(C[l].centerName).trim()) || auto || (gsRow && gsRow.name) || l;
       return { key: l, label: hit ? hit.center : l, short, code, afterLabel: C[l].after || null, anchorCodes: [] };
     });
 }
@@ -20785,11 +20792,40 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
     (rows || []).forEach((r) => r && r.center && (m[String(r.center).trim()] = (m[String(r.center).trim()] || 0) + (Number(r.qty) || 0)));
     return m;
   }, [orders, tplInfo]);
+  // 피킹지 원본 틀 (2026-11-23): 보이는 상품 시트들 중 가장 많이 쓰는 센터 줄 모양 (권역 합계 줄 포함) — 순서 탭·미리보기가 이 틀을 그대로 보여줌
+  const pickBase = useMemo(() => {
+    if (!isPick || !tplInfo) return [];
+    const vis = tplInfo.frozen && tplInfo.frozen.visible;
+    let ps = (tplInfo.products || []).filter((x) => (x.regionRows || []).some((r) => !r.subtotal) && (!vis || vis.has(x.sheet)));
+    if (!ps.length) ps = (tplInfo.products || []).filter((x) => (x.regionRows || []).some((r) => !r.subtotal));
+    const groups = new Map();
+    ps.forEach((x) => {
+      if (new Set(x.regionRows.filter((r) => !r.subtotal).map((r) => r.label)).size !== x.regionRows.filter((r) => !r.subtotal).length) return; // 제주권 공유처럼 같은 센터가 여러 번인 시트 제외
+      const sig = x.regionRows.map((r) => (r.subtotal ? "|" : "") + r.label).join("\u0001");
+      const g = groups.get(sig) || { rows: x.regionRows, n: 0 };
+      g.n++;
+      groups.set(sig, g);
+    });
+    const best = [...groups.values()].sort((a, b) => b.n - a.n || b.rows.length - a.rows.length)[0];
+    if (!best) return [];
+    const blocks = [];
+    let cur = { labels: [], sub: null };
+    best.rows.forEach((r) => {
+      if (r.subtotal) {
+        cur.sub = r.label;
+        blocks.push(cur);
+        cur = { labels: [], sub: null };
+      } else cur.labels.push(r.label);
+    });
+    if (cur.labels.length) blocks.push(cur);
+    return blocks;
+  }, [tplInfo, isPick]); // eslint-disable-line
   // 기본 센터 순서: 피킹지(센터 줄 가장 많은 상품 시트) / 거래명세서(원본 시트 순서)
   const baseList = useMemo(() => {
     const out = [];
     const add = (l) => l && !out.includes(String(l).trim()) && out.push(String(l).trim());
     if (isPick) {
+      pickBase.forEach((bk) => bk.labels.forEach(add)); // 원본 틀(보이는 상품 시트) 순서 먼저
       const ps = (tplInfo && tplInfo.products) || [];
       const cnt = (x) => (x.regionRows || []).filter((r) => !r.subtotal).length;
       const top = ps.reduce((m, x) => (cnt(x) > (m ? cnt(m) : 0) ? x : m), null);
@@ -20809,7 +20845,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
       add(l);
     });
     return out;
-  }, [tplInfo, invInfo, orderQty, savedCC]); // eslint-disable-line
+  }, [tplInfo, invInfo, orderQty, savedCC, pickBase]); // eslint-disable-line
   const infoBase = useMemo(() => {
     const m = {};
     ((invInfo && invInfo.sheets) || []).forEach((sh) => sh.center && !m[sh.center] && (m[sh.center] = { cName: sh.cName || "", cAddr: sh.cAddr || "" }));
@@ -20978,7 +21014,25 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
               </tr>
             </thead>
             <tbody>
-              {L.map((l, i) => (
+              {(pickBase.length
+                ? pickBase.flatMap((bk, bi) => {
+                    const bset = new Set(bk.labels);
+                    const items = [...L.filter((x) => bset.has(x)), ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
+                    const out = [];
+                    items.forEach((l) => {
+                      out.push(l);
+                      L.filter((x) => isAddedL(x) && (C[x] || {}).after === l).forEach((x) => out.push(x));
+                    });
+                    if (bk.sub) out.push({ sub: bk.sub, k: bi });
+                    return out;
+                  })
+                : L
+              ).map((l, i) =>
+                typeof l === "object" ? (
+                  <tr key={"sub" + l.k} style={{ background: "#D9D9D9" }}>
+                    <td style={{ ...cell, fontWeight: 800 }} colSpan={6}>{l.sub}</td>
+                  </tr>
+                ) : (
                 <tr key={l} style={{ background: isAddedL(l) ? "#E4F2EE" : i % 2 ? "#fff" : "#F2F2F2" }}>
                   <td style={cell}>{l}</td>
                   <td style={{ ...cell, textAlign: "center" }}>12</td>
@@ -20987,7 +21041,8 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                   <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{shortOf(l)}</td>
                   <td style={{ ...cell, textAlign: "center" }}>-</td>
                 </tr>
-              ))}
+                )
+              )}
             </tbody>
           </table>
         </>
@@ -21101,7 +21156,8 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                         <button onClick={(e) => (e.stopPropagation(), removeC(l))} style={{ ...smallBtnStyle, padding: "2px 9px", fontSize: 12, color: T.danger, borderColor: T.danger + "55" }}>삭제</button>
                       </div>
                       {on && isPick && isAddedL(l) && (
-                        <div style={{ padding: "4px 12px 12px" }}>
+                        <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                          {fieldRow("센터명 (피킹지 E열)", (C[l] || {}).centerName ?? "", (v) => setC(l, { centerName: v }), "예: 신평택", "비워두면 센터 이름에서 자동으로 (예: 지에스리테일신평택저온물류 → 신평택)")}
                           <div style={lab}>위치 — 상품 시트마다 이 센터 바로 아래에 줄이 생겨요 (같은 권역 합계에 들어가요)</div>
                           <select style={{ ...inputStyle, width: 320 }} value={(C[l] || {}).after || ""} onChange={(e) => setC(l, { after: e.target.value })}>
                             <option value="">(아직 안 정함 — 피킹지에 줄이 안 생겨요)</option>
@@ -21158,7 +21214,46 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                     </button>
                   )}
                 </div>
-                <GsDragList items={L} highlight={L.filter(isAddedL)} onChange={(a) => { setList(a); setOrderTouched(true); }} renderItem={(l) => <span style={{ display: "flex", gap: 8 }}><b>{shortOf(l)}</b><span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span></span>} />
+                {isPick && pickBase.length ? (
+                  <>
+                    {savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && pickBase.some((bk) => { const o = savedCO.all.filter((x) => bk.labels.includes(x)); const b0 = bk.labels.filter((x) => o.includes(x)); return o.join("|") !== b0.join("|"); }) && (
+                      <div style={{ padding: "9px 12px", borderRadius: 8, background: "#FDECEA", border: `1px solid ${T.danger}66`, color: T.danger, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
+                        지금 저장된 센터 순서가 원본 피킹지와 달라요 (예전에 섞여서 저장된 순서일 수 있어요). 원본대로 쓰려면 위 [원본 순서로 되돌리기]를 눌러주세요.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>원본 피킹지(보이는 상품 시트) 틀 그대로예요. 센터는 <b>같은 권역 안에서만</b> 옮길 수 있어요. 추가한 센터는 ① 센터 목록에서 정한 위치에 들어가요.</div>
+                    {pickBase.map((bk, bi) => {
+                      const bset = new Set(bk.labels);
+                      const items = [...L.filter((x) => bset.has(x)), ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
+                      const addedHere = (l) => L.filter((x) => isAddedL(x) && (C[x] || {}).after === l);
+                      return (
+                        <div key={bi} style={{ marginBottom: 10 }}>
+                          <GsDragList
+                            items={items}
+                            onChange={(a) => {
+                              let k = 0;
+                              const base = [...L, ...bk.labels.filter((x) => !L.includes(x) && !isOff(x))];
+                              setList(base.map((x) => (bset.has(x) ? a[k++] : x)));
+                              setOrderTouched(true);
+                            }}
+                            renderItem={(l) => (
+                              <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                <b>{shortOf(l)}</b>
+                                <span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span>
+                                {addedHere(l).map((x) => (
+                                  <span key={x} style={{ fontSize: 11.5, fontWeight: 700, color: T.teal, background: "#E4F2EE", borderRadius: 6, padding: "1px 7px" }}>↳ 이 아래 새 센터: {shortOf(x)}</span>
+                                ))}
+                              </span>
+                            )}
+                          />
+                          {bk.sub && <div style={{ marginTop: 4, padding: "6px 10px", background: "#D9D9D9", borderRadius: 6, fontWeight: 800, fontSize: 13 }}>{bk.sub} (고정)</div>}
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <GsDragList items={L} highlight={L.filter(isAddedL)} onChange={(a) => { setList(a); setOrderTouched(true); }} renderItem={(l) => <span style={{ display: "flex", gap: 8 }}><b>{shortOf(l)}</b><span style={{ color: T.inkSoft, fontSize: 12 }}>{l}</span></span>} />
+                )}
               </>
             )}
           </div>

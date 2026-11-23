@@ -24431,7 +24431,8 @@ function tplAddedCentersOf(cc, rows, codeOf) {
     var gsRow = code ? REGION_ORDER_TABLE.find(function (x) {
       return x.code === code;
     }) : null;
-    var _short4 = String(l).replace(/^VV\d+[\s\u00a0]*/, "").replace(/\(.*$/, "").trim() || gsRow && gsRow.name || l;
+    var auto = String(hit ? hit.center : l).replace(/^VV\d+[\s\u00a0]*/, "").replace(/^(\(주\)|㈜|주식회사)?\s*(지에스리테일|GS리테일)\s*/, "").replace(/\((.*)\)$/, "$1").replace(/(저온물류|일배센터|저온센터|물류센터|저온|일배|센터|물류)$/, "").trim();
+    var _short4 = C[l].centerName && String(C[l].centerName).trim() || auto || gsRow && gsRow.name || l;
     return {
       key: l,
       label: hit ? hit.center : l,
@@ -40840,12 +40841,69 @@ function TplCenterSettingsModal(_ref300) {
     });
     return m;
   }, [orders, tplInfo]);
+  var pickBase = useMemo(function () {
+    if (!isPick || !tplInfo) return [];
+    var vis = tplInfo.frozen && tplInfo.frozen.visible;
+    var ps = (tplInfo.products || []).filter(function (x) {
+      return (x.regionRows || []).some(function (r) {
+        return !r.subtotal;
+      }) && (!vis || vis.has(x.sheet));
+    });
+    if (!ps.length) ps = (tplInfo.products || []).filter(function (x) {
+      return (x.regionRows || []).some(function (r) {
+        return !r.subtotal;
+      });
+    });
+    var groups = new Map();
+    ps.forEach(function (x) {
+      if (new Set(x.regionRows.filter(function (r) {
+        return !r.subtotal;
+      }).map(function (r) {
+        return r.label;
+      })).size !== x.regionRows.filter(function (r) {
+        return !r.subtotal;
+      }).length) return;
+      var sig = x.regionRows.map(function (r) {
+        return (r.subtotal ? "|" : "") + r.label;
+      }).join("\x01");
+      var g = groups.get(sig) || {
+        rows: x.regionRows,
+        n: 0
+      };
+      g.n++;
+      groups.set(sig, g);
+    });
+    var best = _toConsumableArray(groups.values()).sort(function (a, b) {
+      return b.n - a.n || b.rows.length - a.rows.length;
+    })[0];
+    if (!best) return [];
+    var blocks = [];
+    var cur = {
+      labels: [],
+      sub: null
+    };
+    best.rows.forEach(function (r) {
+      if (r.subtotal) {
+        cur.sub = r.label;
+        blocks.push(cur);
+        cur = {
+          labels: [],
+          sub: null
+        };
+      } else cur.labels.push(r.label);
+    });
+    if (cur.labels.length) blocks.push(cur);
+    return blocks;
+  }, [tplInfo, isPick]);
   var baseList = useMemo(function () {
     var out = [];
     var add = function add(l) {
       return l && !out.includes(String(l).trim()) && out.push(String(l).trim());
     };
     if (isPick) {
+      pickBase.forEach(function (bk) {
+        return bk.labels.forEach(add);
+      });
       var ps = tplInfo && tplInfo.products || [];
       var cnt = function cnt(x) {
         return (x.regionRows || []).filter(function (r) {
@@ -40886,7 +40944,7 @@ function TplCenterSettingsModal(_ref300) {
       add(l);
     });
     return out;
-  }, [tplInfo, invInfo, orderQty, savedCC]);
+  }, [tplInfo, invInfo, orderQty, savedCC, pickBase]);
   var infoBase = useMemo(function () {
     var m = {};
     (invInfo && invInfo.sheets || []).forEach(function (sh) {
@@ -41237,8 +41295,39 @@ function TplCenterSettingsModal(_ref300) {
             fontWeight: 700
           })
         }, h);
-      }))), React.createElement("tbody", null, L.map(function (l, i) {
-        return React.createElement("tr", {
+      }))), React.createElement("tbody", null, (pickBase.length ? pickBase.flatMap(function (bk, bi) {
+        var bset = new Set(bk.labels);
+        var items = [].concat(_toConsumableArray(L.filter(function (x) {
+          return bset.has(x);
+        })), _toConsumableArray(bk.labels.filter(function (x) {
+          return !L.includes(x) && !isOff(x);
+        })));
+        var out = [];
+        items.forEach(function (l) {
+          out.push(l);
+          L.filter(function (x) {
+            return isAddedL(x) && (C[x] || {}).after === l;
+          }).forEach(function (x) {
+            return out.push(x);
+          });
+        });
+        if (bk.sub) out.push({
+          sub: bk.sub,
+          k: bi
+        });
+        return out;
+      }) : L).map(function (l, i) {
+        return _typeof(l) === "object" ? React.createElement("tr", {
+          key: "sub" + l.k,
+          style: {
+            background: "#D9D9D9"
+          }
+        }, React.createElement("td", {
+          style: _objectSpread(_objectSpread({}, cell), {}, {
+            fontWeight: 800
+          }),
+          colSpan: 6
+        }, l.sub)) : React.createElement("tr", {
           key: l,
           style: {
             background: isAddedL(l) ? "#E4F2EE" : i % 2 ? "#fff" : "#F2F2F2"
@@ -41585,7 +41674,7 @@ function TplCenterSettingsModal(_ref300) {
       gap: 4
     }
   }, L.map(function (l) {
-    var _centerName2, _address2;
+    var _centerName2, _centerName3, _address2;
     var on = edit === l;
     var i = infoOf(l);
     return React.createElement("div", {
@@ -41652,9 +41741,16 @@ function TplCenterSettingsModal(_ref300) {
       })
     }, "\uC0AD\uC81C")), on && isPick && isAddedL(l) && React.createElement("div", {
       style: {
-        padding: "4px 12px 12px"
+        padding: "4px 12px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
       }
-    }, React.createElement("div", {
+    }, fieldRow("센터명 (피킹지 E열)", (_centerName2 = (C[l] || {}).centerName) !== null && _centerName2 !== void 0 ? _centerName2 : "", function (v) {
+      return setC(l, {
+        centerName: v
+      });
+    }, "예: 신평택", "비워두면 센터 이름에서 자동으로 (예: 지에스리테일신평택저온물류 → 신평택)"), React.createElement("div", {
       style: lab
     }, "\uC704\uCE58 \u2014 \uC0C1\uD488 \uC2DC\uD2B8\uB9C8\uB2E4 \uC774 \uC13C\uD130 \uBC14\uB85C \uC544\uB798\uC5D0 \uC904\uC774 \uC0DD\uACA8\uC694 (\uAC19\uC740 \uAD8C\uC5ED \uD569\uACC4\uC5D0 \uB4E4\uC5B4\uAC00\uC694)"), React.createElement("select", {
       style: _objectSpread(_objectSpread({}, inputStyle), {}, {
@@ -41682,7 +41778,7 @@ function TplCenterSettingsModal(_ref300) {
         flexDirection: "column",
         gap: 8
       }
-    }, fieldRow("상호 (센터명)", (_centerName2 = (C[l] || {}).centerName) !== null && _centerName2 !== void 0 ? _centerName2 : "", function (v) {
+    }, fieldRow("상호 (센터명)", (_centerName3 = (C[l] || {}).centerName) !== null && _centerName3 !== void 0 ? _centerName3 : "", function (v) {
       return setC(l, {
         centerName: v
       });
@@ -41786,7 +41882,98 @@ function TplCenterSettingsModal(_ref300) {
       color: T.danger,
       borderColor: "#E8B4AE"
     })
-  }, "\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30")), React.createElement(GsDragList, {
+  }, "\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30")), isPick && pickBase.length ? React.createElement(React.Fragment, null, savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && pickBase.some(function (bk) {
+    var o = savedCO.all.filter(function (x) {
+      return bk.labels.includes(x);
+    });
+    var b0 = bk.labels.filter(function (x) {
+      return o.includes(x);
+    });
+    return o.join("|") !== b0.join("|");
+  }) && React.createElement("div", {
+    style: {
+      padding: "9px 12px",
+      borderRadius: 8,
+      background: "#FDECEA",
+      border: "1px solid ".concat(T.danger, "66"),
+      color: T.danger,
+      fontSize: 12.5,
+      fontWeight: 700,
+      marginBottom: 8
+    }
+  }, "\uC9C0\uAE08 \uC800\uC7A5\uB41C \uC13C\uD130 \uC21C\uC11C\uAC00 \uC6D0\uBCF8 \uD53C\uD0B9\uC9C0\uC640 \uB2EC\uB77C\uC694 (\uC608\uC804\uC5D0 \uC11E\uC5EC\uC11C \uC800\uC7A5\uB41C \uC21C\uC11C\uC77C \uC218 \uC788\uC5B4\uC694). \uC6D0\uBCF8\uB300\uB85C \uC4F0\uB824\uBA74 \uC704 [\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30]\uB97C \uB20C\uB7EC\uC8FC\uC138\uC694."), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: T.inkSoft,
+      marginBottom: 8
+    }
+  }, "\uC6D0\uBCF8 \uD53C\uD0B9\uC9C0(\uBCF4\uC774\uB294 \uC0C1\uD488 \uC2DC\uD2B8) \uD2C0 \uADF8\uB300\uB85C\uC608\uC694. \uC13C\uD130\uB294 ", React.createElement("b", null, "\uAC19\uC740 \uAD8C\uC5ED \uC548\uC5D0\uC11C\uB9CC"), " \uC62E\uAE38 \uC218 \uC788\uC5B4\uC694. \uCD94\uAC00\uD55C \uC13C\uD130\uB294 \u2460 \uC13C\uD130 \uBAA9\uB85D\uC5D0\uC11C \uC815\uD55C \uC704\uCE58\uC5D0 \uB4E4\uC5B4\uAC00\uC694."), pickBase.map(function (bk, bi) {
+    var bset = new Set(bk.labels);
+    var items = [].concat(_toConsumableArray(L.filter(function (x) {
+      return bset.has(x);
+    })), _toConsumableArray(bk.labels.filter(function (x) {
+      return !L.includes(x) && !isOff(x);
+    })));
+    var addedHere = function addedHere(l) {
+      return L.filter(function (x) {
+        return isAddedL(x) && (C[x] || {}).after === l;
+      });
+    };
+    return React.createElement("div", {
+      key: bi,
+      style: {
+        marginBottom: 10
+      }
+    }, React.createElement(GsDragList, {
+      items: items,
+      onChange: function onChange(a) {
+        var k = 0;
+        var base = [].concat(_toConsumableArray(L), _toConsumableArray(bk.labels.filter(function (x) {
+          return !L.includes(x) && !isOff(x);
+        })));
+        setList(base.map(function (x) {
+          return bset.has(x) ? a[k++] : x;
+        }));
+        setOrderTouched(true);
+      },
+      renderItem: function renderItem(l) {
+        return React.createElement("span", {
+          style: {
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap"
+          }
+        }, React.createElement("b", null, shortOf(l)), React.createElement("span", {
+          style: {
+            color: T.inkSoft,
+            fontSize: 12
+          }
+        }, l), addedHere(l).map(function (x) {
+          return React.createElement("span", {
+            key: x,
+            style: {
+              fontSize: 11.5,
+              fontWeight: 700,
+              color: T.teal,
+              background: "#E4F2EE",
+              borderRadius: 6,
+              padding: "1px 7px"
+            }
+          }, "\u21B3 \uC774 \uC544\uB798 \uC0C8 \uC13C\uD130: ", shortOf(x));
+        }));
+      }
+    }), bk.sub && React.createElement("div", {
+      style: {
+        marginTop: 4,
+        padding: "6px 10px",
+        background: "#D9D9D9",
+        borderRadius: 6,
+        fontWeight: 800,
+        fontSize: 13
+      }
+    }, bk.sub, " (\uACE0\uC815)"));
+  })) : React.createElement(GsDragList, {
     items: L,
     highlight: L.filter(isAddedL),
     onChange: function onChange(a) {
