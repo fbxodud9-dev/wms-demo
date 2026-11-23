@@ -10475,6 +10475,7 @@ async function buildEmartPickingWorkbook(templateBuffer, orderRows, date, active
         const a = ws.cells.get("A" + r);
         if (a && !a.f && typeof a.v === "string" && /합계/.test(a.v)) blk++;
         if (!a || a.f || typeof a.v !== "string" || /합계/.test(a.v)) continue;
+        if (opts.addCenters && opts.addCenters.some((ad) => ad.label === a.v.trim())) continue; // 추가한 센터 줄은 정한 위치에 고정
         const q = ws.cells.get(qc + r);
         if (!q || !q.f || !new RegExp(`VLOOKUP\\(\\$?A\\$?${r}\\s*,`, "i").test(q.f)) continue; // 수량이 이 줄 A열로 찾는 줄만 (센터 줄)
         const e = ws.cells.get("E" + r);
@@ -11699,7 +11700,8 @@ function GsFrozenPickingView({ frozenOrders, authToken, cfg = GS_FROZEN_PICK_CFG
   // 상품(시트)별 지역 설정: { products: { 시트이름: { zero: [VV코드], remove: [VV코드] } } }
   const pickCfg = useSetting(cfg.pickKey, authToken);
   // 센터 순서 설정 (2026-11-05 전 채널): { all: [센터...], products: { 상품(시트) 이름: [센터...] } }
-  const centerOrderCfg = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
+  const centerOrderCfgRaw = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
+  const centerOrderCfg = useMemo(() => centerOrderEff(cfg.brand, centerOrderCfgRaw), [centerOrderCfgRaw]); // eslint-disable-line
   const [showCenterOrder, setShowCenterOrder] = useState(false);
   // 상품 정보 관리(이 채널)에서 바꾼 표시 상품명 → 화면·엑셀 (2026-11-08)
   const dnInfoF = useSetting(brandSettingKey("product_info", cfg.brand), authToken);
@@ -16009,6 +16011,8 @@ function centerOrderApply(labels, want, blocks) {
   let k = 0;
   return labels.map((l) => (wantSet.has(l) ? seq[k++] : l));
 }
+// GS냉동: 예전(2026-11-23 이전)에 센터 설정 저장 때 섞여서 저장된 "전체 순서(all)"는 쓰지 않음 (v:2 = 원본 틀 화면에서 직접 바꿔 저장한 순서만)
+const centerOrderEff = (brand, co) => (brand === "GSFROZEN" && co && !co.v ? { products: co.products || {} } : co);
 // regionRows(센터 줄 + subtotal 줄) → 센터 줄마다 권역 번호
 const rrBlocks = (rr) => {
   let b = 0;
@@ -16060,7 +16064,7 @@ function CenterOrderModal({ pv, tplInfo, productNames, productList = [], authTok
     setMsg("");
     try {
       const r = await updateSetting(pv.centerOrderKey, authToken, (v) => {
-        const o = { all: (v && v.all) || null, products: { ...((v && v.products) || {}) } };
+        const o = { all: (v && v.all) || null, products: { ...((v && v.products) || {}) }, v: 2 };
         if (scope === "all") o.all = next;
         else if (next) o.products[scope] = next;
         else delete o.products[scope];
@@ -16162,7 +16166,8 @@ function CenterOrderModal({ pv, tplInfo, productNames, productList = [], authTok
 }
 
 function EmartPickingView({ emartOrders, authToken, pv = EM_PV_CFG, onZeroLines, editMode }) {
-  const centerOrderCfg = useSetting(pv.centerOrderKey || "center_order_none", authToken);
+  const centerOrderCfg0 = useSetting(pv.centerOrderKey || "center_order_none", authToken);
+  const centerOrderCfg = useMemo(() => centerOrderEff(pv.brand, centerOrderCfg0), [centerOrderCfg0]); // eslint-disable-line
   const [showCenterOrder, setShowCenterOrder] = useState(false);
   const formCfg = useSetting(pv.formKey || "picking_form_none", authToken);
   const formMap = useMemo(() => pickFormMapOf(pv, formCfg), [formCfg]); // eslint-disable-line
@@ -20856,7 +20861,7 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
   const offKey = isPick ? "removedPick" : "removedInv";
   const C = centers || (savedCC && savedCC.centers) || {};
   const isOff = (l) => !!(C[l] && (C[l].removed || C[l][offKey]));
-  const savedOrder = isPick ? (savedCO && savedCO.all) || null : (savedCC && savedCC.invOrder) || null;
+  const savedOrder = isPick ? (centerOrderEff(brand, savedCO) && centerOrderEff(brand, savedCO).all) || null : (savedCC && savedCC.invOrder) || null;
   const initList = useMemo(() => {
     const all = [...baseList];
     Object.keys((savedCC && savedCC.centers) || {}).forEach((l) => savedCC.centers[l] && savedCC.centers[l].added && !all.includes(l) && all.push(l));
@@ -20970,7 +20975,10 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
       }
       // 피킹지: 센터를 추가·삭제만 했으면 순서는 저장하지 않음 (시트마다 센터 구성이 달라서, 목록 하나를 전체에 쓰면 권역이 섞임 — 2026-11-23 GS냉동)
       if (isPick && list && coKey && orderTouched) {
-        const r2 = await updateSetting(coKey, authToken, (v) => ({ all: L, products: { ...((v && v.products) || {}) } }));
+        // 추가한 센터(같은 VV코드 발주 이름 포함)는 순서 목록에서 빼고 저장 — 추가 센터 줄은 정한 위치("○○ 다음")에 고정
+        const addCodes = new Set(L.filter(isAddedL).map((x) => (/VV\d{2}/.exec(x) || [])[0]).filter(Boolean));
+        const allOut = L.filter((x) => !isAddedL(x) && !(addCodes.has((/VV\d{2}/.exec(x) || [])[0]) && !(C[x] && !C[x].added)));
+        const r2 = await updateSetting(coKey, authToken, (v) => ({ all: allOut, products: { ...((v && v.products) || {}) }, v: 2 }));
         if (r2 && r2.ok === false) throw new Error(r2.error || "저장 실패");
       }
       setMsg(`저장했어요. ${isPick ? "피킹지" : "거래명세서"}에 바로 반영돼요.`);
@@ -21216,9 +21224,9 @@ function TplCenterSettingsModal({ mode, brand, label, orders = [], invInfo = nul
                 </div>
                 {isPick && pickBase.length ? (
                   <>
-                    {savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && pickBase.some((bk) => { const o = savedCO.all.filter((x) => bk.labels.includes(x)); const b0 = bk.labels.filter((x) => o.includes(x)); return o.join("|") !== b0.join("|"); }) && (
+                    {savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && (brand === "GSFROZEN" && !savedCO.v ? true : false) && pickBase.some((bk) => { const o = savedCO.all.filter((x) => bk.labels.includes(x)); const b0 = bk.labels.filter((x) => o.includes(x)); return o.join("|") !== b0.join("|"); }) && (
                       <div style={{ padding: "9px 12px", borderRadius: 8, background: "#FDECEA", border: `1px solid ${T.danger}66`, color: T.danger, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
-                        지금 저장된 센터 순서가 원본 피킹지와 달라요 (예전에 섞여서 저장된 순서일 수 있어요). 원본대로 쓰려면 위 [원본 순서로 되돌리기]를 눌러주세요.
+                        예전에 섞여서 저장된 센터 순서가 남아 있어요. 이제 이 순서는 쓰지 않고 원본 피킹지 순서로 나가요. 깨끗하게 지우려면 위 [원본 순서로 되돌리기]를 눌러주세요.
                       </div>
                     )}
                     <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 8 }}>원본 피킹지(보이는 상품 시트) 틀 그대로예요. 센터는 <b>같은 권역 안에서만</b> 옮길 수 있어요. 추가한 센터는 ① 센터 목록에서 정한 위치에 들어가요.</div>

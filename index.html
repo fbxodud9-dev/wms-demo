@@ -19210,8 +19210,8 @@ function _buildEmartPickingWorkbook() {
       dangchakKeep,
       _iterator30,
       _step30,
-      _loop19,
-      _ret6,
+      _loop20,
+      _ret7,
       pivotNames,
       EMART_REMOVE_TEXTS,
       js,
@@ -19256,7 +19256,7 @@ function _buildEmartPickingWorkbook() {
       ct,
       _iterator31,
       _step31,
-      _loop18,
+      _loop19,
       app,
       sheetEls,
       parent,
@@ -19797,19 +19797,27 @@ function _buildEmartPickingWorkbook() {
               var qc = numToCol(prod.col || 3);
               var slots = [];
               var blk = 0;
+              var _loop17 = function _loop17() {
+                  var a = ws.cells.get("A" + r);
+                  if (a && !a.f && typeof a.v === "string" && /합계/.test(a.v)) blk++;
+                  if (!a || a.f || typeof a.v !== "string" || /합계/.test(a.v)) return 0;
+                  if (opts.addCenters && opts.addCenters.some(function (ad) {
+                    return ad.label === a.v.trim();
+                  })) return 0;
+                  var q = ws.cells.get(qc + r);
+                  if (!q || !q.f || !new RegExp("VLOOKUP\\(\\$?A\\$?".concat(r, "\\s*,"), "i").test(q.f)) return 0;
+                  var e = ws.cells.get("E" + r);
+                  slots.push({
+                    r: r,
+                    label: a.v.trim(),
+                    e: e && !e.f && typeof e.v === "string" ? e.v : null,
+                    blk: blk
+                  });
+                },
+                _ret6;
               for (var r = 1; r <= ws.maxRow; r++) {
-                var a = ws.cells.get("A" + r);
-                if (a && !a.f && typeof a.v === "string" && /합계/.test(a.v)) blk++;
-                if (!a || a.f || typeof a.v !== "string" || /합계/.test(a.v)) continue;
-                var q = ws.cells.get(qc + r);
-                if (!q || !q.f || !new RegExp("VLOOKUP\\(\\$?A\\$?".concat(r, "\\s*,"), "i").test(q.f)) continue;
-                var _e2 = ws.cells.get("E" + r);
-                slots.push({
-                  r: r,
-                  label: a.v.trim(),
-                  e: _e2 && !_e2.f && typeof _e2.v === "string" ? _e2.v : null,
-                  blk: blk
-                });
+                _ret6 = _loop17();
+                if (_ret6 === 0) continue;
               }
               var labels = slots.map(function (x) {
                 return x.label;
@@ -20065,9 +20073,9 @@ function _buildEmartPickingWorkbook() {
           dangchakKeep = [];
           _iterator30 = _createForOfIteratorHelper(opts.dangchakSheets || []);
           _context136.prev = 65;
-          _loop19 = _regeneratorRuntime().mark(function _loop19() {
+          _loop20 = _regeneratorRuntime().mark(function _loop20() {
             var dk, link, own, supK, sameVendor, pivot, nm, m0, sh, cols;
-            return _regeneratorRuntime().wrap(function _loop19$(_context135) {
+            return _regeneratorRuntime().wrap(function _loop20$(_context135) {
               while (1) switch (_context135.prev = _context135.next) {
                 case 0:
                   dk = _step30.value;
@@ -20127,7 +20135,7 @@ function _buildEmartPickingWorkbook() {
                 case "end":
                   return _context135.stop();
               }
-            }, _loop19);
+            }, _loop20);
           });
           _iterator30.s();
         case 68:
@@ -20135,10 +20143,10 @@ function _buildEmartPickingWorkbook() {
             _context136.next = 75;
             break;
           }
-          return _context136.delegateYield(_loop19(), "t6", 70);
+          return _context136.delegateYield(_loop20(), "t6", 70);
         case 70:
-          _ret6 = _context136.t6;
-          if (!(_ret6 === 0)) {
+          _ret7 = _context136.t6;
+          if (!(_ret7 === 0)) {
             _context136.next = 73;
             break;
           }
@@ -20201,7 +20209,7 @@ function _buildEmartPickingWorkbook() {
                 return x.name === prod.sheet;
               });
               if (!s) return;
-              var _loop17 = function _loop17(r) {
+              var _loop18 = function _loop18(r) {
                 var a = s.cells.get("A" + r);
                 if (!a || typeof a.v !== "string" || !(tpl.regionRe.test(a.v) || /합계/.test(a.v))) return 1;
                 ["B", "C"].forEach(function (col) {
@@ -20210,7 +20218,7 @@ function _buildEmartPickingWorkbook() {
                 });
               };
               for (var r = 1; r <= s.maxRow; r++) {
-                if (_loop17(r)) continue;
+                if (_loop18(r)) continue;
               }
             });
           }
@@ -20577,9 +20585,9 @@ function _buildEmartPickingWorkbook() {
             return !keep.has(x.name);
           }));
           _context136.prev = 109;
-          _loop18 = _regeneratorRuntime().mark(function _loop18() {
+          _loop19 = _regeneratorRuntime().mark(function _loop19() {
             var sh, relPath, rels, dm, pm, rid;
-            return _regeneratorRuntime().wrap(function _loop18$(_context134) {
+            return _regeneratorRuntime().wrap(function _loop19$(_context134) {
               while (1) switch (_context134.prev = _context134.next) {
                 case 0:
                   sh = _step31.value;
@@ -20618,7 +20626,7 @@ function _buildEmartPickingWorkbook() {
                 case "end":
                   return _context134.stop();
               }
-            }, _loop18);
+            }, _loop19);
           });
           _iterator31.s();
         case 112:
@@ -20626,7 +20634,7 @@ function _buildEmartPickingWorkbook() {
             _context136.next = 116;
             break;
           }
-          return _context136.delegateYield(_loop18(), "t8", 114);
+          return _context136.delegateYield(_loop19(), "t8", 114);
         case 114:
           _context136.next = 112;
           break;
@@ -22117,7 +22125,10 @@ function GsFrozenPickingView(_ref163) {
     setShowOrderSet = _useState272[1];
   var orderCfg = useSetting(cfg.orderKey, authToken);
   var pickCfg = useSetting(cfg.pickKey, authToken);
-  var centerOrderCfg = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
+  var centerOrderCfgRaw = useSetting(cfg.centerOrderKey || "center_order_none", authToken);
+  var centerOrderCfg = useMemo(function () {
+    return centerOrderEff(cfg.brand, centerOrderCfgRaw);
+  }, [centerOrderCfgRaw]);
   var _useState273 = useState(false),
     _useState274 = _slicedToArray(_useState273, 2),
     showCenterOrder = _useState274[0],
@@ -24770,28 +24781,28 @@ function _buildEmartInvoiceWorkbook() {
       srcBlock,
       _iterator32,
       _step32,
-      _loop24,
+      _loop25,
       byN,
       txt,
       donorOf,
       _iterator33,
       _step33,
-      _loop20,
-      _ret7,
+      _loop21,
+      _ret8,
       byName,
       refd,
       more,
       _iterator35,
       _step35,
-      _loop23,
-      _ret8,
+      _loop24,
+      _ret9,
       byName2,
       cache,
       ctx,
       ct,
       _iterator36,
       _step36,
-      _loop28,
+      _loop29,
       app,
       rank,
       els,
@@ -24931,9 +24942,9 @@ function _buildEmartInvoiceWorkbook() {
             return y.isNew && want(y);
           }));
           _context152.prev = 31;
-          _loop24 = _regeneratorRuntime().mark(function _loop24() {
-            var x, label, newPivot, pvMut, q, srcRef, sheetsInfo, _iterator37, _step37, _loop25;
-            return _regeneratorRuntime().wrap(function _loop24$(_context150) {
+          _loop25 = _regeneratorRuntime().mark(function _loop25() {
+            var x, label, newPivot, pvMut, q, srcRef, sheetsInfo, _iterator37, _step37, _loop26;
+            return _regeneratorRuntime().wrap(function _loop25$(_context150) {
               while (1) switch (_context150.prev = _context150.next) {
                 case 0:
                   x = _step32.value;
@@ -24952,9 +24963,9 @@ function _buildEmartInvoiceWorkbook() {
                   sheetsInfo = [];
                   _iterator37 = _createForOfIteratorHelper(srcBlock.sheets);
                   _context150.prev = 12;
-                  _loop25 = _regeneratorRuntime().mark(function _loop25() {
+                  _loop26 = _regeneratorRuntime().mark(function _loop26() {
                     var sh, srcWs, caps0, caps, nm, mut;
-                    return _regeneratorRuntime().wrap(function _loop25$(_context149) {
+                    return _regeneratorRuntime().wrap(function _loop26$(_context149) {
                       while (1) switch (_context149.prev = _context149.next) {
                         case 0:
                           sh = _step37.value;
@@ -24981,17 +24992,17 @@ function _buildEmartInvoiceWorkbook() {
                               doc: sheet.doc
                             };
                             if (caps) {
-                              var _loop26 = function _loop26(r) {
+                              var _loop27 = function _loop27(r) {
                                 lay.cols.forEach(function (col) {
                                   return setCellXml(tmp, col + r, null);
                                 });
                               };
                               for (var r = 13; r < caps.totalRow; r++) {
-                                _loop26(r);
+                                _loop27(r);
                               }
                               if (caps.mirror) {
                                 var cols = Object.keys(caps.mirror.cols);
-                                var _loop27 = function _loop27(_r12) {
+                                var _loop28 = function _loop28(_r12) {
                                   var bc = srcWs.cells.get("B" + _r12);
                                   if (bc && _r12 > caps.mirror.row && (bc.f && /^\$?B\$?\d+$/.test(bc.f.trim()) || typeof bc.v === "string" && bc.v.replace(/\s/g, "") === "총수량")) return 1;
                                   cols.forEach(function (col) {
@@ -24999,7 +25010,7 @@ function _buildEmartInvoiceWorkbook() {
                                   });
                                 };
                                 for (var _r12 = caps.mirror.row; _r12 < caps.mirror.row + (caps.totalRow - 13); _r12++) {
-                                  if (_loop27(_r12)) break;
+                                  if (_loop28(_r12)) break;
                                 }
                               }
                             }
@@ -25027,7 +25038,7 @@ function _buildEmartInvoiceWorkbook() {
                         case "end":
                           return _context149.stop();
                       }
-                    }, _loop25);
+                    }, _loop26);
                   });
                   _iterator37.s();
                 case 15:
@@ -25035,7 +25046,7 @@ function _buildEmartInvoiceWorkbook() {
                     _context150.next = 19;
                     break;
                   }
-                  return _context150.delegateYield(_loop25(), "t0", 17);
+                  return _context150.delegateYield(_loop26(), "t0", 17);
                 case 17:
                   _context150.next = 15;
                   break;
@@ -25063,7 +25074,7 @@ function _buildEmartInvoiceWorkbook() {
                 case "end":
                   return _context150.stop();
               }
-            }, _loop24, null, [[12, 21, 24, 27]]);
+            }, _loop25, null, [[12, 21, 24, 27]]);
           });
           _iterator32.s();
         case 34:
@@ -25071,7 +25082,7 @@ function _buildEmartInvoiceWorkbook() {
             _context152.next = 38;
             break;
           }
-          return _context152.delegateYield(_loop24(), "t3", 36);
+          return _context152.delegateYield(_loop25(), "t3", 36);
         case 36:
           _context152.next = 34;
           break;
@@ -25103,9 +25114,9 @@ function _buildEmartInvoiceWorkbook() {
           });
           _iterator33 = _createForOfIteratorHelper(plan.list);
           _context152.prev = 52;
-          _loop20 = _regeneratorRuntime().mark(function _loop20() {
-            var x, p, have, _iterator34, _step34, _loop21;
-            return _regeneratorRuntime().wrap(function _loop20$(_context147) {
+          _loop21 = _regeneratorRuntime().mark(function _loop21() {
+            var x, p, have, _iterator34, _step34, _loop22;
+            return _regeneratorRuntime().wrap(function _loop21$(_context147) {
               while (1) switch (_context147.prev = _context147.next) {
                 case 0:
                   x = _step33.value;
@@ -25129,9 +25140,9 @@ function _buildEmartInvoiceWorkbook() {
                     return !have.has(cc);
                   }));
                   _context147.prev = 8;
-                  _loop21 = _regeneratorRuntime().mark(function _loop21() {
+                  _loop22 = _regeneratorRuntime().mark(function _loop22() {
                     var c, sh0, srcWs, order, _short9, nm, exact, altC, donor, from, ovC, to, mut;
-                    return _regeneratorRuntime().wrap(function _loop21$(_context146) {
+                    return _regeneratorRuntime().wrap(function _loop22$(_context146) {
                       while (1) switch (_context146.prev = _context146.next) {
                         case 0:
                           c = _step34.value;
@@ -25199,7 +25210,7 @@ function _buildEmartInvoiceWorkbook() {
                         case "end":
                           return _context146.stop();
                       }
-                    }, _loop21);
+                    }, _loop22);
                   });
                   _iterator34.s();
                 case 11:
@@ -25207,7 +25218,7 @@ function _buildEmartInvoiceWorkbook() {
                     _context147.next = 17;
                     break;
                   }
-                  return _context147.delegateYield(_loop21(), "t0", 13);
+                  return _context147.delegateYield(_loop22(), "t0", 13);
                 case 13:
                   if (!_context147.t0) {
                     _context147.next = 15;
@@ -25232,7 +25243,7 @@ function _buildEmartInvoiceWorkbook() {
                 case "end":
                   return _context147.stop();
               }
-            }, _loop20, null, [[8, 19, 22, 25]]);
+            }, _loop21, null, [[8, 19, 22, 25]]);
           });
           _iterator33.s();
         case 55:
@@ -25240,10 +25251,10 @@ function _buildEmartInvoiceWorkbook() {
             _context152.next = 62;
             break;
           }
-          return _context152.delegateYield(_loop20(), "t5", 57);
+          return _context152.delegateYield(_loop21(), "t5", 57);
         case 57:
-          _ret7 = _context152.t5;
-          if (!(_ret7 === 0)) {
+          _ret8 = _context152.t5;
+          if (!(_ret8 === 0)) {
             _context152.next = 60;
             break;
           }
@@ -25602,15 +25613,15 @@ function _buildEmartInvoiceWorkbook() {
             }
             var off = null;
             for (var m = 20; m <= Math.min(ws.maxRow || 0, 140) && off == null; m++) {
-              var _e3 = ws.cells.get("E" + m);
-              var mm = _e3 && _e3.f && /^\s*\$?E\$?13\s*$/.exec(_e3.f);
+              var _e2 = ws.cells.get("E" + m);
+              var mm = _e2 && _e2.f && /^\s*\$?E\$?13\s*$/.exec(_e2.f);
               if (mm) off = m - 13;
             }
             var pairs = [];
             if (off != null && topTotal) for (var _r11 = 13; _r11 < topTotal; _r11++) pairs.push([_r11, _r11 + off]);
             var aaFirst = off != null ? ws.cells.get("AA" + (13 + off)) : null;
             var aaStyle = aaFirst ? aaFirst.el.getAttribute("s") : null;
-            var _loop22 = function _loop22() {
+            var _loop23 = function _loop23() {
               var _pairs$_i = _slicedToArray(_pairs[_i18], 2),
                 r = _pairs$_i[0],
                 m = _pairs$_i[1];
@@ -25654,7 +25665,7 @@ function _buildEmartInvoiceWorkbook() {
               }
             };
             for (var _i18 = 0, _pairs = pairs; _i18 < _pairs.length; _i18++) {
-              if (_loop22()) break;
+              if (_loop23()) break;
             }
             if (topTotal && off != null) {
               Array.from(ws.doc.getElementsByTagName("conditionalFormatting")).forEach(function (cf) {
@@ -25690,9 +25701,9 @@ function _buildEmartInvoiceWorkbook() {
           more = false;
           _iterator35 = _createForOfIteratorHelper(tpl.sheets);
           _context152.prev = 82;
-          _loop23 = _regeneratorRuntime().mark(function _loop23() {
+          _loop24 = _regeneratorRuntime().mark(function _loop24() {
             var pv, used, a2;
-            return _regeneratorRuntime().wrap(function _loop23$(_context148) {
+            return _regeneratorRuntime().wrap(function _loop24$(_context148) {
               while (1) switch (_context148.prev = _context148.next) {
                 case 0:
                   pv = _step35.value;
@@ -25721,7 +25732,7 @@ function _buildEmartInvoiceWorkbook() {
                 case "end":
                   return _context148.stop();
               }
-            }, _loop23);
+            }, _loop24);
           });
           _iterator35.s();
         case 85:
@@ -25729,10 +25740,10 @@ function _buildEmartInvoiceWorkbook() {
             _context152.next = 92;
             break;
           }
-          return _context152.delegateYield(_loop23(), "t7", 87);
+          return _context152.delegateYield(_loop24(), "t7", 87);
         case 87:
-          _ret8 = _context152.t7;
-          if (!(_ret8 === 0)) {
+          _ret9 = _context152.t7;
+          if (!(_ret9 === 0)) {
             _context152.next = 90;
             break;
           }
@@ -25820,9 +25831,9 @@ function _buildEmartInvoiceWorkbook() {
             return !keep.has(x.name);
           }));
           _context152.prev = 112;
-          _loop28 = _regeneratorRuntime().mark(function _loop28() {
+          _loop29 = _regeneratorRuntime().mark(function _loop29() {
             var sh, relPath, rels, dm, pm, rid;
-            return _regeneratorRuntime().wrap(function _loop28$(_context151) {
+            return _regeneratorRuntime().wrap(function _loop29$(_context151) {
               while (1) switch (_context151.prev = _context151.next) {
                 case 0:
                   sh = _step36.value;
@@ -25858,7 +25869,7 @@ function _buildEmartInvoiceWorkbook() {
                 case "end":
                   return _context151.stop();
               }
-            }, _loop28);
+            }, _loop29);
           });
           _iterator36.s();
         case 115:
@@ -25866,7 +25877,7 @@ function _buildEmartInvoiceWorkbook() {
             _context152.next = 119;
             break;
           }
-          return _context152.delegateYield(_loop28(), "t9", 117);
+          return _context152.delegateYield(_loop29(), "t9", 117);
         case 117:
           _context152.next = 115;
           break;
@@ -30747,6 +30758,11 @@ function centerOrderApply(labels, want, blocks) {
     return wantSet.has(l) ? seq[k++] : l;
   });
 }
+var centerOrderEff = function centerOrderEff(brand, co) {
+  return brand === "GSFROZEN" && co && !co.v ? {
+    products: co.products || {}
+  } : co;
+};
 var rrBlocks = function rrBlocks(rr) {
   var b = 0;
   var out = [];
@@ -30858,7 +30874,8 @@ function CenterOrderModal(_ref224) {
             return updateSetting(pv.centerOrderKey, authToken, function (v) {
               var o = {
                 all: v && v.all || null,
-                products: _objectSpread({}, v && v.products || {})
+                products: _objectSpread({}, v && v.products || {}),
+                v: 2
               };
               if (scope === "all") o.all = next;else if (next) o.products[scope] = next;else delete o.products[scope];
               return o;
@@ -31094,7 +31111,10 @@ function EmartPickingView(_ref226) {
     pv = _ref226$pv === void 0 ? EM_PV_CFG : _ref226$pv,
     onZeroLines = _ref226.onZeroLines,
     editMode = _ref226.editMode;
-  var centerOrderCfg = useSetting(pv.centerOrderKey || "center_order_none", authToken);
+  var centerOrderCfg0 = useSetting(pv.centerOrderKey || "center_order_none", authToken);
+  var centerOrderCfg = useMemo(function () {
+    return centerOrderEff(pv.brand, centerOrderCfg0);
+  }, [centerOrderCfg0]);
   var _useState349 = useState(false),
     _useState350 = _slicedToArray(_useState349, 2),
     showCenterOrder = _useState350[0],
@@ -34614,7 +34634,7 @@ function buildUploadReport(_x177) {
 }
 function _buildUploadReport() {
   _buildUploadReport = _asyncToGenerator(_regeneratorRuntime().mark(function _callee155(_ref264) {
-    var channel, newOrders, prevOrders, _ref264$dupLines, dupLines, _ref264$skipped, skipped, unmatchedSkus, label, dates, allOrders, tplSupK, newSv, prevDates, items, push, _iterator40, _step40, _loop29, counts;
+    var channel, newOrders, prevOrders, _ref264$dupLines, dupLines, _ref264$skipped, skipped, unmatchedSkus, label, dates, allOrders, tplSupK, newSv, prevDates, items, push, _iterator40, _step40, _loop30, counts;
     return _regeneratorRuntime().wrap(function _callee155$(_context169) {
       while (1) switch (_context169.prev = _context169.next) {
         case 0:
@@ -34655,9 +34675,9 @@ function _buildUploadReport() {
           };
           _iterator40 = _createForOfIteratorHelper(dates);
           _context169.prev = 10;
-          _loop29 = _regeneratorRuntime().mark(function _loop29() {
+          _loop30 = _regeneratorRuntime().mark(function _loop30() {
             var date, dayAll, dayNew, products, bySku, _agg, _prev, todayNames, kept, frozen, sevenFrz, bgfCh, bgfFrz, seven, chKey, cfg, tpl, orderCfg, emInfo, pickCfgNow, supOf, rowsOf, dayRows, vendorHasPivot, hasPivotFor, canCloneVendor, agg, prev, _todayNames, seenPrev;
-            return _regeneratorRuntime().wrap(function _loop29$(_context168) {
+            return _regeneratorRuntime().wrap(function _loop30$(_context168) {
               while (1) switch (_context168.prev = _context168.next) {
                 case 0:
                   date = _step40.value;
@@ -34907,7 +34927,7 @@ function _buildUploadReport() {
                 case "end":
                   return _context168.stop();
               }
-            }, _loop29, null, [[21, 55]]);
+            }, _loop30, null, [[21, 55]]);
           });
           _iterator40.s();
         case 13:
@@ -34915,7 +34935,7 @@ function _buildUploadReport() {
             _context169.next = 19;
             break;
           }
-          return _context169.delegateYield(_loop29(), "t0", 15);
+          return _context169.delegateYield(_loop30(), "t0", 15);
         case 15:
           if (!_context169.t0) {
             _context169.next = 17;
@@ -40968,7 +40988,7 @@ function TplCenterSettingsModal(_ref300) {
   var isOff = function isOff(l) {
     return !!(C[l] && (C[l].removed || C[l][offKey]));
   };
-  var savedOrder = isPick ? savedCO && savedCO.all || null : savedCC && savedCC.invOrder || null;
+  var savedOrder = isPick ? centerOrderEff(brand, savedCO) && centerOrderEff(brand, savedCO).all || null : savedCC && savedCC.invOrder || null;
   var initList = useMemo(function () {
     var all = _toConsumableArray(baseList);
     Object.keys(savedCC && savedCC.centers || {}).forEach(function (l) {
@@ -41107,7 +41127,7 @@ function TplCenterSettingsModal(_ref300) {
   }
   function _save7() {
     _save7 = _asyncToGenerator(_regeneratorRuntime().mark(function _callee95() {
-      var lines, off0, offNow, del, back, r, r2;
+      var lines, off0, offNow, del, back, r, addCodes, allOut, r2;
       return _regeneratorRuntime().wrap(function _callee95$(_context97) {
         while (1) switch (_context97.prev = _context97.next) {
           case 0:
@@ -41178,44 +41198,51 @@ function TplCenterSettingsModal(_ref300) {
             throw new Error(r.error || "저장 실패");
           case 23:
             if (!(isPick && list && coKey && orderTouched)) {
-              _context97.next = 29;
+              _context97.next = 31;
               break;
             }
-            _context97.next = 26;
+            addCodes = new Set(L.filter(isAddedL).map(function (x) {
+              return (/VV\d{2}/.exec(x) || [])[0];
+            }).filter(Boolean));
+            allOut = L.filter(function (x) {
+              return !isAddedL(x) && !(addCodes.has((/VV\d{2}/.exec(x) || [])[0]) && !(C[x] && !C[x].added));
+            });
+            _context97.next = 28;
             return updateSetting(coKey, authToken, function (v) {
               return {
-                all: L,
-                products: _objectSpread({}, v && v.products || {})
+                all: allOut,
+                products: _objectSpread({}, v && v.products || {}),
+                v: 2
               };
             });
-          case 26:
+          case 28:
             r2 = _context97.sent;
             if (!(r2 && r2.ok === false)) {
-              _context97.next = 29;
+              _context97.next = 31;
               break;
             }
             throw new Error(r2.error || "저장 실패");
-          case 29:
+          case 31:
             setMsg("\uC800\uC7A5\uD588\uC5B4\uC694. ".concat(isPick ? "피킹지" : "거래명세서", "\uC5D0 \uBC14\uB85C \uBC18\uC601\uB3FC\uC694."));
             setNewOnes([]);
             setList(null);
             setCenters(null);
             setOrderTouched(false);
-            _context97.next = 39;
+            _context97.next = 41;
             break;
-          case 36:
-            _context97.prev = 36;
+          case 38:
+            _context97.prev = 38;
             _context97.t0 = _context97["catch"](16);
             setMsg("\uC800\uC7A5\uD558\uC9C0 \uBABB\uD588\uC5B4\uC694: ".concat(_context97.t0.message));
-          case 39:
-            _context97.prev = 39;
+          case 41:
+            _context97.prev = 41;
             setBusy(false);
-            return _context97.finish(39);
-          case 42:
+            return _context97.finish(41);
+          case 44:
           case "end":
             return _context97.stop();
         }
-      }, _callee95, null, [[16, 36, 39, 42]]);
+      }, _callee95, null, [[16, 38, 41, 44]]);
     }));
     return _save7.apply(this, arguments);
   }
@@ -41882,7 +41909,7 @@ function TplCenterSettingsModal(_ref300) {
       color: T.danger,
       borderColor: "#E8B4AE"
     })
-  }, "\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30")), isPick && pickBase.length ? React.createElement(React.Fragment, null, savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && pickBase.some(function (bk) {
+  }, "\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30")), isPick && pickBase.length ? React.createElement(React.Fragment, null, savedCO && Array.isArray(savedCO.all) && savedCO.all.length > 0 && !list && (brand === "GSFROZEN" && !savedCO.v ? true : false) && pickBase.some(function (bk) {
     var o = savedCO.all.filter(function (x) {
       return bk.labels.includes(x);
     });
@@ -41901,7 +41928,7 @@ function TplCenterSettingsModal(_ref300) {
       fontWeight: 700,
       marginBottom: 8
     }
-  }, "\uC9C0\uAE08 \uC800\uC7A5\uB41C \uC13C\uD130 \uC21C\uC11C\uAC00 \uC6D0\uBCF8 \uD53C\uD0B9\uC9C0\uC640 \uB2EC\uB77C\uC694 (\uC608\uC804\uC5D0 \uC11E\uC5EC\uC11C \uC800\uC7A5\uB41C \uC21C\uC11C\uC77C \uC218 \uC788\uC5B4\uC694). \uC6D0\uBCF8\uB300\uB85C \uC4F0\uB824\uBA74 \uC704 [\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30]\uB97C \uB20C\uB7EC\uC8FC\uC138\uC694."), React.createElement("div", {
+  }, "\uC608\uC804\uC5D0 \uC11E\uC5EC\uC11C \uC800\uC7A5\uB41C \uC13C\uD130 \uC21C\uC11C\uAC00 \uB0A8\uC544 \uC788\uC5B4\uC694. \uC774\uC81C \uC774 \uC21C\uC11C\uB294 \uC4F0\uC9C0 \uC54A\uACE0 \uC6D0\uBCF8 \uD53C\uD0B9\uC9C0 \uC21C\uC11C\uB85C \uB098\uAC00\uC694. \uAE68\uB057\uD558\uAC8C \uC9C0\uC6B0\uB824\uBA74 \uC704 [\uC6D0\uBCF8 \uC21C\uC11C\uB85C \uB418\uB3CC\uB9AC\uAE30]\uB97C \uB20C\uB7EC\uC8FC\uC138\uC694."), React.createElement("div", {
     style: {
       fontSize: 12,
       color: T.inkSoft,
@@ -45225,7 +45252,7 @@ function _downloadStyledInspectionExcel() {
                 if (lastIdxOfGroup.get(g) === i) pendingCombined.push(g);
               }
             });
-            var _loop30 = function _loop30() {
+            var _loop31 = function _loop31() {
               var g = pendingCombined.shift();
               var group = products.filter(function (q) {
                 return (getDangchakInfo(q.name) || {}).group === g;
@@ -45237,7 +45264,7 @@ function _downloadStyledInspectionExcel() {
               });
             };
             while (pendingCombined.length) {
-              _loop30();
+              _loop31();
             }
           });
           if (activeSku && sheetIdxOfSku.get(activeSku) > 0) {
@@ -45589,7 +45616,7 @@ function downloadEmartPyeonsuList(_x199, _x200, _x201) {
 }
 function _downloadEmartPyeonsuList() {
   _downloadEmartPyeonsuList = _asyncToGenerator(_regeneratorRuntime().mark(function _callee159(ordersForDate, date, setBusy) {
-    var hideCfg, byVendor, bin, bytes, i, _workbook2, ws, _date$split$map11, _date$split$map12, y, m, d, a1, used, lastVendorRow, footRow, counts, _loop31, _ret9, r, extras, src, buffer, blob, url, a;
+    var hideCfg, byVendor, bin, bytes, i, _workbook2, ws, _date$split$map11, _date$split$map12, y, m, d, a1, used, lastVendorRow, footRow, counts, _loop32, _ret10, r, extras, src, buffer, blob, url, a;
     return _regeneratorRuntime().wrap(function _callee159$(_context174) {
       while (1) switch (_context174.prev = _context174.next) {
         case 0:
@@ -45642,10 +45669,10 @@ function _downloadEmartPyeonsuList() {
           lastVendorRow = 0;
           footRow = 0;
           counts = {};
-          _loop31 = _regeneratorRuntime().mark(function _loop31() {
+          _loop32 = _regeneratorRuntime().mark(function _loop32() {
             var _ws$getCell$value;
             var a, keys, n, c;
-            return _regeneratorRuntime().wrap(function _loop31$(_context173) {
+            return _regeneratorRuntime().wrap(function _loop32$(_context173) {
               while (1) switch (_context173.prev = _context173.next) {
                 case 0:
                   a = String((_ws$getCell$value = ws.getCell("A".concat(r)).value) !== null && _ws$getCell$value !== void 0 ? _ws$getCell$value : "").trim();
@@ -45687,7 +45714,7 @@ function _downloadEmartPyeonsuList() {
                 case "end":
                   return _context173.stop();
               }
-            }, _loop31);
+            }, _loop32);
           });
           r = 2;
         case 28:
@@ -45695,16 +45722,16 @@ function _downloadEmartPyeonsuList() {
             _context174.next = 38;
             break;
           }
-          return _context174.delegateYield(_loop31(), "t0", 30);
+          return _context174.delegateYield(_loop32(), "t0", 30);
         case 30:
-          _ret9 = _context174.t0;
-          if (!(_ret9 === 0)) {
+          _ret10 = _context174.t0;
+          if (!(_ret10 === 0)) {
             _context174.next = 33;
             break;
           }
           return _context174.abrupt("continue", 35);
         case 33:
-          if (!(_ret9 === 1)) {
+          if (!(_ret10 === 1)) {
             _context174.next = 35;
             break;
           }
