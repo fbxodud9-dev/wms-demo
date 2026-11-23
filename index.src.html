@@ -4273,7 +4273,8 @@ const VOLUME_GROUPS = [
   { id: "other", label: "타 채널 소계" },
   { id: "gs", label: "GS 계열 소계" },
 ];
-const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "emart_dk", "cu_dk", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "gs_super", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
+// GS슈퍼는 직접 입력 (2026-11-23 요청: 자동 집계 안 함. GS슈퍼 상품은 GS 1편·2편 숫자에서는 계속 빠짐)
+const VOLUME_AUTO_KEYS = ["gs_1", "gs_cold", "gs_2", "emart_1", "emart_2", "emart_dk", "cu_dk", "gs_frozen", "e24_frozen", "seven_1", "seven_2", "seven_frozen", "cu_1", "cu_2", "bgf_frozen", "emart_deli"]; // 일별 발주 집계에서 자동으로 가져오는 칸
 // 파일이 없어서 직원이 직접 넣는 추가 칸 (2026-11-21): [key, 입력 라벨, 합쳐질 칸] — 입력값이 그 칸 숫자에 더해져서 대시보드·그래프·엑셀에 집계
 const VOLUME_EXTRA_DEFS = [
   ["seven_taps", "세븐 탭스", "seven_2"],
