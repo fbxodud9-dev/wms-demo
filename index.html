@@ -34686,7 +34686,7 @@ function _buildUploadReport() {
           _iterator40 = _createForOfIteratorHelper(dates);
           _context169.prev = 10;
           _loop30 = _regeneratorRuntime().mark(function _loop30() {
-            var date, dayAll, dayNew, products, bySku, _agg, _prev, todayNames, kept, frozen, sevenFrz, bgfCh, bgfFrz, seven, chKey, cfg, tpl, orderCfg, emInfo, pickCfgNow, supOf, rowsOf, dayRows, vendorHasPivot, hasPivotFor, canCloneVendor, agg, prev, _todayNames, seenPrev;
+            var date, dayAll, dayNew, products, bySku, _agg, _prev, todayNames, kept, frozen, sevenFrz, bgfCh, bgfFrz, seven, chKey, cfg, tpl, orderCfg, emInfo, pickCfgNow, supOf, rowsOf, dayRows, vendorHasPivot, hasPivotFor, canCloneVendor, firstByName, oldNew, agg, prev, _todayNames, seenPrev;
             return _regeneratorRuntime().wrap(function _loop30$(_context168) {
               while (1) switch (_context168.prev = _context168.next) {
                 case 0:
@@ -34892,6 +34892,20 @@ function _buildUploadReport() {
                     }) || !!tpl && !frozen && !!(bgfCh ? bgfPivotOfVendor(tpl, v) : seven ? sevenPivotOfVendor(tpl, v) : emartPivotByVendorName(tpl, v));
                   };
                   canCloneVendor = !!(frozen && cfg.buildOpts(tpl).cloneUnknownVendor) || seven;
+                  firstByName = new Map();
+                  allOrders.forEach(function (o) {
+                    if (!o.createdAt) return;
+                    (o.lines || []).forEach(function (l) {
+                      var _l$changedQty25;
+                      if ((Number((_l$changedQty25 = l.changedQty) !== null && _l$changedQty25 !== void 0 ? _l$changedQty25 : l.qty) || 0) <= 0) return;
+                      var n = String(l.name || "").trim();
+                      if (n && (!firstByName.has(n) || o.createdAt < firstByName.get(n))) firstByName.set(n, o.createdAt);
+                    });
+                  });
+                  oldNew = function oldNew(name) {
+                    var f = firstByName.get(String(name || "").trim());
+                    return f && daysBetween(f, date) >= 2 ? f : null;
+                  };
                   agg = new Map();
                   rowsOf(dayNew).forEach(function (r) {
                     var x = agg.get(r.name) || {
@@ -34915,8 +34929,10 @@ function _buildUploadReport() {
                       var extra = (_c15.zero || []).length || (_c15.remove || []).length ? " \xB7 0 \uCC98\uB9AC ".concat((_c15.zero || []).length, "\uACF3, \uC9C0\uC5ED \uBE7C\uAE30 ").concat((_c15.remove || []).length, "\uACF3") : "";
                       return push(date, sup, x.name, x.qty, "ok", "\uC2DC\uD2B8 \"".concat(tp.sheet, "\"").concat(extra));
                     }
-                    if (hasPivotFor(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
-                    if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
+                    var of = oldNew(x.name);
+                    if (of && (hasPivotFor(x.vendor) || canCloneVendor)) return push(date, sup, x.name, x.qty, "ok", "\uD53C\uD0B9\uC9C0 \uC6D0\uBCF8\uC5D4 \uC5C6\uC9C0\uB9CC ".concat(fmtDate(of), "\uBD80\uD130 \uBC1B\uC544\uC628 \uC0C1\uD488\uC774\uB77C \uAC19\uC740 \uACF5\uAE09\uC0AC \uC2DC\uD2B8\uB97C \uBCF5\uC0AC\uD574\uC11C \uC790\uB3D9\uC73C\uB85C \uB4E4\uC5B4\uAC00\uC694"));
+                    if (hasPivotFor(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요 (신제품 알림은 첫 발주 후 2일간)");
+                    if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요 (신제품 알림은 첫 발주 후 2일간)");
                     push(date, sup, x.name, x.qty, "warn", "피킹지 원본에 이 공급사 상품이 하나도 없어서 피킹지에 안 나와요! 원본(템플릿)에 공급사 시트를 넣거나 [다른 템플릿으로 만들기]를 써주세요");
                   });
                   prev = prevOrderDate(allOrders, date);
@@ -34933,7 +34949,7 @@ function _buildUploadReport() {
                       push(date, sup, r.name, 0, "none", "".concat(fmtDate(prev), "\uC5D4 \uC788\uC5C8\uB294\uB370 \uC624\uB298 \uBC1C\uC8FC\uC5C6\uC74C \xB7 \uC2DC\uD2B8\uC5D0\uC11C \uBE60\uC838\uC694"));
                     });
                   }
-                case 92:
+                case 95:
                 case "end":
                   return _context168.stop();
               }

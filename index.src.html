@@ -18097,6 +18097,20 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
     if (tpl) dayRows.forEach((r) => matchEmartProduct(tpl, r.name) && emartVendorKeysOf(r.vendor).forEach((k) => vendorHasPivot.add(k)));
     const hasPivotFor = (v) => emartVendorKeysOf(v).some((k) => vendorHasPivot.has(k)) || (!!tpl && !frozen && !!(bgfCh ? bgfPivotOfVendor(tpl, v) : seven ? sevenPivotOfVendor(tpl, v) : emartPivotByVendorName(tpl, v)));
     const canCloneVendor = !!(frozen && cfg.buildOpts(tpl).cloneUnknownVendor) || seven; // 세븐: 새 공급사는 다른 공급사 피벗·시트를 복사해서 만듦
+    // 원본에 없는 상품의 "신제품" 알림은 처음 발주된 날부터 이틀만, 그 뒤엔 알림 없이 정상 (2026-11-27 요청: 기존 상품인데 매번 신제품으로 뜸)
+    const firstByName = new Map();
+    allOrders.forEach((o) => {
+      if (!o.createdAt) return;
+      (o.lines || []).forEach((l) => {
+        if ((Number(l.changedQty ?? l.qty) || 0) <= 0) return;
+        const n = String(l.name || "").trim();
+        if (n && (!firstByName.has(n) || o.createdAt < firstByName.get(n))) firstByName.set(n, o.createdAt);
+      });
+    });
+    const oldNew = (name) => {
+      const f = firstByName.get(String(name || "").trim());
+      return f && daysBetween(f, date) >= 2 ? f : null;
+    };
     const agg = new Map();
     rowsOf(dayNew).forEach((r) => {
       const x = agg.get(r.name) || { name: r.name, vendor: r.vendor, qty: 0 };
@@ -18116,8 +18130,11 @@ async function buildUploadReport({ channel, newOrders, prevOrders, dupLines = 0,
         const extra = (c.zero || []).length || (c.remove || []).length ? ` · 0 처리 ${(c.zero || []).length}곳, 지역 빼기 ${(c.remove || []).length}곳` : "";
         return push(date, sup, x.name, x.qty, "ok", `시트 "${tp.sheet}"${extra}`);
       }
-      if (hasPivotFor(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
-      if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요");
+      // 첫 발주 후 이틀 지난 상품: 신제품 알림 없이 정상
+      const of = oldNew(x.name);
+      if (of && (hasPivotFor(x.vendor) || canCloneVendor)) return push(date, sup, x.name, x.qty, "ok", `피킹지 원본엔 없지만 ${fmtDate(of)}부터 받아온 상품이라 같은 공급사 시트를 복사해서 자동으로 들어가요`);
+      if (hasPivotFor(x.vendor)) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 상품이에요. 같은 공급사 시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요 (신제품 알림은 첫 발주 후 2일간)");
+      if (canCloneVendor) return push(date, sup, x.name, x.qty, "new", "피킹지 원본에 없는 새 공급사예요. 피벗·시트를 복사해서 자동으로 추가돼요 · 입수·지역을 확인해주세요 (신제품 알림은 첫 발주 후 2일간)");
       push(date, sup, x.name, x.qty, "warn", "피킹지 원본에 이 공급사 상품이 하나도 없어서 피킹지에 안 나와요! 원본(템플릿)에 공급사 시트를 넣거나 [다른 템플릿으로 만들기]를 써주세요");
     });
     // 발주없음: 바로 전 발주일엔 있었는데 오늘 없는 상품 (이마트 피킹지는 발주 있는 상품 시트만 나감)
